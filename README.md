@@ -8,7 +8,7 @@ An Electron + Vue 3 + TypeScript desktop front-end that uses [`stable-diffusion.
 
 Myriad Frame is a free, open-source project. If you find it useful and would like to support its development, you can buy me a coffee:
 
-[![Buy Me a Coffee](docs/assets/bmc-brand-logo.svg)](https://buymeacoffee.com/lemuel.raganas)
+[![Buy Me a Coffee](docs/assets/bmc-brand-logo.png)](https://buymeacoffee.com/lemuel.raganas)
 
 ## Runtime & Model Providers
 
