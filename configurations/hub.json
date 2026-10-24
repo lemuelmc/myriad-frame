@@ -1,0 +1,90 @@
+{
+  "name": "myriad_frame",
+  "label": "Myriad Frame",
+  "version": "1.0.0",
+  "diffusion_models": [
+    { 
+      "name": "qwen_mage_2_1", 
+      "label": "Qwen Image 2.1", 
+      "type": "image", 
+      "mode": "image_unified"
+    },
+    { 
+      "name": "z_image_turbo", 
+      "label": "Z-Image Turbo", 
+      "type": "image", 
+      "mode": "image" 
+    }
+  ],
+  "providers": [
+    {"name": "unsloth", "label": "Unsloth"},
+    {"name": "abenzerps", "label": "Abenzerps"},
+    {"name": "black_forest_labs", "label": "Black Forest Labs"},
+    {"name": "qwen", "label": "Qwen"}
+  ],
+  "repo": {
+    "vae": {
+      "qwen_image_2_1": {
+        "provider": "unsloth",
+        "url": "https://huggingface.co/unsloth/Qwen-Image-2.1-FP8",
+        "default": "vae/qwen_image_2.1_vae_bf16.safetensors"
+      },
+      "z_image": {
+        "provider": "black_forest_labs",
+        "url": "https://huggingface.co/black-forest-labs/FLUX.1-schnell",
+        "default": "vae/diffusion_pytorch_model.safetensors"
+      }
+    },
+    "encoder": {
+      "qwen_image_2_1": {
+        "provider": "unsloth",
+        "label": "Qwen3 VL 8B Instruct",
+        "url": "https://huggingface.co/unsloth/Qwen3-VL-8B-Instruct-GGUF",
+        "default": "Qwen3-VL-8B-Instruct-Q4_K_S.gguf"
+      },
+      "z_image": {
+        "provider": "unsloth",
+        "label": "Qwen3 4b Instruct",
+        "url": "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF",
+        "default": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+      }
+    },
+    "vision": {
+      "qwen_image_2_1": {
+        "provider": "qwen",
+        "label": "Qwen3 VL 8B Instruct",
+        "url": "https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF",
+        "default": "mmproj-Qwen3VL-8B-Instruct-F16.gguf"
+      }
+    },
+    "diffusion": [
+      {
+        "provider": "unsloth",
+        "name": "unsloth_qwen_image_2.1",
+        "label": "Unsloth/Qwen Image 2.1",
+        "inference_type": "image",
+        "quant_type": "gguf",
+        "diffusion_type": "qwen_image_2_1",
+        "url": "https://huggingface.co/unsloth/Qwen-Image-2.1-GGUF"
+      },
+      {
+        "provider": "abenzerps",
+        "name": "abenzerps_qwen_image_2.1",
+        "label": "Abenzerps/Qwen Image 2.1",
+        "inference_type": "image",
+        "quant_type": "gguf",
+        "diffusion_type": "qwen_image_2_1",
+        "url": "https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-Quantized"
+      },
+      {
+        "provider": "unsloth",
+        "name": "unsloth_z_image_turbo",
+        "label": "Unsloth/Z-Image Turbo",
+        "inference_type": "image",
+        "quant_type": "gguf",
+        "diffusion_type": "z_image",
+        "url": "https://huggingface.co/leejet/Z-Image-Turbo-GGUF"
+      }
+    ]
+  }
+}

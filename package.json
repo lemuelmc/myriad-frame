@@ -1,0 +1,40 @@
+{
+  "name": "myriad_frame",
+  "version": "0.1.1",
+  "description": "Myriad Frame - an Electron front-end for sd-cli (stable-diffusion.cpp)",
+  "main": "./out/main/index.js",
+  "author": "Myriad Frame",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "clean": "sh scripts/clean.sh",
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "start": "electron-vite preview",
+    "dist": "electron-vite build && electron-builder --win",
+    "dist:portable": "sh scripts/build-portable.sh",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "extract-zip": "^2.0.1",
+    "pinia": "^2.2.6",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@vitejs/plugin-vue": "^5.2.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11",
+    "vue-tsc": "^2.1.10"
+  },
+  "allowScripts": {
+    "electron@33.4.11": true,
+    "esbuild@0.21.5": true,
+    "vue-demi@0.14.10": true
+  }
+}
+

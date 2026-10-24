@@ -1,0 +1,20 @@
+{
+  "qwen_image_2_1": [
+    { "name": "1:1 Square", "width": 1024, "height": 1024 },
+    { "name": "4:3 Landscape", "width": 1152 , "height": 864 },
+    { "name": "3:4 Portrait", "width": 864 , "height": 864  },
+    { "name": "3:2 Photo (W)", "width": 1248 , "height": 832 },
+    { "name": "2:3 Photo", "width": 832 , "height": 1248 },
+    { "name": "16:9 Widescreen", "width": 1536 , "height": 864 },
+    { "name": "16:9 Vertical", "width": 864 , "height": 1536 }
+  ],
+  "z_image": [
+    { "name": "1:1 Square", "width": 1024, "height": 1024 },
+    { "name": "4:3 Standard (W)", "width": 1152, "height": 864 },
+    { "name": "3:4 Standard", "width": 864, "height": 1152  },
+    { "name": "3:2 Photo (W)", "width": 1248, "height": 832 },
+    { "name": "2:3 Photo", "width": 832, "height": 1248 },
+    { "name": "16:9 Widescreen", "width": 1280, "height": 720 },
+    { "name": "9:16 Vertical", "width": 720, "height": 1280 }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "987": {
+    "windows_cuda12_libraries": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-987-a77d362/cudart-sd-bin-win-cu12-x64.zip",
+    "windows_cuda12": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-987-a77d362/sd-master-a77d362-bin-win-cuda12-x64.zip",
+    "windows_rocm": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-987-a77d362/sd-master-a77d362-bin-win-rocm-10.1.0-x64.zip",
+    "windows_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-987-a77d362/sd-master-a77d362-bin-win-cpu-x64.zip",
+    "windows_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-987-a77d362/sd-master-a77d362-bin-win-vulkan-x64.zip",
+    "macos_silicon": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-987-a77d362/sd-master-a77d362-bin-Darwin-macOS-26.6.2-arm64.zip",
+    "linux_amd": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-987-a77d362/sd-master-a77d362-bin-Linux-Ubuntu-24.04-x86_64-rocm-10.1.0.zip",
+    "linux_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-987-a77d362/sd-master-a77d362-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip",
+    "linux_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-987-a77d362/sd-master-a77d362-bin-Linux-Ubuntu-24.04-x86_64.zip"
+  },
+  "986": {
+    "windows_cuda12_libraries": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-986-b15c8aa/cudart-sd-bin-win-cu12-x64.zip",
+    "windows_cuda12": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-986-b15c8aa/sd-master-b15c8aa-bin-win-cuda12-x64.zip",
+    "windows_rocm": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-986-b15c8aa/sd-master-b15c8aa-bin-win-rocm-10.1.0-x64.zip",
+    "windows_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-986-b15c8aa/sd-master-b15c8aa-bin-win-cpu-x64.zip",
+    "windows_vulkan":"https://github.com/leejet/stable-diffusion.cpp/releases/download/master-986-b15c8aa/sd-master-b15c8aa-bin-win-vulkan-x64.zip",
+    "macos_silicon": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-986-b15c8aa/sd-master-b15c8aa-bin-Darwin-macOS-26.6.2-arm64.zip",
+    "linux_amd": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-986-b15c8aa/sd-master-b15c8aa-bin-Linux-Ubuntu-24.04-x86_64-rocm-10.1.0.zip",
+    "linux_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-986-b15c8aa/sd-master-b15c8aa-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip",
+    "linux_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-986-b15c8aa/sd-master-b15c8aa-bin-Linux-Ubuntu-24.04-x86_64.zip"
+  }
+}

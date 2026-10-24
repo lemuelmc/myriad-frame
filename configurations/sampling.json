@@ -1,0 +1,18 @@
+{
+  "qwen_image_2_1": {
+    "max_reference": 7,
+    "steps": 25,
+    "cfg": 1.0,
+    "sampler": "euler",
+    "width": 1024,
+    "height": 1024
+  },
+  "z_image": {
+    "max_reference": 0,
+    "steps": 8,
+    "cfg": 1.0,
+    "sampler": "euler",
+    "width": 1024,
+    "height": 1024
+  }
+}

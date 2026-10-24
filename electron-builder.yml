@@ -1,0 +1,46 @@
+# electron-builder packaging config for the Windows executable.
+# See AGENTS.md — previously there was no config; `npm run build` only produced out/.
+#
+# electron-vite emits the app into out/ (main, preload, renderer). The JSON
+# configuration files live in configurations/ and are read from
+# process.resourcesPath when packaged (see src/main/services/config.ts), so they
+# must be copied into resources/ via extraResources.
+
+appId: com.myriadframe.app
+productName: Myriad Frame
+directories:
+  output: dist
+  buildResources: build
+
+files:
+  - out/**/*
+
+# Copy configurations/ into the packaged app's resources/ folder so that
+# join(process.resourcesPath, 'configurations') resolves at runtime.
+extraResources:
+  - from: configurations
+    to: configurations
+    filter:
+      - '**/*'
+
+# Windows target: one-click installer (NSIS) + self-extracting portable EXE.
+# Code signing is intentionally left off. electron-builder downloads a winCodeSign
+# bundle (containing macOS dylib symlinks) even when unsigned, and 7-Zip fails to
+# extract those symlinks unless the shell holds the "Create symbolic links"
+# privilege (Administrator). To build the installer, run this from an elevated
+# (Administrator) shell, or drop the win targets to `portable`/`nsis` alone.
+win:
+  target:
+    - nsis
+    - portable
+  icon: src/assets/logo-square-small.png
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+  artifactName: ${productName}-${version}-${os}-${arch}.exe
+
+portable:
+  artifactName: ${productName}-${version}-portable-${os}-${arch}.exe
