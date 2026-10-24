@@ -4,6 +4,12 @@
 
 An Electron + Vue 3 + TypeScript desktop front-end that uses [`stable-diffusion.cpp`](https://github.com/leejet/stable-diffusion.cpp) as its runtime provider. It manages sessions, downloads and selects models (diffusion / VAE / text encoder) from curated Hugging Face repositories, and drives image generation through the bundled `sd-cli` runtime.
 
+## Support
+
+Myriad Frame is a free, open-source project. If you find it useful and would like to support its development, you can buy me a coffee:
+
+[![Buy Me a Coffee](docs/assets/bmc-brand-logo.svg)](https://buymeacoffee.com/lemuel.raganas)
+
 ## Runtime & Model Providers
 
 - **Runtime**: [`stable-diffusion.cpp`](https://github.com/leejet/stable-diffusion.cpp) by @leejet — a C++ port of Stable Diffusion, optimized for speed and low memory usage.
