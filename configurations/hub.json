@@ -173,6 +173,7 @@
       {
         "provider": "circlestone_labs",
         "name": "circlestone_labs_anima",
+        "label": "CircleStone Labs/Anima",
         "description": "2B-parameter text-to-image model by CircleStone Labs and Comfy Org. Anime/Illustration.",
         "inference_type": "image",
         "quant_type": "safetensor",
