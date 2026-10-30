@@ -1,8 +1,8 @@
 {
   "updatedOn": "2026-10-31 00:00:00",
   "diffusion_models": [
-    { "name": "qwen_mage_2_1", "label": "Qwen Image 2.1", "type": "image", "mode": "image_unified" },
-    { "name": "z_image_turbo", "label": "Z-Image Turbo", "type": "image", "mode": "image" },
+    { "name": "qwen_image_2_1", "label": "Qwen Image 2.1", "type": "image", "mode": "image_unified" },
+    { "name": "z_image", "label": "Z-Image Turbo", "type": "image", "mode": "image" },
     { "name": "sd3_5", "label": "SD3.5", "type": "image", "mode": "image" },
     { "name": "krea2", "label": "Krea 2", "type": "image", "mode": "image" },
     { "name": "sdxl", "label": "SDXL-1.0", "type": "image", "mode": "image"},
@@ -184,7 +184,7 @@
       },
       {
         "provider": "run_diffusion",
-        "name": "RunDiffusion/Juggernaut-XL-V9",
+        "name": "run_diffusion_juggernaut_xl_v9",
         "label": "RunDiffusion/Juggernaut-XL-V9",
         "description": "SDXL finetuned for: Photorealism",
         "inference_type": "image",
@@ -195,7 +195,7 @@
       },
       {
         "provider": "run_diffusion",
-        "name": "RunDiffusion/Juggernaut-XL-V11",
+        "name": "run_diffusion_juggernaut_xl_v11",
         "label": "RunDiffusion/Juggernaut-XL-V11",
         "description": "SDXL finetuned for: Photorealism, improved anatomy and prompt adherence.",
         "inference_type": "image",
