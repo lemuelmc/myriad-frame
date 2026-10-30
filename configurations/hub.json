@@ -188,7 +188,7 @@
         "inference_type": "image",
         "quant_type": "safetensor",
         "diffusion_type": "sdxl",
-        "urk": "https://huggingface.co/RunDiffusion/Juggernaut-XL-v9",
+        "url": "https://huggingface.co/RunDiffusion/Juggernaut-XL-v9",
         "path": "/"
       },
       {
@@ -198,7 +198,7 @@
         "inference_type": "image",
         "quant_type": "safetensor",
         "diffusion_type": "sdxl",
-        "urk": "https://huggingface.co/RunDiffusion/Juggernaut-XI-v11",
+        "url": "https://huggingface.co/RunDiffusion/Juggernaut-XI-v11",
         "path": "/"
       }
     ]
