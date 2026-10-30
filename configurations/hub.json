@@ -1,5 +1,5 @@
 {
-  "updatedOn": "2026-10-24 00:00:00",
+  "updatedOn": "2026-10-31 00:00:00",
   "diffusion_models": [
     { "name": "qwen_mage_2_1", "label": "Qwen Image 2.1", "type": "image", "mode": "image_unified" },
     { "name": "z_image_turbo", "label": "Z-Image Turbo", "type": "image", "mode": "image" },
@@ -18,7 +18,8 @@
     {"name": "comfy_org", "label": "Comfy-Org"},
     {"name": "realrebelai", "label": "Rebel AI"},
     {"name": "stabilityai", "label": "Stability AI"},
-    {"name": "circlestone_labs", "label": "CircleStone Labs" }
+    {"name": "circlestone_labs", "label": "CircleStone Labs" },
+    {"name": "run_diffusion", "label": "RunDiffusion"}
   ],
   "repo": {
     "vae": {
@@ -173,13 +174,32 @@
       {
         "provider": "circlestone_labs",
         "name": "circlestone_labs_anima",
-        "label": "CircleStone Labs/Anima",
         "description": "2B-parameter text-to-image model by CircleStone Labs and Comfy Org. Anime/Illustration.",
         "inference_type": "image",
         "quant_type": "safetensor",
         "diffusion_type": "anima",
         "url": "https://huggingface.co/circlestone-labs/Anima",
         "path": "/split_files/diffusion_models"
+      },
+      {
+        "provider": "run_diffusion",
+        "name": "RunDiffusion/Juggernaut-XL-V9",
+        "description": "SDXL finetuned for: Photorealism",
+        "inference_type": "image",
+        "quant_type": "safetensor",
+        "diffusion_type": "sdxl",
+        "urk": "https://huggingface.co/RunDiffusion/Juggernaut-XL-v9",
+        "path": "/"
+      },
+      {
+        "provider": "run_diffusion",
+        "name": "RunDiffusion/Juggernaut-XL-V11",
+        "description": "SDXL finetuned for: Photorealism, improved anatomy and prompt adherence.",
+        "inference_type": "image",
+        "quant_type": "safetensor",
+        "diffusion_type": "sdxl",
+        "urk": "https://huggingface.co/RunDiffusion/Juggernaut-XI-v11",
+        "path": "/"
       }
     ]
   }
