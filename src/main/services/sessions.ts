@@ -5,16 +5,10 @@
  * (commercial or private) provided the license notice and copyright are preserved.
  */
 
-/**
- * Myriad Frame — Electron + Vue 3 desktop front-end for sd-cli (stable-diffusion.cpp).
- * Author: Lemuel Raganas
- * License: Apache License 2.0 — permissive; allows use, modification, and distribution
- * (commercial or private) provided the license notice and copyright are preserved.
- */
-
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ChatMessage, Session } from '@shared/types'
+import { SCHEDULER_MODEL_DEFAULT } from '@shared/types'
+import type { ChatMessage, Session, SessionInputs } from '@shared/types'
 import { dataRoot } from './data'
 
 function sessionsRoot(): string {
@@ -38,6 +32,7 @@ export interface SessionsService {
   addMessage: (id: string, msg: ChatMessage) => Session
   updateMessage: (id: string, messageId: string, patch: Partial<ChatMessage>) => Session
   removeMessage: (id: string, messageId: string) => Session
+  setInputs: (id: string, patch: SessionInputs) => Session
 }
 
 export function createSessionsService(): SessionsService {
@@ -123,5 +118,83 @@ export function createSessionsService(): SessionsService {
     return s
   }
 
-  return { list, get: read, create, rename, remove, addMessage, updateMessage, removeMessage }
+  /**
+   * Shallow-merge a composer-input patch onto the session's saved `inputs`
+   * and persist. Defensive filtering keeps a stray renderer payload from
+   * shaping the persisted file: only the known keys merge, and each key's
+   * value must validate — a key that fails (including an explicit `null`) is
+   * dropped instead of merged, so a bogus payload can never overwrite a
+   * previously saved value. Merging onto the existing `inputs ?? {}` (never a
+   * blank object) means a partial patch cannot erase previously saved keys.
+   */
+  function setInputs(id: string, patch: SessionInputs): Session {
+    const s = read(id)
+    if (!s) throw new Error(`Session ${id} not found`)
+    const merged: SessionInputs = { ...(s.inputs ?? {}) }
+    if (typeof patch.model === 'string' && patch.model !== '') merged.model = patch.model
+    if (typeof patch.diffusionType === 'string' && patch.diffusionType !== '')
+      merged.diffusionType = patch.diffusionType
+    if (
+      patch.resolution !== null &&
+      typeof patch.resolution === 'object' &&
+      typeof patch.resolution.name === 'string' &&
+      Number.isFinite(patch.resolution.width) &&
+      Number.isFinite(patch.resolution.height)
+    ) {
+      merged.resolution = {
+        name: patch.resolution.name,
+        width: patch.resolution.width,
+        height: patch.resolution.height
+      }
+    }
+    // negativePrompt: string → trimmed; empty string CLEARS the saved value.
+    if (typeof patch.negativePrompt === 'string') {
+      const t = patch.negativePrompt.trim()
+      if (t) merged.negativePrompt = t
+      else delete merged.negativePrompt
+    }
+    // sampling: null CLEARS the saved override (the dialog Reset button's
+    // explicit clear signal — different from the `resolution: null` = ignore
+    // semantics); object → whitelist the 5 keys with per-key validation.
+    // Width/height are no longer session-overridable.
+    if (patch.sampling === null) {
+      delete merged.sampling
+    } else if (patch.sampling && typeof patch.sampling === 'object') {
+      const dst = { ...(merged.sampling ?? {}) }
+      const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
+      const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined)
+      const n = num(patch.sampling.steps)
+      if (n !== undefined) dst.steps = n
+      const c = num(patch.sampling.cfg)
+      if (c !== undefined) dst.cfg = c
+      const s = num(patch.sampling.strength)
+      if (s !== undefined) dst.strength = s
+      const sm = str(patch.sampling.sampler)
+      if (sm) dst.sampler = sm
+      const sc = patch.sampling.scheduler
+      // Normalize "no scheduler" to the sentinel — stored value is always a
+      // string, so downstream checks never need a null branch.
+      if (sc === null) dst.scheduler = SCHEDULER_MODEL_DEFAULT
+      else {
+        const v = str(sc)
+        if (v) dst.scheduler = v
+      }
+      if (Object.keys(dst).length) merged.sampling = dst
+    }
+    s.inputs = merged
+    write(s)
+    return s
+  }
+
+  return {
+    list,
+    get: read,
+    create,
+    rename,
+    remove,
+    addMessage,
+    updateMessage,
+    removeMessage,
+    setInputs
+  }
 }

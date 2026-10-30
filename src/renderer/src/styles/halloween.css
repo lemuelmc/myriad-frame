@@ -1,0 +1,62 @@
+/**
+ * Myriad Frame — Halloween theme.
+ *
+ * Overrides the base variables declared on `:root` in theme.css. Only the
+ * variables that change are re-declared here; everything else inherits from the
+ * `:root` defaults, so future themes stay tiny. Activate with
+ * `document.documentElement.dataset.theme = 'halloween'`.
+ */
+
+:root[data-theme="halloween"] {
+  /* warm brown/terracotta background stack */
+  --bg: #1a1417;
+  --bg-elevated: #0c0707;
+  --bg-panel: #1a0c0b;
+  --bg-hover: #361a13;
+  --border: #9d4a3b;
+
+  /* light tan text so it reads against the dark brown */
+  --text: #e8d5c4;
+  --text-dim: #c8a98f;
+  --text-faint: #a0806a;
+
+  /* light tan accent */
+  --accent: #c98a6a;
+  --accent-hover: #9d4a3b;
+  --accent-soft: rgba(157, 74, 59, 0.18);
+
+  /* terracotta danger */
+  --danger: #9d4a3b;
+}
+
+/* ---------- decorative touches (Halloween only) ---------- */
+
+/* themed scrollbar thumb */
+:root[data-theme="halloween"] ::-webkit-scrollbar-thumb {
+  background: #9d4a3b;
+  border-radius: 5px;
+}
+:root[data-theme="halloween"] ::-webkit-scrollbar-thumb:hover {
+  background: #c98a6a;
+}
+
+/* jackolantern icon prepended to the generate button */
+:root[data-theme="halloween"] .gen-btn::before {
+  content: "";
+  margin-right: 6px;
+  width: 14px;
+  height: 14px;
+  display: inline-block;
+  flex-shrink: 0;
+  background-image: url("../../../assets/jackolantern-01.png");
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+
+/* Halloween accent on the composer focus ring */
+:root[data-theme="halloween"] .composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+

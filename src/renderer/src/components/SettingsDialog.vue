@@ -1,30 +1,69 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import type { CatalogEntry, ModelType, PerformanceSettings, RuntimeKey, SamplingDefaults } from '@shared/types'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import type {
+  CatalogEntry,
+  DownloadEntry,
+  ModelType,
+  PerformanceSettings,
+  RuntimeKey,
+  SamplingDefaults
+} from '@shared/types'
+import {
+  DOWNLOAD_ABORTED_MESSAGE,
+  SCHEDULERS,
+  SAMPLER_METHODS
+} from '@shared/types'
 import { useAppStore } from '../stores/app'
 import { defaultPerformance, useSettingsStore, type ModelDownloadState } from '../stores/settings'
+import { matchesSearch, normalizeForSearch, providerLabel } from '../search'
+import { resolveEncoderBundle } from '../deps'
 import { toast } from '../toast'
 import { confirm } from '../confirm'
-import DownloadProgress from './DownloadProgress.vue' 
+import { listThemes } from '../theme'
+import DownloadProgress from './DownloadProgress.vue'
 import logoWide from '../../../assets/logo-wide-small.png'
+import releaseNotesMd from '../../../../configurations/release-notes.md?raw'
+import { marked } from 'marked'
 
 const emit = defineEmits<{ close: [] }>()
 const appStore = useAppStore()
 const settingsStore = useSettingsStore() 
 
-type Section = 'about' | 'models' | 'vae' | 'encoder' | 'vision' | 'sampling' | 'runtime' | 'performance'
-const section = ref<Section>('about') 
+type Section = 'appearance' | 'about' | 'release-notes' | 'models' | 'vae' | 'encoder' | 'vision' | 'sampling' | 'runtime' | 'performance' | 'downloads' | 'logs'
+const section = ref<Section>('appearance')  // default to appearance instead of 'about'
 
 const sections: { id: Section; label: string }[] = [
   { id: 'about', label: 'About' },
+  { id: 'release-notes', label: 'Release Notes' },
   { id: 'models', label: 'Models' },
   { id: 'vae', label: 'VAE' },
   { id: 'encoder', label: 'Text Encoder' },
   { id: 'vision', label: 'Vision' },
   { id: 'sampling', label: 'Sampling' },
   { id: 'performance', label: 'Performance' },
-  { id: 'runtime', label: 'Runtime' }
-] 
+  { id: 'runtime', label: 'Runtime' },
+  { id: 'downloads', label: 'Downloads' },
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'logs', label: 'Logs' }
+]
+
+/** Persist + apply the chosen theme. `settingsStore.theme` already reflects the
+ * selection via v-model; this validates, applies, and persists the choice. */
+function onThemeChange(): void {
+  void settingsStore.setTheme(settingsStore.theme)
+}
+
+// ---------- release notes ----------
+// configurations/release-notes.md is inlined at build time via Vite's ?raw
+// suffix; marked renders it to HTML. The content is trusted (bundled with the
+// app, never user input), so no sanitizer is layered on top. Links are forced
+// to target="_blank" so the main process setWindowOpenHandler routes them to
+// the system browser instead of navigating the Electron window away from the
+// app.
+const releaseNotesHtml = computed(() => {
+  const md = releaseNotesMd.replace(/^#[^\n]*\n+/, '')
+  return marked.parse(md, { async: false }).replace(/<a\s/g, '<a target="_blank" rel="noopener" ')
+})
 
 const diffusionTypes = computed(() =>
   [...new Set((appStore.catalog?.entries ?? []).map((e) => e.diffusionType))]
@@ -33,27 +72,22 @@ const diffusionTypes = computed(() =>
 // ---------- models (diffusion only) ----------
 const modelFiles = computed(() => settingsStore.modelLists.diffusion ?? [])
 const diffusionEntries = computed(() =>
-  (appStore.catalog?.entries ?? []).filter(
-    (e) => e.type === 'diffusion' && !e.name.startsWith('text_encoders/') && !e.name.startsWith('vae/')
-  )
+  (appStore.catalog?.entries ?? []).filter((e) => {
+    if (e.type !== 'diffusion') return false
+    const lname = e.name.toLowerCase()
+    // Exclude standalone VAE weights and LoRA adapters — neither is a selectable
+    // diffusion checkpoint, even when scanned under a diffusion repo tree.
+    if (lname.includes('vae') || lname.includes('lora') || lname.includes('text_encoders')) return false
+    return !e.name.startsWith('text_encoders/') && !e.name.startsWith('vae/')
+  })
 )
-/**
- * Resolve a provider key (e.g. 'unsloth') to its human-readable label using
- * the top-level `providers` map in hub.json. Falls back to the key itself, or
- * 'Unknown' when no provider key is present.
- */
-function providerLabel(key: string | undefined): string {
-  if (!key) return 'Unknown'
-  const providers = appStore.configs?.hub.providers ?? []
-  for (const p of providers) {
-    if (Object.prototype.hasOwnProperty.call(p, key)) return p[key].label
-  }
-  return key
-}
+// Providers come from the hub config; threaded explicitly into the shared
+// search helpers (see ../search.ts).
+const hubProviders = computed(() => appStore.configs?.hub.providers ?? [])
 const providerGroups = computed(() => {
   const map = new Map<string, CatalogEntry[]>()
   for (const e of diffusionEntries.value) {
-    const p = providerLabel(e.provider)
+    const p = providerLabel(e.provider, hubProviders.value)
     const arr = map.get(p) ?? []
     arr.push(e)
     map.set(p, arr)
@@ -61,6 +95,32 @@ const providerGroups = computed(() => {
   return [...map.entries()]
 })
 const installedNames = computed(() => new Set(modelFiles.value.map((f) => f.name)))
+
+/**
+ * Models-section search filter. The needle is normalized (space, '-' and '_'
+ * become equivalent) and trimmed so leading/trailing separators are dropped;
+ * an empty needle (blank query, or separators only) means no filtering — the
+ * filtered computeds return the full lists rather than matching a whitespace
+ * needle. `installedNames` and `depDownloads` intentionally keep deriving from
+ * the unfiltered `modelFiles`.
+ */
+const modelQuery = ref('')
+const modelNeedle = computed(() => normalizeForSearch(modelQuery.value).trim())
+const filteredModelFiles = computed(() => {
+  const needle = modelNeedle.value
+  if (!needle) return modelFiles.value
+  return modelFiles.value.filter((f) => normalizeForSearch(f.name).includes(needle))
+})
+const filteredProviderGroups = computed(() => {
+  const needle = modelNeedle.value
+  if (!needle) return providerGroups.value
+  const out: [string, CatalogEntry[]][] = []
+  for (const [provider, entries] of providerGroups.value) {
+    const hit = entries.filter((e) => matchesSearch(e, needle, hubProviders.value))
+    if (hit.length) out.push([provider, hit])
+  }
+  return out
+})
 async function refreshHub(): Promise<void> {
   try {
     await appStore.refreshCatalog()
@@ -68,12 +128,67 @@ async function refreshHub(): Promise<void> {
     toast(`Hub refresh failed: ${(err as Error).message}`, 'error')
   }
 }
+
+// ---------- hub config update check (Models section) ----------
+const hubChecking = ref(false)
+const hubResetting = ref(false)
+async function checkHubUpdates(): Promise<void> {
+  hubChecking.value = true
+  try {
+    const result = await settingsStore.checkHubUpdates()
+    if (result.updated) {
+      if (result.addedModels.length) {
+        let msg = `Hub config updated (new: ${result.addedModels.join(', ')})`
+        if (result.removedModels.length) {
+          msg += ` (removed: ${result.removedModels.join(', ')})`
+        }
+        toast(msg, 'ok')
+      } else {
+        // Content-only change (e.g. upstream fixed a download URL or bumped updatedOn).
+        toast('Hub config updated', 'ok')
+      }
+      // The catalog cache was built from the previous config — rescan so the
+      // "Available from hub" list reflects the new config without a second
+      // click. Fire-and-forget: refreshHub() toasts its own scan failures,
+      // and the real check outcome was already toasted above.
+      void refreshHub()
+    } else {
+      toast('Hub config is up to date', 'ok')
+    }
+  } catch (err) {
+    toast(`Check failed: ${(err as Error).message}`, 'error')
+  } finally {
+    hubChecking.value = false
+  }
+}
+async function resetHubConfig(): Promise<void> {
+  hubResetting.value = true
+  try {
+    await settingsStore.resetHubConfig()
+    toast('Hub config reset to bundled', 'ok')
+    // The catalog may have been built from the override — rescan so the
+    // "Available from hub" list matches the bundled config again.
+    void refreshHub()
+  } catch (err) {
+    toast(`Reset failed: ${(err as Error).message}`, 'error')
+  } finally {
+    hubResetting.value = false
+  }
+}
+/**
+ * True when the error is the manager's deliberate-cancel abort (Cancel/Pause
+ * from the Downloads section) — its outcome was already toasted by the
+ * canceling action, so it must not surface as a "download failed" error here.
+ */
+function isAbortedDownload(err: unknown): boolean {
+  return (err as Error).message === DOWNLOAD_ABORTED_MESSAGE
+}
 async function downloadEntry(e: CatalogEntry): Promise<void> {
   try {
     await settingsStore.downloadModel('diffusion', e.url, e.provider)
     toast(`Downloaded ${e.name}`, 'ok')
   } catch (err) {
-    toast(`Download failed: ${(err as Error).message}`, 'error')
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
   }
 }
 /**
@@ -86,7 +201,7 @@ async function redownloadEntry(e: CatalogEntry): Promise<void> {
     await settingsStore.downloadModel('diffusion', e.url, e.provider, true)
     toast(`Redownloaded ${e.name}`, 'ok')
   } catch (err) {
-    toast(`Download failed: ${(err as Error).message}`, 'error')
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
   }
 }
 async function removeModel(name: string): Promise<void> {
@@ -116,9 +231,25 @@ function defaultDepEntry(type: ModelType, dt: string): CatalogEntry | undefined 
 }
 function dependencyEntries(dt: string): CatalogEntry[] {
   const v = defaultDepEntry('vae', dt)
-  const enc = defaultDepEntry('encoder', dt)
+  // Encoder slot: a bundle diffusion type (`defaults[]`, SD3.5-style)
+  // downloads the whole bundle. Prefer the config-resolved bundle — a
+  // catalog-only lookup leaves bundle types with zero dependency entries
+  // whenever the cached catalog is stale — then every `isDefault` encoder
+  // entry from the catalog, then the plain single-entry fallback.
+  const bundle = resolveEncoderBundle(dt)
+  let enc: CatalogEntry[]
+  if (bundle.length) {
+    enc = bundle
+  } else {
+    const marked = (appStore.catalog?.entries ?? []).filter(
+      (e) => e.type === 'encoder' && e.diffusionType === dt && e.isDefault
+    )
+    enc = marked.length
+      ? marked
+      : [defaultDepEntry('encoder', dt)].filter((x): x is CatalogEntry => Boolean(x))
+  }
   const vis = defaultDepEntry('vision', dt)
-  return [v, enc, vis].filter((x): x is CatalogEntry => Boolean(x))
+  return [v, ...enc, vis].filter((x): x is CatalogEntry => Boolean(x))
 }
 const depDownloads = computed(() => {
   const out: { key: string; label: string; state: ModelDownloadState }[] = []
@@ -158,7 +289,7 @@ async function downloadDependencies(name: string): Promise<void> {
         await settingsStore.downloadModel(e.type, e.url, e.provider)
         toast(`Downloaded ${e.name}`, 'ok')
       } catch (err) {
-        toast(`Download failed: ${(err as Error).message}`, 'error')
+        if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
       }
     }
   }
@@ -171,6 +302,19 @@ const vaeType = ref(diffusionTypes.value[0] ?? '')
 const vaeEntries = computed(() =>
   (appStore.catalog?.entries ?? []).filter((e) => e.type === 'vae' && e.diffusionType === vaeType.value)
 )
+/**
+ * VAE-section search filter, mirroring the Models section: normalized
+ * (space, '-' and '_' equivalent) + trimmed needle; an empty needle (blank
+ * query or separators only) means no filtering. `defaultVae` is keyed by
+ * name and unaffected by filtering.
+ */
+const vaeQuery = ref('')
+const vaeNeedle = computed(() => normalizeForSearch(vaeQuery.value).trim())
+const filteredVaeEntries = computed(() => {
+  const needle = vaeNeedle.value
+  if (!needle) return vaeEntries.value
+  return vaeEntries.value.filter((e) => matchesSearch(e, needle, hubProviders.value))
+})
 const defaultVae = computed(() => settingsStore.settings.defaultVae?.[vaeType.value] ?? '')
 async function setDefaultVae(name: string): Promise<void> {
   const map = { ...(settingsStore.settings.defaultVae ?? {}) }
@@ -185,8 +329,31 @@ const encoderFiles = computed(() => settingsStore.modelLists.encoder ?? [])
 const encoderEntries = computed(() =>
   (appStore.catalog?.entries ?? []).filter((e) => e.type === 'encoder' && e.diffusionType === encoderType.value)
 )
+/**
+ * Encoder-section search filter, mirroring the Models section: normalized
+ * (space, '-' and '_' equivalent) + trimmed needle; an empty needle (blank
+ * query or separators only) means no filtering. `encoderInstalledNames` (the
+ * "installed" tag on hub rows) keeps deriving from the unfiltered
+ * `encoderFiles` so installed tags don't vanish while a query is active;
+ * `defaultEncoder` is keyed by name and unaffected.
+ */
+const encoderQuery = ref('')
+const encoderNeedle = computed(() => normalizeForSearch(encoderQuery.value).trim())
+const filteredEncoderFiles = computed(() => {
+  const needle = encoderNeedle.value
+  if (!needle) return encoderFiles.value
+  return encoderFiles.value.filter((f) => normalizeForSearch(f.name).includes(needle))
+})
+const filteredEncoderEntries = computed(() => {
+  const needle = encoderNeedle.value
+  if (!needle) return encoderEntries.value
+  return encoderEntries.value.filter((e) => matchesSearch(e, needle, hubProviders.value))
+})
 const encoderInstalledNames = computed(() => new Set(encoderFiles.value.map((f) => f.name)))
 const defaultEncoder = computed(() => settingsStore.settings.defaultEncoder?.[encoderType.value] ?? '')
+// SD3.5-style bundle type (`defaults[]` present): the bundle is fixed by the
+// config, so the per-file "Set default" control is meaningless and hidden.
+const encoderIsBundle = computed(() => resolveEncoderBundle(encoderType.value).length > 0)
 async function setDefaultEncoder(name: string): Promise<void> {
   const map = { ...(settingsStore.settings.defaultEncoder ?? {}) }
   if (name) map[encoderType.value] = name
@@ -198,7 +365,7 @@ async function downloadEncoder(e: CatalogEntry): Promise<void> {
     await settingsStore.downloadModel('encoder', e.url, e.provider)
     toast(`Downloaded ${e.name}`, 'ok')
   } catch (err) {
-    toast(`Download failed: ${(err as Error).message}`, 'error')
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
   }
 }
 async function removeEncoder(name: string): Promise<void> {
@@ -216,6 +383,26 @@ const visionFiles = computed(() => settingsStore.modelLists.vision ?? [])
 const visionEntries = computed(() =>
   (appStore.catalog?.entries ?? []).filter((e) => e.type === 'vision' && e.diffusionType === visionType.value)
 )
+/**
+ * Vision-section search filter, mirroring the Models section: normalized
+ * (space, '-' and '_' equivalent) + trimmed needle; an empty needle (blank
+ * query or separators only) means no filtering. `visionInstalledNames` (the
+ * "installed" tag on hub rows) keeps deriving from the unfiltered
+ * `visionFiles` so installed tags don't vanish while a query is active;
+ * `defaultVision` is keyed by name and unaffected.
+ */
+const visionQuery = ref('')
+const visionNeedle = computed(() => normalizeForSearch(visionQuery.value).trim())
+const filteredVisionFiles = computed(() => {
+  const needle = visionNeedle.value
+  if (!needle) return visionFiles.value
+  return visionFiles.value.filter((f) => normalizeForSearch(f.name).includes(needle))
+})
+const filteredVisionEntries = computed(() => {
+  const needle = visionNeedle.value
+  if (!needle) return visionEntries.value
+  return visionEntries.value.filter((e) => matchesSearch(e, needle, hubProviders.value))
+})
 const visionInstalledNames = computed(() => new Set(visionFiles.value.map((f) => f.name)))
 const defaultVision = computed(() => settingsStore.settings.defaultVision?.[visionType.value] ?? '')
 async function setDefaultVision(name: string): Promise<void> {
@@ -229,7 +416,7 @@ async function downloadVision(e: CatalogEntry): Promise<void> {
     await settingsStore.downloadModel('vision', e.url, e.provider)
     toast(`Downloaded ${e.name}`, 'ok')
   } catch (err) {
-    toast(`Download failed: ${(err as Error).message}`, 'error')
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
   }
 }
 async function removeVision(name: string): Promise<void> {
@@ -249,17 +436,47 @@ function visionHasEntries(): boolean {
 // ---------- sampling ----------
 const samplingType = ref(diffusionTypes.value[0] ?? '')
 const samplingBase = computed<SamplingDefaults | null>(() => appStore.configs?.sampling[samplingType.value] ?? null)
+// Pretty-printed, indented JSON for the collapsible "defaults" summary.
+const samplingJsonExpanded = ref(false)
+function toggleSamplingJson(): void {
+  samplingJsonExpanded.value = !samplingJsonExpanded.value
+}
+const samplingPrettyJson = computed(() => (samplingBase.value ? JSON.stringify(samplingBase.value, null, 2) : '—'))
 const samplingOverride = ref<Partial<SamplingDefaults>>({})
 function loadOverride(): void {
   samplingOverride.value = { ...(settingsStore.settings.sampling?.[samplingType.value] ?? {}) }
+  // Map undefined and null → '' for the placeholder-bound fields so an
+  // empty select / empty textarea displays instead of a blank select.
+  for (const k of ['sampler', 'scheduler', 'negative'] as const) {
+    if (samplingOverride.value[k] == null) samplingOverride.value[k] = ''
+  }
 }
 watch(samplingType, loadOverride)
 async function saveSampling(): Promise<void> {
+  // Drop empty-string values for the placeholder-bound fields so the merge
+  // in effectiveSampling() never spawns `--sampling-method ""` /
+  // `--scheduler ""` / `--negative-prompt ""`.
+  const o = { ...samplingOverride.value }
+  for (const k of ['sampler', 'scheduler', 'negative'] as const) {
+    if (typeof o[k] === 'string' && !(o[k] as string).trim()) delete o[k]
+  }
+  samplingOverride.value = o
   const map = { ...(settingsStore.settings.sampling ?? {}) }
   if (Object.keys(samplingOverride.value).length) map[samplingType.value] = samplingOverride.value
   else delete map[samplingType.value]
-  await settingsStore.save({ sampling: map })
-  toast('Sampling saved', 'ok')
+  // `samplingOverride.value` is a deeply reactive Proxy (Vue ref). A shallow
+  // spread leaves the override object as a reactive Proxy, which
+  // `ipcRenderer.invoke` cannot structured-clone (it throws "An object could
+  // not be cloned", silently dropping the save and the toast). JSON
+  // round-trip unwraps every level into a plain, serializable object before
+  // it crosses the preload bridge.
+  const payload = JSON.parse(JSON.stringify({ sampling: { ...map } }))
+  try {
+    await settingsStore.save(payload)
+    toast('Sampling saved', 'ok')
+  } catch (err) {
+    toast(`Failed to save sampling overrides: ${(err as Error).message}`, 'error')
+  }
 }
 function resetSampling(): void {
   samplingOverride.value = {}
@@ -313,7 +530,55 @@ async function downloadRuntime(v: string): Promise<void> {
     await settingsStore.downloadRuntime(v, key)
     toast(`Runtime ${v} ready`, 'ok')
   } catch (err) {
-    toast(`Runtime download failed: ${(err as Error).message}`, 'error')
+    // A cancel/pause aborts the runtime download; the store rethrows the
+    // DOWNLOAD_ABORTED_MESSAGE error for it — cancelRuntime() already toasted
+    // it; not a failure.
+    if (!isAbortedDownload(err)) {
+      toast(`Runtime download failed: ${(err as Error).message}`, 'error')
+    }
+  }
+}
+
+// ---------- runtime config update check ----------
+const runtimeChecking = ref(false)
+const runtimeResetting = ref(false)
+/** Comma-join versions sorted numerically descending (same order as the versions list). */
+function fmtVersions(vs: string[]): string {
+  return [...vs].sort((a, b) => Number(b) - Number(a)).map((v) => `v${v}`).join(', ')
+}
+async function checkRuntimeUpdates(): Promise<void> {
+  runtimeChecking.value = true
+  try {
+    const result = await settingsStore.checkRuntimeUpdates()
+    if (result.updated) {
+      if (result.newVersions.length) {
+        let msg = `Runtime config updated (new: ${fmtVersions(result.newVersions)})`
+        if (result.removedVersions.length) {
+          msg += ` (removed: ${fmtVersions(result.removedVersions)})`
+        }
+        toast(msg, 'ok')
+      } else {
+        // Content-only change (e.g. upstream fixed a download URL).
+        toast('Runtime config updated', 'ok')
+      }
+    } else {
+      toast('Runtime is up to date', 'ok')
+    }
+  } catch (err) {
+    toast(`Check failed: ${(err as Error).message}`, 'error')
+  } finally {
+    runtimeChecking.value = false
+  }
+}
+async function resetRuntimeConfig(): Promise<void> {
+  runtimeResetting.value = true
+  try {
+    await settingsStore.resetRuntimeConfig()
+    toast('Runtime config reset to bundled', 'ok')
+  } catch (err) {
+    toast(`Reset failed: ${(err as Error).message}`, 'error')
+  } finally {
+    runtimeResetting.value = false
   }
 }
 function fmtBytes(n: number): string {
@@ -325,7 +590,106 @@ function fmtBytes(n: number): string {
     i++
   }
   return `${n.toFixed(1)} ${units[i]}`
-} 
+}
+
+// ---------- downloads (control UI) ----------
+function entryProgress(e: DownloadEntry): ModelDownloadState | undefined {
+  return settingsStore.modelDownloads[`${e.type}:${e.url}`]
+}
+function canCancelEntry(e: DownloadEntry): boolean {
+  if (e.status !== 'downloading') return false
+  // Cancel is disabled while the runtime is extracting (fast, temp zips already
+  // fully downloaded).
+  if (settingsStore.downloadsRuntime?.phase === 'extracting') return false
+  return true
+}
+async function cancelEntry(e: DownloadEntry): Promise<void> {
+  try {
+    await settingsStore.cancelDownload(e.url)
+    toast('Download canceled', 'ok')
+  } catch (err) {
+    toast(`Cancel failed: ${(err as Error).message}`, 'error')
+  }
+}
+async function retryEntry(e: DownloadEntry): Promise<void> {
+  try {
+    await settingsStore.downloadModel(e.type, e.url, e.provider)
+    toast('Retrying download', 'ok')
+  } catch (err) {
+    if (!isAbortedDownload(err)) toast(`Retry failed: ${(err as Error).message}`, 'error')
+  }
+}
+async function removeEntry(e: DownloadEntry): Promise<void> {
+  const ok = await confirm(`Remove ${e.name} from the download registry?`, {
+    confirmLabel: 'Remove',
+    cancelLabel: 'Cancel'
+  })
+  if (!ok) return
+  try {
+    await settingsStore.cancelDownload(e.url)
+    toast('Download removed', 'ok')
+  } catch (err) {
+    toast(`Remove failed: ${(err as Error).message}`, 'error')
+  }
+}
+async function togglePause(): Promise<void> {
+  const next = !settingsStore.downloadsPaused
+  try {
+    await settingsStore.setPaused(next)
+    toast(next ? 'Downloads paused' : 'Downloads resumed', 'ok')
+  } catch (err) {
+    toast(`Operation failed: ${(err as Error).message}`, 'error')
+  }
+}
+async function cancelRuntime(): Promise<void> {
+  const v = settingsStore.downloadsRuntime?.version
+  if (!v) return
+  try {
+    await settingsStore.cancelDownload(v)
+    toast('Runtime download canceled', 'ok')
+  } catch (err) {
+    toast(`Cancel failed: ${(err as Error).message}`, 'error')
+  }
+}
+
+// ---------- logs ----------
+const logsContent = ref('')
+const logsSize = ref(0)
+const logsRefreshedAt = ref('')
+const logsLoading = ref(false)
+const logsPre = ref<HTMLElement | null>(null)
+
+/**
+ * Read the tail of data/logs/latest.log. Fired via the immediate watcher on
+ * `section` below, which covers both dialog mount (no-op unless Logs is the
+ * initial section) and every nav activation — the section is read on demand,
+ * never polled.
+ */
+async function refreshLogs(): Promise<void> {
+  logsLoading.value = true
+  try {
+    const info = await window.api.logsGet()
+    logsContent.value = info.content
+    logsSize.value = info.size
+    logsRefreshedAt.value = new Date().toLocaleTimeString()
+    // Auto-scroll to the bottom: the newest lines are what matters when
+    // diagnosing a failure.
+    await nextTick()
+    const el = logsPre.value
+    if (el) el.scrollTop = el.scrollHeight
+  } catch (err) {
+    toast(`Failed to read logs: ${(err as Error).message}`, 'error')
+  } finally {
+    logsLoading.value = false
+  }
+}
+watch(
+  section,
+  (s) => {
+    if (s === 'logs') void refreshLogs()
+  },
+  { immediate: true }
+)
 
 onMounted(async () => {
   await settingsStore.listModels('diffusion')
@@ -380,19 +744,40 @@ onMounted(async () => {
                                   <div class="about-footer">By: Lemuel Raganas</div>
                                   </section>
 
+          <!-- RELEASE NOTES -->
+          <section v-if="section === 'release-notes'">
+            <h3>Release Notes</h3>
+            <div class="release-notes" v-html="releaseNotesHtml"></div>
+          </section>
+
           <!-- MODELS -->
           <section v-if="section === 'models'">
             <div class="section-head">
               <h3>Diffusion models</h3>
-              <button :disabled="appStore.catalogScanning" @click="refreshHub()">
-                {{ appStore.catalogScanning ? 'Scanning…' : 'Refresh hub' }}
-              </button>
+              <div class="row">
+                <button :disabled="hubChecking" @click="checkHubUpdates()">
+                  {{ hubChecking ? 'Checking…' : 'Check' }}
+                </button>
+                <button :disabled="hubResetting" @click="resetHubConfig()">
+                  {{ hubResetting ? 'Resetting…' : 'Reset' }}
+                </button>
+                <button :disabled="appStore.catalogScanning" @click="refreshHub()">
+                  {{ appStore.catalogScanning ? 'Scanning…' : 'Refresh hub' }}
+                </button>
+              </div>
             </div>
             <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p> 
 
+            <input
+              v-model="modelQuery"
+              class="model-search"
+              type="text"
+              placeholder="Filter models — space, '-' and '_' are equivalent"
+            />
+
             <h4>Installed</h4>
             <ul class="file-list">
-              <li v-for="f in modelFiles" :key="f.name">
+              <li v-for="f in filteredModelFiles" :key="f.name">
                 <span class="mono">{{ f.name }}</span>
                 <span class="faint">{{ fmtBytes(f.size) }}</span>
                 <button
@@ -411,6 +796,7 @@ onMounted(async () => {
                 </button>
               </li>
               <li v-if="!modelFiles.length" class="muted">No models downloaded yet.</li>
+              <li v-else-if="!filteredModelFiles.length" class="muted">No installed models match "{{ modelQuery }}"</li>
             </ul> 
 
             <div v-if="depDownloads.length" class="dep-dl">
@@ -425,7 +811,7 @@ onMounted(async () => {
             </div> 
 
             <h4>Available from hub</h4>
-            <div v-for="[provider, entries] in providerGroups" :key="provider" class="provider-group">
+            <div v-for="[provider, entries] in filteredProviderGroups" :key="provider" class="provider-group">
               <h5>{{ provider }}</h5>
               <ul class="file-list">
                 <li v-for="e in entries" :key="e.id" class="dl-item">
@@ -468,8 +854,11 @@ onMounted(async () => {
                 </li>
               </ul>
             </div>
-            <p v-if="!providerGroups.length" class="muted">
+            <p v-if="!diffusionEntries.length" class="muted">
               No diffusion models in the catalog. Use "Refresh hub" to scan the repositories.
+            </p>
+            <p v-else-if="!filteredProviderGroups.length" class="muted">
+              No models match "{{ modelQuery }}"
             </p>
           </section> 
 
@@ -483,8 +872,14 @@ onMounted(async () => {
             <p class="muted">
               Choose the default VAE used for {{ vaeType }}. Download it from the VAE dropdown in the chat composer.
             </p>
+            <input
+              v-model="vaeQuery"
+              class="model-search"
+              type="text"
+              placeholder="Filter VAE — space, '-' and '_' are equivalent"
+            />
             <ul class="file-list">
-              <li v-for="e in vaeEntries" :key="e.id">
+              <li v-for="e in filteredVaeEntries" :key="e.id">
                 <span class="mono">{{ e.name }}</span>
                 <DownloadProgress
                   v-if="installedDlState('vae', e.name)"
@@ -501,6 +896,7 @@ onMounted(async () => {
                 </button>
               </li>
               <li v-if="!vaeEntries.length" class="muted">No VAE entries for this diffusion type.</li>
+              <li v-else-if="!filteredVaeEntries.length" class="muted">No VAE entries match "{{ vaeQuery }}"</li>
             </ul>
           </section> 
 
@@ -519,9 +915,16 @@ onMounted(async () => {
               <option v-for="t in diffusionTypes" :key="t" :value="t">{{ t }}</option>
             </select> 
 
+            <input
+              v-model="encoderQuery"
+              class="model-search"
+              type="text"
+              placeholder="Filter text encoders — space, '-' and '_' are equivalent"
+            />
+
             <h4>Installed</h4>
             <ul class="file-list">
-              <li v-for="f in encoderFiles" :key="f.name">
+              <li v-for="f in filteredEncoderFiles" :key="f.name">
                 <span class="mono">{{ f.name }}</span>
                 <span class="faint">{{ fmtBytes(f.size) }}</span>
                 <DownloadProgress
@@ -537,11 +940,16 @@ onMounted(async () => {
                 </button>
               </li>
               <li v-if="!encoderFiles.length" class="muted">No text encoders downloaded yet.</li>
+              <li v-else-if="!filteredEncoderFiles.length" class="muted">No installed text encoders match "{{ encoderQuery }}"</li>
             </ul> 
 
             <h4>Available from hub</h4>
+            <p v-if="encoderIsBundle" class="muted">
+              Bundle — the text encoders for this diffusion type download together as one set
+              (no per-file default). If the list is empty, refresh the hub to populate it.
+            </p>
             <ul class="file-list">
-              <li v-for="e in encoderEntries" :key="e.id" class="dl-item">
+              <li v-for="e in filteredEncoderEntries" :key="e.id" class="dl-item">
                 <div class="dl-item-top">
                   <span class="mono">{{ e.name }}</span>
                   <span v-if="e.quant" class="quant-tag">{{ e.quant }}</span>
@@ -561,6 +969,7 @@ onMounted(async () => {
                     <button v-else class="dl-btn" @click="downloadEncoder(e)">Download</button>
                   </template>
                   <button
+                    v-if="!encoderIsBundle"
                     class="set-default"
                     :class="{ active: defaultEncoder === e.name }"
                     @click="setDefaultEncoder(e.name)"
@@ -576,6 +985,7 @@ onMounted(async () => {
                 />
               </li>
               <li v-if="!encoderEntries.length" class="muted">No text encoder entries for this diffusion type.</li>
+              <li v-else-if="!filteredEncoderEntries.length" class="muted">No text encoders match "{{ encoderQuery }}"</li>
             </ul>
           </section> 
 
@@ -599,9 +1009,16 @@ onMounted(async () => {
               <option v-for="t in diffusionTypes" :key="t" :value="t">{{ t }}</option>
             </select> 
 
+            <input
+              v-model="visionQuery"
+              class="model-search"
+              type="text"
+              placeholder="Filter vision models — space, '-' and '_' are equivalent"
+            />
+
             <h4>Installed</h4>
             <ul class="file-list">
-              <li v-for="f in visionFiles" :key="f.name">
+              <li v-for="f in filteredVisionFiles" :key="f.name">
                 <span class="mono">{{ f.name }}</span>
                 <span class="faint">{{ fmtBytes(f.size) }}</span>
                 <DownloadProgress
@@ -617,11 +1034,12 @@ onMounted(async () => {
                 </button>
               </li>
               <li v-if="!visionFiles.length" class="muted">No vision models downloaded yet.</li>
+              <li v-else-if="!filteredVisionFiles.length" class="muted">No installed vision models match "{{ visionQuery }}"</li>
             </ul> 
 
             <h4>Available from hub</h4>
             <ul class="file-list">
-              <li v-for="e in visionEntries" :key="e.id" class="dl-item">
+              <li v-for="e in filteredVisionEntries" :key="e.id" class="dl-item">
                 <div class="dl-item-top">
                   <span class="mono">{{ e.name }}</span>
                   <span v-if="e.quant" class="quant-tag">{{ e.quant }}</span>
@@ -656,6 +1074,7 @@ onMounted(async () => {
                 />
               </li>
               <li v-if="!visionEntries.length" class="muted">No vision entries for this diffusion type.</li>
+              <li v-else-if="!filteredVisionEntries.length" class="muted">No vision models match "{{ visionQuery }}"</li>
             </ul>
           </section> 
 
@@ -678,9 +1097,25 @@ onMounted(async () => {
                   <td><input v-model.number="samplingOverride.cfg" type="number" step="0.1" min="0" style="width: 90px" /></td>
                 </tr>
                 <tr>
+                  <td>Strength</td>
+                  <td><input v-model.number="samplingOverride.strength" type="number" step="0.05" min="0" max="1" style="width: 90px" /></td>
+                </tr>
+                <tr>
                   <td>Sampler</td>
                   <td>
-                    <input v-model="samplingOverride.sampler" type="text" style="width: 160px" />
+                    <select v-model="samplingOverride.sampler" style="width: 160px">
+                      <option value="">(default)</option>
+                      <option v-for="s in SAMPLER_METHODS" :key="s" :value="s">{{ s }}</option>
+                    </select>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Scheduler</td>
+                  <td>
+                    <select v-model="samplingOverride.scheduler" style="width: 160px">
+                      <option value="">(model-specific)</option>
+                      <option v-for="s in SCHEDULERS" :key="s" :value="s">{{ s }}</option>
+                    </select>
                   </td>
                 </tr>
                 <tr>
@@ -691,11 +1126,26 @@ onMounted(async () => {
                   <td>Height</td>
                   <td><input v-model.number="samplingOverride.height" type="number" min="1" style="width: 90px" /></td>
                 </tr>
+                <tr>
+                  <td>Negative</td>
+                  <td>
+                    <textarea v-model="samplingOverride.negative" rows="3" style="width: 320px; max-width: 100%; display: block" placeholder="(default)"></textarea>
+                    <small class="faint">Applied to every generation for this diffusion type as --negative-prompt. Sessions can override this per chat.</small>
+                  </td>
+                </tr>
               </tbody>
             </table>
             <p class="faint">
-              Defaults from sampling.json: {{ samplingBase ? JSON.stringify(samplingBase) : '—' }}
+              Defaults from sampling.json:
+              <button
+                class="faint-link"
+                type="button"
+                @click="toggleSamplingJson()"
+              >
+                {{ samplingJsonExpanded ? '▾' : '▸' }} {{ samplingBase ? 'show JSON' : '—' }}
+              </button>
             </p>
+            <pre v-if="samplingJsonExpanded && samplingBase" class="faint-json">{{ samplingPrettyJson }}</pre>
             <div class="row">
               <button class="primary" @click="saveSampling()">Save overrides</button>
               <button @click="resetSampling()">Reset to defaults</button>
@@ -800,7 +1250,17 @@ onMounted(async () => {
 
           <!-- RUNTIME -->
           <section v-if="section === 'runtime'">
-            <h3>Runtime</h3>
+            <div class="section-head">
+              <h3>Runtime</h3>
+              <div class="row">
+                <button :disabled="runtimeChecking" @click="checkRuntimeUpdates()">
+                  {{ runtimeChecking ? 'Checking…' : 'Check' }}
+                </button>
+                <button :disabled="runtimeResetting" @click="resetRuntimeConfig()">
+                  {{ runtimeResetting ? 'Resetting…' : 'Reset' }}
+                </button>
+              </div>
+            </div>
             <table class="kv">
               <tbody>
                 <tr><td>Detected OS</td><td>{{ platform?.os ?? '—' }}</td></tr>
@@ -811,11 +1271,27 @@ onMounted(async () => {
 
             <h4>Versions</h4>
             <ul class="file-list">
-              <li v-for="v in settingsStore.runtimeVersions" :key="v.version">
-                <span class="mono">v{{ v.version }}</span>
-                <span v-if="v.installed" class="ok-tag">installed</span>
-                <span v-else class="faint">not installed</span>
+              <li
+                v-for="v in settingsStore.runtimeVersions"
+                :key="v.version"
+                :class="{ 'dl-item': settingsStore.runtimeDownloading?.version === v.version }"
+              >
                 <template v-if="settingsStore.runtimeDownloading?.version === v.version">
+                  <!-- Downloading: stack the progress details below the row so
+                       they never overlap or clip against neighboring rows. -->
+                  <div class="dl-item-top">
+                    <span class="mono">v{{ v.version }}</span>
+                    <span v-if="v.installed" class="ok-tag">installed</span>
+                    <span v-else class="faint">not installed</span>
+                    <button
+                      class="set-default"
+                      :class="{ active: selectedVersion === v.version }"
+                      :disabled="!v.installed"
+                      @click="selectVersion(v.version)"
+                    >
+                      {{ selectedVersion === v.version ? 'Selected' : 'Select' }}
+                    </button>
+                  </div>
                   <DownloadProgress
                     class="grow"
                     :downloaded-bytes="settingsStore.runtimeDownloading!.downloadedBytes"
@@ -824,22 +1300,27 @@ onMounted(async () => {
                   />
                 </template>
                 <template v-else>
+                  <span class="mono">v{{ v.version }}</span>
+                  <span v-if="v.installed" class="ok-tag">installed</span>
+                  <span v-else class="faint">not installed</span>
                   <button
                     v-if="!v.installed"
                     class="dl-btn"
+                    :disabled="settingsStore.downloadsPaused"
+                    :title="settingsStore.downloadsPaused ? 'Downloads are paused' : undefined"
                     @click="downloadRuntime(v.version)"
                   >
                     Download
                   </button>
+                  <button
+                    class="set-default"
+                    :class="{ active: selectedVersion === v.version }"
+                    :disabled="!v.installed"
+                    @click="selectVersion(v.version)"
+                  >
+                    {{ selectedVersion === v.version ? 'Selected' : 'Select' }}
+                  </button>
                 </template>
-                <button
-                  class="set-default"
-                  :class="{ active: selectedVersion === v.version }"
-                  :disabled="!v.installed"
-                  @click="selectVersion(v.version)"
-                >
-                  {{ selectedVersion === v.version ? 'Selected' : 'Select' }}
-                </button>
               </li>
             </ul>
             <p class="faint">
@@ -847,11 +1328,133 @@ onMounted(async () => {
               <span class="mono">{{ 'data/runtime/<version>/' }}</span>.
             </p>
           </section>
+
+          <!-- DOWNLOADS (control UI) -->
+          <section v-if="section === 'downloads'">
+            <div class="section-head">
+              <h3>Downloads</h3>
+              <button
+                class="dl-btn"
+                :class="{ active: settingsStore.downloadsPaused }"
+                @click="togglePause()"
+              >
+                {{ settingsStore.downloadsPaused ? 'Resume all' : 'Pause all downloads' }}
+              </button>
+            </div>
+            <p class="faint">
+              Model downloads are staged in <span class="mono">{{ 'data/tmp/' }}</span> and moved into
+              place after a full, size-verified fetch. Background retries resume on launch.
+            </p>
+
+            <!-- runtime row -->
+            <template v-if="settingsStore.downloadsRuntime && settingsStore.downloadsRuntime.version">
+              <ul class="file-list">
+                <li class="dl-entry">
+                  <div class="dl-item-top">
+                    <span class="mono">Runtime</span>
+                    <span class="mono small faint">v{{ settingsStore.downloadsRuntime.version }}</span>
+                    <span v-if="settingsStore.downloadsRuntime.installed" class="ok-tag">installed</span>
+                    <span v-else-if="settingsStore.downloadsRuntime.downloading" class="status-tag status-downloading">
+                      {{ settingsStore.downloadsRuntime.phase === 'extracting' ? 'extracting' : 'downloading' }}
+                    </span>
+                  </div>
+                  <DownloadProgress
+                    v-if="settingsStore.runtimeDownloading?.version === settingsStore.downloadsRuntime.version"
+                    class="grow"
+                    :downloaded-bytes="settingsStore.runtimeDownloading!.downloadedBytes"
+                    :total-bytes="settingsStore.runtimeDownloading!.totalBytes"
+                    :phase="settingsStore.runtimeDownloading!.phase"
+                  />
+                  <button
+                    v-if="settingsStore.downloadsRuntime.downloading && settingsStore.runtimeDownloading?.version === settingsStore.downloadsRuntime.version"
+                    class="dl-btn danger"
+                    :disabled="settingsStore.runtimeDownloading?.phase === 'extracting'"
+                    :title="settingsStore.runtimeDownloading?.phase === 'extracting' ? 'Extraction in progress' : 'Cancel runtime download'"
+                    @click="cancelRuntime()"
+                  >
+                    {{ settingsStore.runtimeDownloading?.phase === 'extracting' ? 'Extracting…' : 'Cancel' }}
+                  </button>
+                </li>
+              </ul>
+            </template>
+
+            <h4>Model downloads</h4>
+            <ul class="file-list">
+              <li v-for="e in settingsStore.pendingDownloads" :key="e.url" class="dl-entry">
+                <div class="dl-item-top">
+                  <span class="mono">{{ e.name }}</span>
+                  <span class="faint mono small">({{ e.type }} · {{ e.provider }})</span>
+                  <span class="status-tag" :class="'status-' + e.status">{{ e.status }}</span>
+                </div>
+                <DownloadProgress
+                  v-if="e.status === 'downloading'"
+                  class="grow"
+                  :downloaded-bytes="entryProgress(e)?.downloadedBytes ?? 0"
+                  :total-bytes="entryProgress(e)?.totalBytes ?? 0"
+                />
+                <span v-else-if="e.status === 'failed'" class="faint err">{{ e.error }}</span>
+                <div class="row">
+                  <button
+                    v-if="e.status === 'downloading'"
+                    class="dl-btn danger"
+                    :disabled="!canCancelEntry(e)"
+                    @click="cancelEntry(e)"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    v-if="e.status === 'pending' || e.status === 'failed'"
+                    class="dl-btn"
+                    :disabled="settingsStore.downloadsPaused"
+                    @click="retryEntry(e)"
+                  >
+                    {{ e.status === 'pending' ? 'Retry now' : 'Retry now' }}
+                  </button>
+                  <button class="dl-btn danger" @click="removeEntry(e)">Remove</button>
+                </div>
+              </li>
+              <li v-if="!settingsStore.pendingDownloads.length" class="faint">
+                No model downloads recorded.
+              </li>
+            </ul>
+          </section>
+
+          <!-- APPEARANCE -->
+          <section v-if="section === 'appearance'">
+            <h3>Theme</h3>
+            <table class="kv">
+              <tbody>
+                <tr>
+                  <td>Theme</td>
+                  <td>
+                    <select v-model="settingsStore.theme" @change="onThemeChange">
+                      <option v-for="t in listThemes()" :key="t.key" :value="t.key">{{ t.label }}</option>
+                    </select>
+                    <span class="faint">Apply a theme to the app appearance.</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <!-- LOGS -->
+          <section v-if="section === 'logs'">
+            <div class="section-head">
+              <h3>Logs</h3>
+              <button class="dl-btn" :disabled="logsLoading" @click="refreshLogs()">Refresh</button>
+            </div>
+            <p class="faint">
+              <span class="mono">data/logs/latest.log</span> · {{ fmtBytes(logsSize) }} ·
+              refreshed {{ logsRefreshedAt || '—' }}
+            </p>
+            <pre v-if="logsContent" ref="logsPre" class="logs-pre">{{ logsContent }}</pre>
+            <p v-else class="faint">No log activity yet.</p>
+          </section>
           </div>
       </div>
     </div>
   </div>
-</template> 
+</template>
 
 <style scoped>
 .dialog-backdrop {
@@ -931,6 +1534,11 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
 }
+/* Models-section filter input. .dialog-content is a stretch flex column, so
+   the input is already full-width — spacing only. */
+.model-search {
+  margin-bottom: 10px;
+}
 .provider-group h5 {
   margin: 10px 0 2px;
   font-size: 12px;
@@ -991,6 +1599,59 @@ onMounted(async () => {
 .kv td input[type="text"] {
   margin-right: 8px;
 }
+.release-notes :deep(h2) {
+  margin-top: 24px;
+  font-size: 16px;
+}
+.release-notes :deep(h2:first-of-type) {
+  margin-top: 0;
+}
+.release-notes :deep(h3) {
+  margin-top: 16px;
+  font-size: 14px;
+}
+.release-notes :deep(p) {
+  margin: 8px 0;
+}
+.release-notes :deep(ul) {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+.release-notes :deep(li) {
+  margin: 6px 0;
+}
+.release-notes :deep(strong) {
+  color: var(--text);
+}
+.release-notes :deep(code) {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+  font-size: 12px;
+}
+.release-notes :deep(pre) {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  overflow-x: auto;
+  font-size: 12px;
+}
+.release-notes :deep(pre code) {
+  background: none;
+  border: none;
+  padding: 0;
+}
+.release-notes :deep(a) {
+  color: var(--accent);
+}
+.release-notes :deep(hr) {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 16px 0;
+}
 .tabs {
   display: flex;
   gap: 6px;
@@ -1012,6 +1673,11 @@ onMounted(async () => {
   gap: 10px;
   padding: 6px 4px;
   border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+.dl-entry {
+  flex-direction: column;
+  align-items: stretch;
 }
 .file-list li.dl-item {
   align-items: flex-start;
@@ -1044,6 +1710,67 @@ onMounted(async () => {
   padding: 3px 10px;
   font-size: 12px;
 }
+.dl-btn.danger {
+  color: var(--danger);
+}
+.dl-btn.danger:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+.status-tag {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
+  text-transform: capitalize;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.status-tag.status-downloading {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.status-tag.status-failed {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.dl-entry .row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.dl-entry .row button {
+  flex-shrink: 0;
+}
+.dl-entry .faint.err {
+  color: var(--danger);
+}
+.faint-link {
+  border: none;
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 0 4px;
+  font: inherit;
+  vertical-align: baseline;
+}
+.faint-link:hover {
+  color: var(--accent);
+}
+.faint-json {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+  font-size: 12px;
+  white-space: pre;
+}
 .dl-progress.grow {
   flex: 1;
   min-width: 160px;
@@ -1073,5 +1800,20 @@ label {
   flex-direction: column;
   gap: 6px;
   padding: 2px 4px 0;
+}
+.logs-pre {
+  max-height: 420px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
 }
 </style>

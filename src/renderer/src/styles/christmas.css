@@ -1,0 +1,65 @@
+/**
+ * Myriad Frame — Christmas theme ("White Christmas").
+ *
+ * Overrides the base variables declared on `:root` in theme.css. Only the
+ * variables that change are re-declared here; everything else inherits from the
+ * `:root` defaults, so future themes stay tiny. Activate with
+ * `document.documentElement.dataset.theme = 'christmas'`.
+ */
+
+:root[data-theme="christmas"] {
+  /* light snowy-white background stack */
+  --bg: #eef3f5;
+  --bg-elevated: #e2eaee;
+  --bg-panel: #f4f8fa;
+  --bg-hover: #dce6ec;
+  --border: #97b3c3;
+
+  /* deep slate text so it reads against the light background */
+  --text: #263842;
+  --text-dim: #56707d;
+  --text-faint: #839aa6;
+
+  /* festive red accent */
+  --accent: #c0392b;
+  --accent-hover: #a12e22;
+  --accent-soft: rgba(192, 57, 43, 0.16);
+
+  /* pine green ok/warn kept distinct from the red accent */
+  --ok: #1f9d5a;
+  --warn: #d49a2a;
+
+  /* cool red danger */
+  --danger: #d9534f;
+}
+
+/* ---------- decorative touches (Christmas only) ---------- */
+
+/* themed scrollbar thumb */
+:root[data-theme="christmas"] ::-webkit-scrollbar-thumb {
+  background: #b9cdd8;
+  border-radius: 5px;
+}
+:root[data-theme="christmas"] ::-webkit-scrollbar-thumb:hover {
+  background: #8fb0c0;
+}
+
+/* a small snowflake glyph prepended to the generate button */
+:root[data-theme="christmas"] .gen-btn::before {
+  content: "❄";
+  margin-right: 6px;
+  font-size: 12px;
+  line-height: 1;
+  display: inline-block;
+  flex-shrink: 0;
+  color: #7aa4b8;
+}
+:root[data-theme="christmas"] .gen-btn.stop::before {
+  content: "";
+}
+
+/* Christmas accent on the composer focus ring */
+:root[data-theme="christmas"] .composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}

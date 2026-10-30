@@ -92,7 +92,8 @@ const speedLabel = computed(() => (speedBps.value > 0 ? `${fmtBytes(speedBps.val
 .dl-progress {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   min-width: 0;
 }
 .dl-progress.grow {

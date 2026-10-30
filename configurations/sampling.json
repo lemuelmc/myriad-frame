@@ -1,18 +1,86 @@
 {
   "qwen_image_2_1": {
+    "diffusion_behavior": "standalone",
+    "allow_reference": true,
     "max_reference": 7,
+    "img2img": false,
+    "strength": 0.75,
     "steps": 25,
     "cfg": 1.0,
     "sampler": "euler",
+    "scheduler": null,
     "width": 1024,
-    "height": 1024
+    "height": 1024,
+    "negative": null
   },
   "z_image": {
+    "diffusion_behavior": "standalone",
+    "allow_reference": false,
     "max_reference": 0,
+    "img2img": false,
+    "strength": 0.75,
     "steps": 8,
     "cfg": 1.0,
     "sampler": "euler",
+    "scheduler": null,
     "width": 1024,
-    "height": 1024
+    "height": 1024,
+    "negative": null
+  },
+  "sd3_5": {
+    "diffusion_behavior": "standalone",
+    "allow_reference": false,
+    "max_reference": 0,
+    "img2img": false,
+    "strength": 0.75,
+    "steps": 25,
+    "cfg": 4.0,
+    "sampler": "euler",
+    "scheduler": null,
+    "width": 1024,
+    "height": 1024,
+    "negative": null
+  },
+  "krea2": {
+    "diffusion_behavior": "standalone",
+    "allow_reference": false,
+    "max_reference": 0,
+    "img2img": false,
+    "strength": 0.75,
+    "steps": 8,
+    "cfg": 0.5,
+    "sampler": "euler",
+    "scheduler": null,
+    "width": 1024,
+    "height": 1024,
+    "negative": null
+  },
+  "sdxl": {
+    "diffusion_behavior": "all_in_one",
+    "allow_reference": true,
+    "max_reference": 1,
+    "img2img": true,
+    "strength": 0.75,
+    "steps": 12,
+    "cfg": 7.0,
+    "sampler": "euler",
+    "scheduler": null,
+    "width": 1024,
+    "height": 1024,
+    "negative": null
+  },
+  "anima": {
+    "diffusion_behavior": "standalone",
+    "allow_reference": false,
+    "max_reference": 0,
+    "img2img": false,
+    "strength": 0.75,
+    "steps": 25,
+    "cfg": 4,
+    "sampler": "euler",
+    "scheduler": null,
+    "width": 1024,
+    "height": 1024,
+    "negative": null
   }
 }

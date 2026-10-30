@@ -5,15 +5,8 @@
  * (commercial or private) provided the license notice and copyright are preserved.
  */
 
-/**
- * Myriad Frame — Electron + Vue 3 desktop front-end for sd-cli (stable-diffusion.cpp).
- * Author: Lemuel Raganas
- * License: Apache License 2.0 — permissive; allows use, modification, and distribution
- * (commercial or private) provided the license notice and copyright are preserved.
- */
-
 import { defineStore } from 'pinia'
-import type { Session } from '@shared/types'
+import type { Session, SessionInputs } from '@shared/types'
 
 export const useSessionsStore = defineStore('sessions', {
   state: () => ({
@@ -66,6 +59,19 @@ export const useSessionsStore = defineStore('sessions', {
     },
     async select(id: string) {
       this.activeId = id
+    },
+    /**
+     * Merge composer-input patches into a session's saved `inputs`. The id is
+     * passed explicitly — a debounced flush may target a session that is no
+     * longer active — and the store entry is replaced with the returned
+     * object so `active.inputs` stays fresh without an extra fetch. No-ops
+     * when the id matches no known session (deleted mid-debounce).
+     */
+    async setInputs(id: string, patch: SessionInputs) {
+      if (!this.sessions.some((x) => x.id === id)) return
+      const s = await window.api.sessionsSetInputs(id, patch)
+      const i = this.sessions.findIndex((x) => x.id === s.id)
+      if (i >= 0) this.sessions[i] = s
     },
     async refreshActive() {
       if (!this.activeId) return

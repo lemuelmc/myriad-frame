@@ -5,13 +5,6 @@
  * (commercial or private) provided the license notice and copyright are preserved.
  */
 
-/**
- * Myriad Frame — Electron + Vue 3 desktop front-end for sd-cli (stable-diffusion.cpp).
- * Author: Lemuel Raganas
- * License: Apache License 2.0 — permissive; allows use, modification, and distribution
- * (commercial or private) provided the license notice and copyright are preserved.
- */
-
 import { app } from 'electron'
 import { ChildProcess, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
@@ -20,9 +13,18 @@ import type { GenerationRequest, PerformanceSettings } from '@shared/types'
 
 export interface SdCliPaths {
   model: string
+  /** how `model` is passed: 'all_in_one' → full checkpoint via `--model`
+   *  (conditioners/VAE inside the file); 'standalone' (default) →
+   *  `--diffusion-model` (weights only) */
+  modelBehavior?: 'all_in_one' | 'standalone'
   vae?: string
   encoder?: string
+  /** encoder bundle (SD3.5-style): each file + the CLI flag it is passed under */
+  encoders?: { path: string; useAs: string }[]
   vision?: string
+  /** img2img init image — emitted as `--init-img` when set; the referenced
+   *  image reinterpreted as the input image (see gen:start) */
+  initImage?: string
   references: string[]
   output: string
 }
@@ -31,10 +33,17 @@ export interface SdCliPaths {
  * Build the sd-cli argument list.
  * Flag names verified against `sd-cli --help` (commit a77d362) and the
  * official model docs (docs/resolution-qwen-image.md, docs/resolution-zimage.md):
- * standalone diffusion weights go to `--diffusion-model`, the text encoder to
- * `--llm`, the vision (mmproj) model to `--llm_vision` (this build has no
- * `--mmproj` flag), reference images to repeatable `--ref-image` entries
- * (before `--output`), and the result image to `--output`.
+ * the diffusion weights go to `--diffusion-model` (or to `--model` when the
+ * diffusion type is `all_in_one` — a full checkpoint that already contains
+ * conditioners and VAE, so the standalone `--vae` override is skipped), the
+ * text encoder to
+ * `--llm` (single-file) or to one `--<use_as>` flag per bundle file
+ * (SD3.5-style multi-encoder: `--clip_g`, `--clip_l`, `--t5xxl`), the vision
+ * (mmproj) model to `--llm_vision` (this build has no `--mmproj` flag),
+ * an optional init image to `--init-img` (img2img input) together with
+ * `--strength` (the pair is emitted only when the init image is set), the
+ * reference images to repeatable `--ref-image` entries (before `--output`),
+ * and the result image to `--output`.
  *
  * Performance flags (flash attention, direct conv, VAE tiling, CPU offload,
  * params backend) are appended only when the corresponding setting is enabled.
@@ -52,8 +61,11 @@ export function buildArgs(req: GenerationRequest, p: SdCliPaths): string[] {
     return Math.floor(Math.random() * 2 ** 32)
   }
 
+  // 'all_in_one' types ship a full checkpoint (conditioners + VAE inside) —
+  // passed as `--model`; standalone types (default) via `--diffusion-model`.
   const args: string[] = [
-    '--diffusion-model', p.model,
+    p.modelBehavior === 'all_in_one' ? '--model' : '--diffusion-model',
+    p.model,
     '--prompt', quotePrompt(req.prompt),
     '--steps', String(req.steps),
     '--cfg-scale', String(req.cfg),
@@ -62,13 +74,41 @@ export function buildArgs(req: GenerationRequest, p: SdCliPaths): string[] {
     '--height', String(req.resolution.height),
     '--seed', String(randomSeed())
   ]
-  if (p.vae) args.push('--vae', p.vae)
-  if (p.encoder) args.push('--llm', p.encoder)
+  // Sigma scheduler — emitted only when the resolved value is a concrete,
+  // non-empty string (main resolves the 'model-specific' sentinel to undefined
+  // before spawn, so buildArgs() never sees it; null/undefined/'' ⇒ skip).
+  if (req.scheduler && req.scheduler.trim()) args.push('--scheduler', req.scheduler.trim())
+  // Negative prompt — emitted only when non-empty (sd-cli default is "").
+  const neg = req.negativePrompt?.trim()
+  if (neg) args.push('--negative-prompt', quotePrompt(neg))
+  // Standalone VAE override — skipped for 'all_in_one' types: a full
+  // checkpoint carries its own VAE inside the file.
+  if (p.vae && p.modelBehavior !== 'all_in_one') args.push('--vae', p.vae)
+  // Encoder bundle: each file under its own `--<useAs>` flag (the flag name
+  // flows from hub.json `use_as`; sanitize by trimming and stripping leading
+  // dashes, skipping empty results). XOR guard — when a bundle is present the
+  // legacy single `--llm` emission is skipped, so a malformed request can
+  // never emit both.
+  if (p.encoders && p.encoders.length > 0) {
+    for (const enc of p.encoders) {
+      const flag = enc.useAs.trim().replace(/^-+/, '')
+      if (!flag) continue
+      args.push(`--${flag}`, enc.path)
+    }
+  } else if (p.encoder) {
+    args.push('--llm', p.encoder)
+  }
   // Vision (mmproj) model — the projection model that bridges the diffusion
   // transformer to the text encoder. Only emitted when the diffusion_type
   // declares a `vision` dependency in hub.json. Note: this sd-cli build
   // exposes it as `--llm_vision` (there is no `--mmproj` flag).
   if (p.vision) args.push('--llm_vision', p.vision)
+  if (p.initImage) {
+    args.push('--init-img', p.initImage)
+    // denoise strength — only meaningful with an init image, so the pair is
+    // emitted together and txt2img command lines stay free of `--strength`
+    args.push('--strength', String(req.strength))
+  }
   for (const ref of p.references) args.push('--ref-image', ref)
 
   pushPerformanceArgs(args, req.performance)
@@ -177,6 +217,15 @@ export function createSdCliService(): SdCliService {
     cb: GenCallbacks
   ): RunningGen {
     const args = buildArgs(req, paths)
+    // Debug aid: log the complete command line (binary + args) so generation
+    // issues can be diagnosed from the main-process console. Args containing
+    // whitespace are wrapped in double quotes — except ones that already
+    // start and end with a quote (the prompt is pre-wrapped by buildArgs()),
+    // so the logged line can be pasted back into a shell as-is.
+    const quoteArg = (a: string): string =>
+      /\s/.test(a) && !(a.startsWith('"') && a.endsWith('"')) ? `"${a}"` : a
+    // Debug aid: log the complete command line (binary + args) so generation
+    // issues can be diagnosed from the main-process console.
     const child = spawn(binary, args, {
       cwd: dataRoot(),
       env: { ...process.env },

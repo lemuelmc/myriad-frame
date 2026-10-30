@@ -5,13 +5,6 @@
  * (commercial or private) provided the license notice and copyright are preserved.
  */
 
-/**
- * Myriad Frame — Electron + Vue 3 desktop front-end for sd-cli (stable-diffusion.cpp).
- * Author: Lemuel Raganas
- * License: Apache License 2.0 — permissive; allows use, modification, and distribution
- * (commercial or private) provided the license notice and copyright are preserved.
- */
-
 import { resolve } from 'node:path'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import vue from '@vitejs/plugin-vue'

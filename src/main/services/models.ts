@@ -5,18 +5,10 @@
  * (commercial or private) provided the license notice and copyright are preserved.
  */
 
-/**
- * Myriad Frame — Electron + Vue 3 desktop front-end for sd-cli (stable-diffusion.cpp).
- * Author: Lemuel Raganas
- * License: Apache License 2.0 — permissive; allows use, modification, and distribution
- * (commercial or private) provided the license notice and copyright are preserved.
- */
-
-import { app } from 'electron'
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import type { ModelFile, ModelType } from '@shared/types'
-import { downloadFile, headSize } from './download'
+import { downloadModel } from './downloads'
 
 /**
  * Ensure the canonical data/models layout exists, migrating the legacy
@@ -54,7 +46,7 @@ export interface ModelsService {
    */
   download: (type: ModelType, url: string, onProgress: (downloadedBytes: number, totalBytes: number) => void, provider?: string, force?: boolean) => Promise<string>
   remove: (type: ModelType, name: string) => void
-  pathFor: (type: ModelType, name: string) => string
+  pathFor: (type: ModelType, name: string, provider?: string) => string
 }
 
 export function createModelsService(): ModelsService {
@@ -100,26 +92,14 @@ export function createModelsService(): ModelsService {
   async function download(
     type: ModelType,
     url: string,
-    onProgress: (downloadedBytes: number, totalBytes: number) => void,
+    _onProgress: (downloadedBytes: number, totalBytes: number) => void,
     provider = 'default',
     force = false
   ): Promise<string> {
-    const name = basename(new URL(url).pathname)
-    const dest = join(modelsDir(type), provider, name)
-    if (existsSync(dest) && !force) {
-      // An existing file may be a truncated/corrupted download. Verify its
-      // size against the server's content-length before treating it as
-      // installed; otherwise re-download from scratch.
-      const expected = await headSize(url)
-      const actual = statSync(dest).size
-      if (expected > 0 && actual !== expected) {
-        rmSync(dest, { force: true })
-      } else {
-        return dest
-      }
-    }
-    await downloadFile(url, dest, { onProgress })
-    return dest
+    // Delegate to the download manager, which stages the download in
+    // data/tmp/, size-verifies it, then moves it into place. The manager is
+    // the sole source of model progress (models.ts no longer broadcasts).
+    return downloadModel(type, url, provider, force)
   }
 
   function remove(type: ModelType, name: string): void {
@@ -139,14 +119,24 @@ export function createModelsService(): ModelsService {
    * Resolve a model file to an absolute path. Matches by basename across the
    * per-provider subdirectories (new layout) and the legacy flat location
    * (backward compatibility), returning the first existing match.
+   *
+   * When `provider` is supplied, the provider-specific subdirectory is checked
+   * first so a basename collision across providers (e.g. `diffusion_pytorch_model.safetensors`
+   * under both `black_forest_labs` and `huaweilin` for sd3_5) resolves to the
+   * provider configured in hub.json instead of whichever folder sorts first.
    */
-  function pathFor(type: ModelType, name: string): string {
+  function pathFor(type: ModelType, name: string, provider?: string): string {
     const dir = modelsDir(type)
     const base = basename(name)
     const flat = join(dir, name)
     if (existsSync(flat)) return flat
     if (existsSync(dir)) {
-      for (const entry of readdirSync(dir)) {
+      // Per-provider subdirectories, checked in a stable order: the requested
+      // provider first (so the hub.json-configured VAE/encoder/encoder wins),
+      // then any remaining folders in a deterministic order.
+      const entries = readdirSync(dir).sort((a, b) => a.localeCompare(b))
+      const ordered = provider ? [provider, ...entries.filter((e) => e !== provider)] : entries
+      for (const entry of ordered) {
         const p = join(dir, entry, base)
         if (existsSync(p)) return p
       }

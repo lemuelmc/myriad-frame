@@ -105,30 +105,39 @@ data/
 
 - **Sidebar** — resizable. Header shows the app name; lists sessions (create / rename /
   delete); footer gear icon opens the **Settings** dialog.
-- **Chat panel** — the session. Select a model/quant, VAE, text encoder, and resolution;
-  add up to `max_reference` reference images; toggle "use previous image as reference"
-  (default on). The **Generate** button (play icon) becomes **Stop** (stop icon) while a
-  generation is in flight, with a spinner/dot indicator and live step progress.
+- **Chat panel** — the session. Pick a diffusion model/quant via a searchable **Model
+  Picker** dialog, and choose a resolution; add up to `max_reference` reference images;
+  toggle "use previous image as reference" (default on). Two composer icons open
+  **per-session** dialogs for the **Negative prompt** and a **Sampling override** (steps,
+  cfg, strength, sampler, scheduler) that persist in the session file. The **Generate**
+  button (play icon) becomes **Stop** (stop icon) while a generation is in flight, with a
+  spinner/dot indicator and live step progress. Clicking a generated image opens a
+  **fullscreen lightbox** preview.
 - **Settings dialog** — sections:
+  - **Appearance** — theme picker (`Default`, `Halloween`, `Christmas`).
   - **About** — app/runtime/platform/GPU info.
-  - **Models** — list, download, and delete models per type.
+  - **Models** — list, download, and delete models per type; filter the hub catalog by name,
+    family, quant, provider, or description.
   - **VAE** — pick the default VAE per `diffusion_type`.
-  - **Sampling** — override sampling defaults per `diffusion_type`.
+  - **Sampling** — override sampling defaults per `diffusion_type`, including `Sampler`,
+    `Scheduler`, and `Negative` fields.
   - **Runtime** — detected platform, recommended runtime, version list with download/select.
 
 ## Screenshots
 
-| Model management | Performance settings |
-|------------------|----------------------|
-| ![Model management](docs/assets/model_management.png) | ![Performance settings](docs/assets/performance_settings.png) |
-
-| Sampling settings | Generation |
-|-------------------|------------|
-| ![Sampling settings](docs/assets/sampling_settings.png) | ![Generation](docs/assets/qwen_image_2_1_gen.png) |
-
-| Editing with a reference |
-|--------------------------|
-| ![Editing with a reference](docs/assets/qwen_image_2_1_edit.png) |
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;">
+  <figure style="margin:0"><img src="docs/assets/improved_model_selector.png" alt="Model picker dialog" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Model picker</figcaption></figure>
+  <figure style="margin:0"><img src="docs/assets/improved_model_management.png" alt="Model management dialog" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Model management</figcaption></figure>
+  <figure style="margin:0"><img src="docs/assets/sampling_settings.png" alt="Sampling settings" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Sampling settings</figcaption></figure>
+  <figure style="margin:0"><img src="docs/assets/improved_sampling_settings.png" alt="Improved sampling settings" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Improved sampling settings</figcaption></figure>
+  <figure style="margin:0"><img src="docs/assets/sampling_override.png" alt="Sampling override" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Sampling override</figcaption></figure>
+  <figure style="margin:0"><img src="docs/assets/negative_override.png" alt="Negative prompt override" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Negative prompt</figcaption></figure>
+  <figure style="margin:0"><img src="docs/assets/performance_settings.png" alt="Performance settings" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Performance settings</figcaption></figure>
+  <figure style="margin:0"><img src="docs/assets/appearance_settings.png" alt="Appearance settings" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Appearance settings</figcaption></figure>
+  <figure style="margin:0"><img src="docs/assets/qwen_image_2_1_gen.png" alt="Qwen Image 2.1 generation" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Qwen Image 2.1 — generation</figcaption></figure>
+  <figure style="margin:0"><img src="docs/assets/qwen_image_2_1_edit.png" alt="Qwen Image 2.1 editing" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Qwen Image 2.1 — editing</figcaption></figure>
+  <figure style="margin:0"><img src="docs/assets/krea_2.png" alt="Krea" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Krea</figcaption></figure>
+</div>
 
 ## How generation works
 

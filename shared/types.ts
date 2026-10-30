@@ -9,6 +9,18 @@
 
 export type ModelType = 'diffusion' | 'encoder' | 'vae' | 'vision'
 
+/**
+ * Renderer theme key. Kept open-ended (`string`) so new themes can be added in
+ * `theme.ts` without touching every type site, but the known set is listed here
+ * for documentation and autocomplete.
+ */
+export type ThemeKey =
+  | 'default'
+  | 'halloween'
+  | 'christmas'
+  /** Any future theme key added to the registry in `theme.ts`. */
+  | (string & {})
+
 // ---------- configurations/hub.json ----------
 
 /** A diffusion model definition from hub.json (top-level diffusion_models array). */
@@ -21,9 +33,12 @@ export interface HubDiffusionModel {
   mode: string
 }
 
-/** A model provider from hub.json. */
+/** A model provider from hub.json — a flat `{ name, label }` entry. */
 export interface HubProvider {
-  [key: string]: { label: string }
+  /** provider key (e.g. 'unsloth', 'black_forest_labs') */
+  name: string
+  /** human-readable label (e.g. 'Unsloth') */
+  label: string
 }
 
 /** Entry in hub.json repo.diffusion — a quantized diffusion model from a HuggingFace repo. */
@@ -42,17 +57,39 @@ export interface HubDiffusionEntry {
   diffusion_type: string
   /** HuggingFace repo URL */
   url: string
+  /** short description shown in the model picker (from hub.json) */
+  description?: string
+  /**
+   * optional repo-relative folder of `url` to restrict the scan to
+   * (e.g. '/TURBO' — that folder's direct files); '/' scans only the repo
+   * root's direct files (no recursion)
+   */
+  path?: string
+}
+
+/** One file of an encoder bundle (sd3.5-style). */
+export interface HubEncoderDefault {
+  /** repo-relative file path (or full URL) of the encoder file */
+  file: string
+  /** flag name the file is passed as at spawn (e.g. 'clip_g', 't5xxl') */
+  use_as: string
 }
 
 /** Encoder entry from hub.json repo.encoder. */
 export interface HubEncoderEntry {
   /** provider key (e.g. 'unsloth', 'abenzerps') — selects the download subdirectory */
   provider?: string
-  /** human-readable label (e.g. 'Qwen3 VL 8B Instruct') */
-  label: string
+  /** human-readable label (unused by the bundle path; bundle descriptors take their label from the file basename) */
+  label?: string
   url: string
-  /** repo-relative file path (or full URL) of the default encoder */
-  default: string
+  /**
+   * Single-file shape: repo-relative file path (or full URL) of the default encoder.
+   * Bundle shape: an array of `{ file, use_as }` pairs (SD3.5-style multi-encoder).
+   * Exactly one of `default` / `defaults` is expected per entry.
+   */
+  default?: string
+  /** array of `{ file, use_as }` pairs — the multi-file encoder bundle */
+  defaults?: HubEncoderDefault[]
 }
 
 /** VAE entry from hub.json repo.vae. */
@@ -75,12 +112,8 @@ export interface HubVisionEntry {
 }
 
 export interface HubConfig {
-  /** config name (e.g. 'myriad_frame') */
-  name: string
-  /** human-readable label (e.g. 'Myriad Frame') */
-  label: string
-  /** config version (e.g. '1.0.0') */
-  version: string
+  /** "last updated" marker carried by the file (and the override) as-is */
+  updatedOn: string
   /** top-level diffusion model definitions */
   diffusion_models: HubDiffusionModel[]
   /** available model providers */
@@ -88,10 +121,10 @@ export interface HubConfig {
   repo: {
     /** diffusionType -> VAE repo + default file; the legacy plain-URL form is still accepted at runtime */
     vae: Record<string, HubVaeEntry | string>
-    /** diffusionType -> encoder repo + default file */
+    /** diffusionType -> encoder repo + default file (single-file `default`) or encoder bundle (`defaults[]`) */
     encoder: Record<string, HubEncoderEntry>
-    /** diffusionType -> vision (mmproj) repo + default file, when the diffusion_type needs a vision model */
-    vision: Record<string, HubVisionEntry>
+    /** diffusionType -> vision (mmproj) repo + default file, when the diffusion_type needs a vision model; absent when none does */
+    vision?: Record<string, HubVisionEntry>
     /** list of downloadable diffusion model quantizations */
     diffusion: HubDiffusionEntry[]
   }
@@ -99,15 +132,64 @@ export interface HubConfig {
 
 // ---------- configurations/sampling.json ----------
 export interface SamplingDefaults {
+  /** how the model file is passed to sd-cli: 'standalone' (default) passes
+   *  weights-only files via `--diffusion-model`, with conditioners/VAE as
+   *  separate files; 'all_in_one' passes a full checkpoint (conditioners +
+   *  VAE inside the file) via `--model` */
+  diffusion_behavior: 'all_in_one' | 'standalone'
+  /** whether this diffusion type accepts reference images at all;
+   *  gates the 'Use previous image' checkbox and previous-image chaining */
+  allow_reference: boolean
   max_reference: number
+  /** img2img support: when true AND 'Use previous image' is checked, the
+   *  referenced image is passed as the init image (--init-img) instead of
+   *  a reference (--ref-image) */
+  img2img: boolean
+  /** denoise strength for img2img runs — emitted as `--strength` only
+   *  alongside the init image (sd-cli default 0.75) */
+  strength: number
   steps: number
   cfg: number
   sampler: string
+  scheduler?: string | null
+  negative?: string | null
   width: number
   height: number
 }
 
 export type SamplingConfig = Record<string, SamplingDefaults>
+
+/** Canonical list of sd-cli sampling methods (from `--sampling-method` help). */
+export const SAMPLER_METHODS = [
+  'euler', 'euler_a', 'heun', 'dpm2', 'dpm++2s_a', 'dpm++2m', 'dpm++2mv2',
+  'ipndm', 'ipndm_v', 'lcm', 'ddim_trailing', 'tcd', 'res_multistep', 'res_2s',
+  'er_sde', 'euler_cfg_pp', 'euler_a_cfg_pp', 'euler_ge', 'dpm++2m_sde',
+  'dpm++2m_sde_bt', 'lms'
+] as const
+
+/** Canonical list of sd-cli schedulers (from `--scheduler` help). */
+export const SCHEDULERS = [
+  'discrete', 'karras', 'exponential', 'ays', 'gits', 'sgm_uniform', 'simple',
+  'smoothstep', 'kl_optimal', 'lcm', 'bong_tangent', 'ltx2', 'logit_normal',
+  'flux2', 'flux', 'beta', 'llada_image'
+] as const
+
+/**
+ * App-level default sampler — the app always emits `--sampling-method`, and
+ * sd-cli's own default is model-family-dependent (euler for Flux/SD3/Wan,
+ * euler_a otherwise). Used by the ChatPanel request fallback
+ * (`sampler: s?.sampler ?? DEFAULT_SAMPLER`), replacing the hardcoded 'euler'
+ * literal so the default lives in one place.
+ */
+export const DEFAULT_SAMPLER = 'euler'
+
+/**
+ * Sentinel for the Scheduler dropdown: emit no --scheduler flag (sd-cli
+ * default). Also the value stored in a session override when the user picks
+ * "model-specific" — session overrides never store null for the scheduler, so
+ * downstream checks stay single-path.
+ */
+export const SCHEDULER_MODEL_DEFAULT = 'model-specific'
 
 // ---------- configurations/resolution.json ----------
 export interface ResolutionEntry {
@@ -134,11 +216,43 @@ export type RuntimeKey =
 /** version (e.g. "987") -> runtime key -> download url */
 export type RuntimeConfig = Record<string, Partial<Record<RuntimeKey, string>>>
 
+/** Result of `runtime:checkUpdates` (Settings → Runtime → Check). */
+export interface RuntimeCheckResult {
+  /** true when the remote config differed from the active one and was written */
+  updated: boolean
+  /** versions present in the remote config but not in the previous one */
+  newVersions: string[]
+  /** versions present in the previous config but not in the remote one */
+  removedVersions: string[]
+}
+
+// ---------- configurations/application.json ----------
+/** App identity (name / label / version), shipped with the app. */
+export interface ApplicationConfig {
+  /** machine name (e.g. 'myriad_frame') */
+  name: string
+  /** human-readable label (e.g. 'Myriad Frame') */
+  label: string
+  /** app version (e.g. '0.1.1'); kept manually in sync with package.json */
+  version: string
+}
+
+/** Result of `hub:checkUpdates` (Settings → Models → Check). */
+export interface HubCheckResult {
+  /** true when the remote config differed from the active one and was written */
+  updated: boolean
+  /** diffusion model names present in the remote config but not in the previous one */
+  addedModels: string[]
+  /** diffusion model names present in the previous config but not in the remote one */
+  removedModels: string[]
+}
+
 export interface AllConfigs {
   hub: HubConfig
   sampling: SamplingConfig
   resolution: ResolutionConfig
   runtime: RuntimeConfig
+  application: ApplicationConfig
 }
 
 // ---------- hub catalog (cached) ----------
@@ -156,6 +270,10 @@ export interface CatalogEntry {
   isDefault?: boolean
   repo?: string
   provider?: string
+  /** per-repo short description (from hub.json diffusion entries) */
+  description?: string
+  /** for an encoder bundle file, the CLI flag name it is passed as (e.g. 'clip_g', 't5xxl') */
+  useAs?: string
 }
 
 export interface HubCatalog {
@@ -184,12 +302,36 @@ export interface ChatMessage {
   createdAt: number
 }
 
+/** Composer inputs a session remembers. Optional — legacy session files lack it. */
+/** The sampling rows a session may override (everything from the Sampling
+ *  settings except the Negative textarea, which has its own field, and the
+ *  width/height rows, which are no longer overridable per session — the
+ *  resolution selected in the chat panel always wins). */
+export type SessionSamplingOverride = Partial<
+  Pick<SamplingDefaults, 'steps' | 'cfg' | 'strength' | 'sampler' | 'scheduler'>
+>
+
+export interface SessionInputs {
+  /** diffusion model file name (CatalogEntry.name) */
+  model?: string
+  /** diffusion_type of the saved model — narrows catalog re-resolution */
+  diffusionType?: string
+  /** saved resolution entry */
+  resolution?: ResolutionEntry
+  /** per-session negative prompt; empty string clears */
+  negativePrompt?: string
+  /** per-session sampling override; null clears */
+  sampling?: SessionSamplingOverride | null
+}
+
 export interface Session {
   id: string
   name: string
   createdAt: number
   updatedAt: number
   messages: ChatMessage[]
+  /** remembered composer inputs (selected model + resolution) */
+  inputs?: SessionInputs
 }
 
 // ---------- settings (data/settings.json) ----------
@@ -206,6 +348,8 @@ export interface Settings {
   sampling?: Record<string, Partial<SamplingDefaults>>
   /** global performance / inference flags (applied to every generation) */
   performance?: PerformanceSettings
+  /** renderer theme key (see ThemeKey); applied via documentElement data-theme */
+  theme?: ThemeKey
 }
 
 export type FlashAttentionMode = 'on' | 'off' | 'auto'
@@ -237,6 +381,15 @@ export interface PerformanceSettings {
 }
 
 // ---------- generation ----------
+/** A resolved encoder file and the CLI flag name it is passed under at spawn. */
+export interface EncoderRef {
+  name: string
+  useAs: string
+  /** encoder provider key (hub.json) — disambiguates a basename collision
+   *  across provider subdirectories */
+  provider?: string
+}
+
 export interface GenerationRequest {
   sessionId: string
   prompt: string
@@ -246,8 +399,16 @@ export interface GenerationRequest {
   diffusionType: string
   /** vae file name (from models dir) */
   vae?: string
-  /** encoder file name (from models dir) */
+  /** vae provider key (hub.json) — disambiguates a basename collision across
+   *  provider subdirectories (e.g. black_forest_labs vs huaweilin for sd3_5) */
+  vaeProvider?: string
+  /** encoder file name (from models dir) — single-file legacy path */
   encoder?: string
+  /** encoder provider key (hub.json) — disambiguates a basename collision
+   *  across provider subdirectories for the single-file (legacy) path */
+  encoderProvider?: string
+  /** encoder bundle (SD3.5-style multi-encoder): resolved files + their CLI flag names */
+  encoders?: EncoderRef[]
   /** vision (mmproj) file name (from models dir) */
   vision?: string
   resolution: { width: number; height: number }
@@ -259,6 +420,12 @@ export interface GenerationRequest {
   steps: number
   cfg: number
   sampler: string
+  /** sigma scheduler; omitted or 'model-specific' ⇒ no --scheduler flag */
+  scheduler?: string
+  /** negative prompt for this generation; empty/omitted ⇒ no --negative-prompt flag */
+  negativePrompt?: string
+  /** denoise strength for img2img runs (sampling.json `strength`) */
+  strength: number
   /** global performance flags applied to this generation */
   performance?: Partial<PerformanceSettings>
 }
@@ -311,6 +478,56 @@ export interface DownloadProgress {
   phase?: 'downloading' | 'extracting'
 }
 
+// ---------- downloads registry ----------
+/** Lifecycle status of a persisted model download entry. */
+export type DownloadStatus = 'pending' | 'downloading' | 'failed'
+
+/**
+ * Message carried by the error that rejects a download promise when the user
+ * cancels (or pauses) it. Main throws it (`DownloadAbortError`); the renderer
+ * matches on the message — Electron IPC preserves `message` but not the error
+ * class — to suppress misleading "download failed" toasts for a deliberate
+ * cancel.
+ */
+export const DOWNLOAD_ABORTED_MESSAGE = 'Download aborted'
+
+/**
+ * A persisted model download record (data/downloads.json). Keyed by `url` in
+ * the registry; carries no byte counts — live progress is tracked separately
+ * via `models:progress` events.
+ */
+export interface DownloadEntry {
+  type: ModelType
+  url: string
+  /** resolved provider key, stored as 'default' when the caller omitted it */
+  provider: string
+  /** file name (basename of the URL path) */
+  name: string
+  /** epoch ms when the entry was (re)queued; drives retry ordering */
+  startedAt: number
+  status: DownloadStatus
+  /** true when the caller requested a force-redownload */
+  force?: boolean
+  /** error message, present while status === 'failed' */
+  error?: string
+}
+
+/**
+ * Shape returned by `downloads:list` and carried on the `downloads:changed`
+ * push event.
+ */
+export interface DownloadsListResult {
+  models: DownloadEntry[]
+  /** runtime row for the selected runtime version */
+  runtime: {
+    version: string
+    installed: boolean
+    downloading: boolean
+    phase?: 'downloading' | 'extracting'
+  }
+  paused: boolean
+}
+
 // ---------- init pipeline ----------
 export type InitStage = 'platform' | 'runtime' | 'catalog' | 'done'
 
@@ -327,4 +544,16 @@ export interface InitStatus {
 /** Full init state, pulled by the renderer on mount to catch up on missed events. */
 export interface InitState extends InitStatus {
   ready: boolean
+}
+
+// ---------- logging ----------
+/** Renderer console levels forwarded over `logs:forward`. */
+export type LogLevel = 'log' | 'info' | 'warn' | 'error' | 'debug'
+
+/** Shape returned by `logs:get` (Settings → Logs, read on demand). */
+export interface LogsInfo {
+  /** decoded tail of data/logs/latest.log (at most the last 1 MB) */
+  content: string
+  /** full file size in bytes (content may be a shorter tail) */
+  size: number
 }
