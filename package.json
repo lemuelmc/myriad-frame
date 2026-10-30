@@ -1,6 +1,6 @@
 {
   "name": "myriad_frame",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Myriad Frame - an Electron front-end for sd-cli (stable-diffusion.cpp)",
   "main": "./out/main/index.js",
   "author": "Myriad Frame",
