@@ -125,7 +125,7 @@ data/
 
 ## Screenshots
 
-<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;">
+<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;">
   <figure style="margin:0"><img src="docs/assets/improved_model_selector.png" alt="Model picker dialog" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Model picker</figcaption></figure>
   <figure style="margin:0"><img src="docs/assets/improved_model_management.png" alt="Model management dialog" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Model management</figcaption></figure>
   <figure style="margin:0"><img src="docs/assets/sampling_settings.png" alt="Sampling settings" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Sampling settings</figcaption></figure>
