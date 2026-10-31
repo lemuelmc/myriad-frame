@@ -44,3 +44,23 @@ nsis:
 
 portable:
   artifactName: ${productName}-${version}-portable-${os}-${arch}.exe
+
+# Linux target: AppImage + deb.
+# Building requires the appimage toolchain (e.g. `apt install appimage-tools`)
+# and, for the 7-Zip portable stage on Windows, a shell with the
+# "Create symbolic links" privilege.
+linux:
+  target:
+    - appimage
+    - deb
+  icon: src/assets/logo-square-small.png
+  category: Graphics
+
+# macOS target: signed DMG. Codesigning is left off (see win section note).
+# Cross-building macOS from another OS needs `codesign`/`productbuild` available
+# (Xcode command-line tools) or the build will fail at the packaging step.
+mac:
+  target:
+    - dmg
+  icon: src/assets/logo-square-small.png
+  category: public.app-category.graphics-design
