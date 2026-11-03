@@ -27,3 +27,4 @@ This version expands the kinds of models you can use and adds powerful new ways 
 - **New website** — a landing page now showcases the app's features, screenshots, and a video demo, making it easier to learn what it can do.
 - **Smoother downloads** — background checks for new settings run quietly at startup without interrupting your work, and failed checks are treated as "nothing new" rather than an error.
 - **More models to choose from** — the built-in catalog grew with new providers and model variants, so there are more styles and sizes to pick from.
+
