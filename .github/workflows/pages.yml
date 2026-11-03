@@ -2,7 +2,7 @@ name: Deploy landing page to GitHub Pages
 
 on:
   push:
-    branches: ['main']
+    branches: ['master']
   workflow_dispatch:
 
 # Only allow a single concurrent deployment.
@@ -28,18 +28,12 @@ jobs:
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
-        # Restrict the Pages artifact to the site/ folder. configure-pages owns
-        # the `directory` input; deploy-pages does not, so a directory here is
-        # silently ignored and the whole repo gets deployed instead.
-        with:
-          directory: site
 
-      - name: Deploy site/ to GitHub Pages
-        id: deployment
-        # Uploads a GitHub Pages artifact from site/ and deploys it.
-        # For a project repo, the base path (e.g. /myriad-frame/) is auto-detected.
-        uses: actions/deploy-pages@v4
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          # configure-pages uploads the artifact named `pages_artifact` (the
-          # deploy-pages default); the old `github-pages` name never matched it.
-          artifact_name: pages_artifact
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
