@@ -274,7 +274,6 @@ export function createSdCliService(): SdCliService {
       /\s/.test(a) && !(a.startsWith('"') && a.endsWith('"')) ? `"${a}"` : a
     // Debug aid: log the complete command line (binary + args) so generation
     // issues can be diagnosed from the main-process console.
-    console.log(`[sd-cli] ${[binary, ...args.map(quoteArg)].join(' ')}`)
     const child = spawn(binary, args, {
       cwd: dataRoot(),
       env: { ...process.env },
