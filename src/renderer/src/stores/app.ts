@@ -6,7 +6,15 @@
  */
 
 import { defineStore } from 'pinia'
-import type { AllConfigs, PlatformInfo, HubCatalog, ResolutionEntry, InitStage } from '@shared/types'
+import type {
+  AllConfigs,
+  PlatformInfo,
+  HubCatalog,
+  ResolutionEntry,
+  InitStage,
+  ConfigUpdateStatus
+} from '@shared/types'
+import { toast } from '../toast'
 
 export const useAppStore = defineStore('app', {
   state: () => ({
@@ -19,6 +27,14 @@ export const useAppStore = defineStore('app', {
     catalog: null as HubCatalog | null,
     catalogScanning: false,
     catalogMessage: '',
+    /**
+     * Update-toast dedupe flags (in-memory only, reset every launch): a flag
+     * is set when its launch-update toast has been shown this session, so the
+     * updates:available push and the updates:get pull can both deliver
+     * without double-toasting. No persistence — an unapplied update re-toasts
+     * on every launch by design.
+     */
+    notified: { hub: false, runtime: false } as Record<'hub' | 'runtime', boolean>,
     about: null as {
       name: string
       version: string
@@ -47,6 +63,27 @@ export const useAppStore = defineStore('app', {
     },
     async loadAbout() {
       this.about = await window.api.about()
+    },
+    /**
+     * Toast the launch-time update-check result (detect-only — applying is a
+     * manual Settings → Check action). Called from both delivery paths: the
+     * `updates:available` push and the `updates:get` pull-on-mount; the
+     * `notified` flags make the pair idempotent. null (check not completed
+     * yet) is a no-op.
+     */
+    notifyUpdates(status: ConfigUpdateStatus | null): void {
+      if (!status) return
+      const messages: Record<'hub' | 'runtime', string> = {
+        hub: 'New models available. Go to Settings → Models and click "Check" and "Refresh hub" to update the model catalog.',
+        runtime: 'New runtime available for downloads. Go to Settings → Runtime and click "Check" to update the catalog.'
+      }
+      for (const key of ['hub', 'runtime'] as const) {
+        if (status[key] && !this.notified[key]) {
+          this.notified[key] = true
+          // 10 s TTL — these are action prompts, not confirmations.
+          toast(messages[key], 'info', 10000)
+        }
+      }
     },
     resolutionsFor(diffusionType: string): ResolutionEntry[] {
       return this.configs?.resolution[diffusionType] ?? []

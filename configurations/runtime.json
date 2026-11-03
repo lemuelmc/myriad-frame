@@ -1,4 +1,114 @@
 {
+  "1043": {
+    "windows_cuda12_libraries": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1043-3be2378/cudart-sd-bin-win-cu12-x64.zip",
+    "windows_cuda12": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1043-3be2378/sd-master-3be2378-bin-win-cuda12-x64.zip",
+    "windows_rocm": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1043-3be2378/sd-master-3be2378-bin-win-rocm-10.1.0-x64.zip",
+    "windows_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1043-3be2378/sd-master-3be2378-bin-win-cpu-x64.zip",
+    "windows_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1043-3be2378/sd-master-3be2378-bin-win-vulkan-x64.zip",
+    "macos_silicon": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1043-3be2378/sd-master-3be2378-bin-Darwin-macOS-26.6.2-arm64.zip",
+    "linux_amd": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1043-3be2378/sd-master-3be2378-bin-Linux-Ubuntu-24.04-x86_64-rocm-10.1.0.zip",
+    "linux_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1043-3be2378/sd-master-3be2378-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip",
+    "linux_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1043-3be2378/sd-master-3be2378-bin-Linux-Ubuntu-24.04-x86_64.zip"
+  },
+  "1039": {
+    "windows_cuda12_libraries": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1039-290148d/cudart-sd-bin-win-cu12-x64.zip",
+    "windows_cuda12": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1039-290148d/sd-master-290148d-bin-win-cuda12-x64.zip",
+    "windows_rocm": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1039-290148d/sd-master-290148d-bin-win-rocm-10.1.0-x64.zip",
+    "windows_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1039-290148d/sd-master-290148d-bin-win-cpu-x64.zip",
+    "windows_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1039-290148d/sd-master-290148d-bin-win-vulkan-x64.zip",
+    "macos_silicon": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1039-290148d/sd-master-290148d-bin-Darwin-macOS-26.6.2-arm64.zip",
+    "linux_amd": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1039-290148d/sd-master-290148d-bin-Linux-Ubuntu-24.04-x86_64-rocm-10.1.0.zip",
+    "linux_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1039-290148d/sd-master-290148d-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip",
+    "linux_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1039-290148d/sd-master-290148d-bin-Linux-Ubuntu-24.04-x86_64.zip"
+  },
+  "1038": {
+    "windows_cuda12_libraries": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1038-133087d/cudart-sd-bin-win-cu12-x64.zip",
+    "windows_cuda12": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1038-133087d/sd-master-133087d-bin-win-cuda12-x64.zip",
+    "windows_rocm": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1038-133087d/sd-master-133087d-bin-win-rocm-10.1.0-x64.zip",
+    "windows_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1038-133087d/sd-master-133087d-bin-win-cpu-x64.zip",
+    "windows_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1038-133087d/sd-master-133087d-bin-win-vulkan-x64.zip",
+    "macos_silicon": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1038-133087d/sd-master-133087d-bin-Darwin-macOS-26.6.2-arm64.zip",
+    "linux_amd": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1038-133087d/sd-master-133087d-bin-Linux-Ubuntu-24.04-x86_64-rocm-10.1.0.zip",
+    "linux_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1038-133087d/sd-master-133087d-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip",
+    "linux_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1038-133087d/sd-master-133087d-bin-Linux-Ubuntu-24.04-x86_64.zip"
+  },
+  "1037": {
+    "windows_cuda12_libraries": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1037-5d33b1b/cudart-sd-bin-win-cu12-x64.zip",
+    "windows_cuda12": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1037-5d33b1b/sd-master-5d33b1b-bin-win-cuda12-x64.zip",
+    "windows_rocm": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1037-5d33b1b/sd-master-5d33b1b-bin-win-rocm-10.1.0-x64.zip",
+    "windows_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1037-5d33b1b/sd-master-5d33b1b-bin-win-cpu-x64.zip",
+    "windows_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1037-5d33b1b/sd-master-5d33b1b-bin-win-vulkan-x64.zip",
+    "macos_silicon": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1037-5d33b1b/sd-master-5d33b1b-bin-Darwin-macOS-26.6.2-arm64.zip",
+    "linux_amd": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1037-5d33b1b/sd-master-5d33b1b-bin-Linux-Ubuntu-24.04-x86_64-rocm-10.1.0.zip",
+    "linux_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1037-5d33b1b/sd-master-5d33b1b-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip",
+    "linux_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1037-5d33b1b/sd-master-5d33b1b-bin-Linux-Ubuntu-24.04-x86_64.zip"
+  },
+  "1031": {
+    "windows_cuda12_libraries": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1031-c6dfa9d/cudart-sd-bin-win-cu12-x64.zip",
+    "windows_cuda12": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1031-c6dfa9d/sd-master-c6dfa9d-bin-win-cuda12-x64.zip",
+    "windows_rocm": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1031-c6dfa9d/sd-master-c6dfa9d-bin-win-rocm-10.1.0-x64.zip",
+    "windows_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1031-c6dfa9d/sd-master-c6dfa9d-bin-win-cpu-x64.zip",
+    "windows_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1031-c6dfa9d/sd-master-c6dfa9d-bin-win-vulkan-x64.zip",
+    "macos_silicon": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1031-c6dfa9d/sd-master-c6dfa9d-bin-Darwin-macOS-26.6.2-arm64.zip",
+    "linux_amd": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1031-c6dfa9d/sd-master-c6dfa9d-bin-Linux-Ubuntu-24.04-x86_64-rocm-10.1.0.zip",
+    "linux_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1031-c6dfa9d/sd-master-c6dfa9d-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip",
+    "linux_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1031-c6dfa9d/sd-master-c6dfa9d-bin-Linux-Ubuntu-24.04-x86_64.zip"
+  },
+  "1030": {
+    "windows_cuda12_libraries": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1030-0a06712/cudart-sd-bin-win-cu12-x64.zip",
+    "windows_cuda12": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1030-0a06712/sd-master-0a06712-bin-win-cuda12-x64.zip",
+    "windows_rocm": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1030-0a06712/sd-master-0a06712-bin-win-rocm-10.1.0-x64.zip",
+    "windows_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1030-0a06712/sd-master-0a06712-bin-win-cpu-x64.zip",
+    "windows_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1030-0a06712/sd-master-0a06712-bin-win-vulkan-x64.zip",
+    "macos_silicon": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1030-0a06712/sd-master-0a06712-bin-Darwin-macOS-26.6.2-arm64.zip",
+    "linux_amd": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1030-0a06712/sd-master-0a06712-bin-Linux-Ubuntu-24.04-x86_64-rocm-10.1.0.zip",
+    "linux_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1030-0a06712/sd-master-0a06712-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip",
+    "linux_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1030-0a06712/sd-master-0a06712-bin-Linux-Ubuntu-24.04-x86_64.zip"
+  },
+  "1028": {
+    "windows_cuda12_libraries": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1028-37bc88b/cudart-sd-bin-win-cu12-x64.zip",
+    "windows_cuda12": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1028-37bc88b/sd-master-37bc88b-bin-win-cuda12-x64.zip",
+    "windows_rocm": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1028-37bc88b/sd-master-37bc88b-bin-win-rocm-10.1.0-x64.zip",
+    "windows_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1028-37bc88b/sd-master-37bc88b-bin-win-cpu-x64.zip",
+    "windows_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1028-37bc88b/sd-master-37bc88b-bin-win-vulkan-x64.zip",
+    "macos_silicon": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1028-37bc88b/sd-master-37bc88b-bin-Darwin-macOS-26.6.2-arm64.zip",
+    "linux_amd": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1028-37bc88b/sd-master-37bc88b-bin-Linux-Ubuntu-24.04-x86_64-rocm-10.1.0.zip",
+    "linux_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1028-37bc88b/sd-master-37bc88b-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip",
+    "linux_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1028-37bc88b/sd-master-37bc88b-bin-Linux-Ubuntu-24.04-x86_64.zip"
+  },
+  "1027": {
+    "windows_cuda12_libraries": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1027-e7b7ec6/cudart-sd-bin-win-cu12-x64.zip",
+    "windows_cuda12": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1027-e7b7ec6/sd-master-e7b7ec6-bin-win-cuda12-x64.zip",
+    "windows_rocm": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1027-e7b7ec6/sd-master-e7b7ec6-bin-win-rocm-10.1.0-x64.zip",
+    "windows_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1027-e7b7ec6/sd-master-e7b7ec6-bin-win-cpu-x64.zip",
+    "windows_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1027-e7b7ec6/sd-master-e7b7ec6-bin-win-vulkan-x64.zip",
+    "macos_silicon": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1027-e7b7ec6/sd-master-e7b7ec6-bin-Darwin-macOS-26.6.2-arm64.zip",
+    "linux_amd": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1027-e7b7ec6/sd-master-e7b7ec6-bin-Linux-Ubuntu-24.04-x86_64-rocm-10.1.0.zip",
+    "linux_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1027-e7b7ec6/sd-master-e7b7ec6-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip",
+    "linux_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1027-e7b7ec6/sd-master-e7b7ec6-bin-Linux-Ubuntu-24.04-x86_64.zip"
+  },
+  "1026": {
+    "windows_cuda12_libraries": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1026-997478a/cudart-sd-bin-win-cu12-x64.zip",
+    "windows_cuda12": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1026-997478a/sd-master-997478a-bin-win-cuda12-x64.zip",
+    "windows_rocm": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1026-997478a/sd-master-997478a-bin-win-rocm-10.1.0-x64.zip",
+    "windows_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1026-997478a/sd-master-997478a-bin-win-cpu-x64.zip",
+    "windows_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1026-997478a/sd-master-997478a-bin-win-vulkan-x64.zip",
+    "macos_silicon": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1026-997478a/sd-master-997478a-bin-Darwin-macOS-26.6.2-arm64.zip",
+    "linux_amd": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1026-997478a/sd-master-997478a-bin-Linux-Ubuntu-24.04-x86_64-rocm-10.1.0.zip",
+    "linux_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1026-997478a/sd-master-997478a-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip",
+    "linux_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1026-997478a/sd-master-997478a-bin-Linux-Ubuntu-24.04-x86_64.zip"
+  },
+  "1025": {
+    "windows_cuda12_libraries": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1025-8ee08e3/cudart-sd-bin-win-cu12-x64.zip",
+    "windows_cuda12": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1025-8ee08e3/sd-master-8ee08e3-bin-win-cuda12-x64.zip",
+    "windows_rocm": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1025-8ee08e3/sd-master-8ee08e3-bin-win-rocm-10.1.0-x64.zip",
+    "windows_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1025-8ee08e3/sd-master-8ee08e3-bin-win-cpu-x64.zip",
+    "windows_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1025-8ee08e3/sd-master-8ee08e3-bin-win-vulkan-x64.zip",
+    "macos_silicon": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1025-8ee08e3/sd-master-8ee08e3-bin-Darwin-macOS-26.6.2-arm64.zip",
+    "linux_amd": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1025-8ee08e3/sd-master-8ee08e3-bin-Linux-Ubuntu-24.04-x86_64-rocm-10.1.0.zip",
+    "linux_vulkan": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1025-8ee08e3/sd-master-8ee08e3-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip",
+    "linux_cpu": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1025-8ee08e3/sd-master-8ee08e3-bin-Linux-Ubuntu-24.04-x86_64.zip"
+  },
   "1017": {
     "windows_cuda12_libraries": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1017-be48649/cudart-sd-bin-win-cu12-x64.zip",
     "windows_cuda12": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1017-be48649/sd-master-be48649-bin-win-cuda12-x64.zip",

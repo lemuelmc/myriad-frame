@@ -1,3 +1,9 @@
+<!--
+Myriad Frame — Electron + Vue 3 desktop front-end for sd-cli (stable-diffusion.cpp).
+Author: Lemuel Raganas
+License: Apache License 2.0 — permissive; allows use, modification, and distribution
+(commercial or private) provided the license notice and copyright are preserved.
+-->
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type {
@@ -6,7 +12,8 @@ import type {
   ModelType,
   PerformanceSettings,
   RuntimeKey,
-  SamplingDefaults
+  SamplingDefaults,
+  TokenEntry
 } from '@shared/types'
 import {
   DOWNLOAD_ABORTED_MESSAGE,
@@ -21,6 +28,8 @@ import { toast } from '../toast'
 import { confirm } from '../confirm'
 import { listThemes } from '../theme'
 import DownloadProgress from './DownloadProgress.vue'
+import TokenEntryDialog from './TokenEntryDialog.vue'
+import LoraBrowser from './LoraBrowser.vue'
 import logoWide from '../../../assets/logo-wide-small.png'
 import releaseNotesMd from '../../../../configurations/release-notes.md?raw'
 import { marked } from 'marked'
@@ -29,7 +38,7 @@ const emit = defineEmits<{ close: [] }>()
 const appStore = useAppStore()
 const settingsStore = useSettingsStore() 
 
-type Section = 'appearance' | 'about' | 'release-notes' | 'models' | 'vae' | 'encoder' | 'vision' | 'sampling' | 'runtime' | 'performance' | 'downloads' | 'logs'
+type Section = 'appearance' | 'about' | 'release-notes' | 'models' | 'vae' | 'encoder' | 'vision' | 'tokenizer' | 'lora' | 'sampling' | 'runtime' | 'performance' | 'downloads' | 'tokens' | 'logs'
 const section = ref<Section>('appearance')  // default to appearance instead of 'about'
 
 const sections: { id: Section; label: string }[] = [
@@ -39,10 +48,13 @@ const sections: { id: Section; label: string }[] = [
   { id: 'vae', label: 'VAE' },
   { id: 'encoder', label: 'Text Encoder' },
   { id: 'vision', label: 'Vision' },
+  { id: 'tokenizer', label: 'Tokenizer' },
+  { id: 'lora', label: 'LoRA' },
   { id: 'sampling', label: 'Sampling' },
   { id: 'performance', label: 'Performance' },
   { id: 'runtime', label: 'Runtime' },
   { id: 'downloads', label: 'Downloads' },
+  { id: 'tokens', label: 'Tokens' },
   { id: 'appearance', label: 'Appearance' },
   { id: 'logs', label: 'Logs' }
 ]
@@ -219,6 +231,14 @@ function installedDlState(type: ModelType, name: string) {
   const e = catalogEntryFor(type, name)
   return e ? settingsStore.modelDownloads[`${type}:${e.url}`] : undefined
 }
+/**
+ * Catalog description for an installed model file, resolved by file name —
+ * the same lookup `installedDlState` uses. Undefined for files that are not
+ * in the catalog (e.g. manually placed) — nothing renders then.
+ */
+function installedDesc(name: string): string | undefined {
+  return catalogEntryFor('diffusion', name)?.description
+}
 function diffusionTypeForName(name: string): string | undefined {
   return diffusionEntries.value.find((e) => e.name === name)?.diffusionType
 }
@@ -249,7 +269,8 @@ function dependencyEntries(dt: string): CatalogEntry[] {
       : [defaultDepEntry('encoder', dt)].filter((x): x is CatalogEntry => Boolean(x))
   }
   const vis = defaultDepEntry('vision', dt)
-  return [v, ...enc, vis].filter((x): x is CatalogEntry => Boolean(x))
+  const tok = defaultDepEntry('tokenizer', dt)
+  return [v, ...enc, vis, tok].filter((x): x is CatalogEntry => Boolean(x))
 }
 const depDownloads = computed(() => {
   const out: { key: string; label: string; state: ModelDownloadState }[] = []
@@ -433,6 +454,62 @@ function visionHasEntries(): boolean {
   )
 } 
 
+// ---------- tokenizer ----------
+const tokenizerType = ref(diffusionTypes.value[0] ?? '')
+const tokenizerFiles = computed(() => settingsStore.modelLists.tokenizer ?? [])
+const tokenizerEntries = computed(() =>
+  (appStore.catalog?.entries ?? []).filter((e) => e.type === 'tokenizer' && e.diffusionType === tokenizerType.value)
+)
+/**
+ * Tokenizer-section search filter, mirroring the Models section: normalized
+ * (space, '-' and '_' equivalent) + trimmed needle; an empty needle (blank
+ * query or separators only) means no filtering. `tokenizerInstalledNames` (the
+ * "installed" tag on hub rows) keeps deriving from the unfiltered
+ * `tokenizerFiles` so installed tags don't vanish while a query is active;
+ * `defaultTokenizer` is keyed by name and unaffected.
+ */
+const tokenizerQuery = ref('')
+const tokenizerNeedle = computed(() => normalizeForSearch(tokenizerQuery.value).trim())
+const filteredTokenizerFiles = computed(() => {
+  const needle = tokenizerNeedle.value
+  if (!needle) return tokenizerFiles.value
+  return tokenizerFiles.value.filter((f) => normalizeForSearch(f.name).includes(needle))
+})
+const filteredTokenizerEntries = computed(() => {
+  const needle = tokenizerNeedle.value
+  if (!needle) return tokenizerEntries.value
+  return tokenizerEntries.value.filter((e) => matchesSearch(e, needle, hubProviders.value))
+})
+const tokenizerInstalledNames = computed(() => new Set(tokenizerFiles.value.map((f) => f.name)))
+const defaultTokenizer = computed(() => settingsStore.settings.defaultTokenizer?.[tokenizerType.value] ?? '')
+async function setDefaultTokenizer(name: string): Promise<void> {
+  const map = { ...(settingsStore.settings.defaultTokenizer ?? {}) }
+  if (name) map[tokenizerType.value] = name
+  else delete map[tokenizerType.value]
+  await settingsStore.save({ defaultTokenizer: map })
+}
+async function downloadTokenizer(e: CatalogEntry): Promise<void> {
+  try {
+    await settingsStore.downloadModel('tokenizer', e.url, e.provider)
+    toast(`Downloaded ${e.name}`, 'ok')
+  } catch (err) {
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
+  }
+}
+async function removeTokenizer(name: string): Promise<void> {
+  const ok = await confirm(`Delete ${name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
+  if (!ok) return
+  await settingsStore.removeModel('tokenizer', name)
+}
+function tokenizerDlState(e: CatalogEntry) {
+  return settingsStore.modelDownloads[`tokenizer:${e.url}`]
+}
+function tokenizerHasEntries(): boolean {
+  return [...new Set((appStore.catalog?.entries ?? []).map((e) => e.diffusionType))].some((dt) =>
+    (appStore.catalog?.entries ?? []).some((e) => e.type === 'tokenizer' && e.diffusionType === dt)
+  )
+}
+
 // ---------- sampling ----------
 const samplingType = ref(diffusionTypes.value[0] ?? '')
 const samplingBase = computed<SamplingDefaults | null>(() => appStore.configs?.sampling[samplingType.value] ?? null)
@@ -460,6 +537,11 @@ async function saveSampling(): Promise<void> {
   for (const k of ['sampler', 'scheduler', 'negative'] as const) {
     if (typeof o[k] === 'string' && !(o[k] as string).trim()) delete o[k]
   }
+  // flow_shift: only a finite number (incl 0) is kept — '' / null / undefined
+  // / non-numeric junk deletes the override key so the sampling.json default
+  // applies.
+  const fs = o.flow_shift
+  if (fs !== undefined && !(typeof fs === 'number' && Number.isFinite(fs))) delete o.flow_shift
   samplingOverride.value = o
   const map = { ...(settingsStore.settings.sampling ?? {}) }
   if (Object.keys(samplingOverride.value).length) map[samplingType.value] = samplingOverride.value
@@ -652,6 +734,84 @@ async function cancelRuntime(): Promise<void> {
   }
 }
 
+// ---------- tokens (data/hub-tokens.json) ----------
+const tokenEntries = ref<TokenEntry[]>([])
+/** Dialog open flag + the entry being edited (null = add mode). */
+const tokenDialogOpen = ref(false)
+const editingToken = ref<TokenEntry | null>(null)
+
+/** Loaded on section open via the section watcher (read on demand, never polled). */
+async function refreshTokens(): Promise<void> {
+  try {
+    tokenEntries.value = await window.api.tokensList()
+  } catch (err) {
+    toast(`Failed to load tokens: ${(err as Error).message}`, 'error')
+  }
+}
+function openAddToken(): void {
+  editingToken.value = null
+  tokenDialogOpen.value = true
+}
+function openEditToken(e: TokenEntry): void {
+  editingToken.value = e
+  tokenDialogOpen.value = true
+}
+function onTokenSaved(): void {
+  void refreshTokens()
+}
+async function deleteTokenEntry(e: TokenEntry): Promise<void> {
+  const ok = await confirm(`Delete token entry "${e.key}"?`, {
+    confirmLabel: 'Delete',
+    cancelLabel: 'Cancel'
+  })
+  if (!ok) return
+  try {
+    await window.api.tokensDelete(e.key)
+    toast(`Deleted ${e.key}`, 'ok')
+    await refreshTokens()
+  } catch (err) {
+    toast(`Delete failed: ${(err as Error).message}`, 'error')
+  }
+}
+async function importTokensFromFile(): Promise<void> {
+  try {
+    const res = await window.api.tokensImportFile()
+    if (res === null) return // canceled — silent no-op
+    toast(`Imported: ${res.added} added, ${res.updated} updated, ${res.skipped} skipped`, 'ok')
+    if (res.errors.length) {
+      const extra = res.errors.length > 1 ? ` (+${res.errors.length - 1} more)` : ''
+      toast(`${res.errors[0]}${extra}`, 'error')
+    }
+    await refreshTokens()
+  } catch (err) {
+    toast(`Import failed: ${(err as Error).message}`, 'error')
+  }
+}
+async function exportTokensToFile(): Promise<void> {
+  try {
+    const p = await window.api.tokensExportFile()
+    if (p === null) return // canceled — silent no-op
+    toast(`Exported to ${p}`, 'ok')
+  } catch (err) {
+    toast(`Export failed: ${(err as Error).message}`, 'error')
+  }
+}
+/** Pattern-type caption per row (mirrors the dialog's live preview). */
+function tokenPatternCaption(e: TokenEntry): string {
+  if (e.patternType === 'full-wildcard') {
+    return 'Full wildcard (ALL repos — a bad token here affects public downloads too)'
+  }
+  if (e.patternType === 'partial-wildcard') {
+    // Prefix SHAPE (source-agnostic): "org-level" for a single-segment
+    // prefix ("org/*") vs "nested" for a multi-segment one ("a/b/*"). On
+    // HuggingFace the nested form can never match (repo slugs are exactly
+    // org/repo) — a harmless dead entry.
+    const shape = e.repoPattern.slice(0, -2).includes('/') ? 'nested' : 'org-level'
+    return `Partial wildcard (${shape})`
+  }
+  return 'Exact match'
+}
+
 // ---------- logs ----------
 const logsContent = ref('')
 const logsSize = ref(0)
@@ -687,6 +847,7 @@ watch(
   section,
   (s) => {
     if (s === 'logs') void refreshLogs()
+    if (s === 'tokens') void refreshTokens()
   },
   { immediate: true }
 )
@@ -696,6 +857,7 @@ onMounted(async () => {
   await settingsStore.listModels('encoder')
   await settingsStore.listModels('vae')
   await settingsStore.listModels('vision')
+  await settingsStore.listModels('tokenizer')
   loadOverride()
 })
 </script> 
@@ -720,7 +882,6 @@ onMounted(async () => {
         </nav> 
 
         <div class="dialog-content">
-          <!-- ABOUT -->
           <section v-if="section === 'about'">
             <div class="about-section">
               <img :src="logoWide" alt="Myriad Frame" class="about-logo" />
@@ -743,14 +904,10 @@ onMounted(async () => {
                                   </table>
                                   <div class="about-footer">By: Lemuel Raganas</div>
                                   </section>
-
-          <!-- RELEASE NOTES -->
           <section v-if="section === 'release-notes'">
             <h3>Release Notes</h3>
             <div class="release-notes" v-html="releaseNotesHtml"></div>
           </section>
-
-          <!-- MODELS -->
           <section v-if="section === 'models'">
             <div class="section-head">
               <h3>Diffusion models</h3>
@@ -777,23 +934,26 @@ onMounted(async () => {
 
             <h4>Installed</h4>
             <ul class="file-list">
-              <li v-for="f in filteredModelFiles" :key="f.name">
-                <span class="mono">{{ f.name }}</span>
-                <span class="faint">{{ fmtBytes(f.size) }}</span>
-                <button
-                  class="icon"
-                  title="Download dependencies (VAE, text encoder, vision)"
-                  @click="downloadDependencies(f.name)"
-                >
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14" />
-                  </svg>
-                </button>
-                <button class="icon danger" title="Delete" @click="removeModel(f.name)">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14" />
-                  </svg>
-                </button>
+              <li v-for="f in filteredModelFiles" :key="f.name" class="dl-item">
+                <div class="dl-item-top">
+                  <span class="mono">{{ f.name }}</span>
+                  <span class="faint">{{ fmtBytes(f.size) }}</span>
+                  <button
+                    class="icon"
+                    title="Download dependencies (VAE, text encoder, vision)"
+                    @click="downloadDependencies(f.name)"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14" />
+                    </svg>
+                  </button>
+                  <button class="icon danger" title="Delete" @click="removeModel(f.name)">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14" />
+                    </svg>
+                  </button>
+                </div>
+                <div v-if="installedDesc(f.name)" class="dl-item-desc">{{ installedDesc(f.name) }}</div>
               </li>
               <li v-if="!modelFiles.length" class="muted">No models downloaded yet.</li>
               <li v-else-if="!filteredModelFiles.length" class="muted">No installed models match "{{ modelQuery }}"</li>
@@ -818,6 +978,11 @@ onMounted(async () => {
                   <div class="dl-item-top">
                     <span class="mono">{{ e.name }}</span>
                     <span v-if="e.quant" class="quant-tag">{{ e.quant }}</span>
+                    <span
+                      v-if="e.source === 'civitai'"
+                      class="auth-tag"
+                      title="Downloads from CivitAI — requires a CivitAI API token (Settings → Tokens)"
+                    >Auth</span>
                     <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
                     <template v-if="installedNames.has(e.name)">
                       <span class="ok-tag">installed</span>
@@ -845,6 +1010,7 @@ onMounted(async () => {
                       <button v-else class="dl-btn" @click="downloadEntry(e)">Download</button>
                     </template>
                   </div>
+                  <div v-if="e.description" class="dl-item-desc">{{ e.description }}</div>
                   <DownloadProgress
                     v-if="dlState(e)"
                     class="grow"
@@ -861,8 +1027,6 @@ onMounted(async () => {
               No models match "{{ modelQuery }}"
             </p>
           </section> 
-
-          <!-- VAE -->
           <section v-if="section === 'vae'">
             <h3>VAE</h3>
             <label class="muted">Diffusion type</label>
@@ -899,8 +1063,6 @@ onMounted(async () => {
               <li v-else-if="!filteredVaeEntries.length" class="muted">No VAE entries match "{{ vaeQuery }}"</li>
             </ul>
           </section> 
-
-          <!-- ENCODER -->
           <section v-if="section === 'encoder'">
             <div class="section-head">
               <h3>Text Encoder</h3>
@@ -988,8 +1150,6 @@ onMounted(async () => {
               <li v-else-if="!filteredEncoderEntries.length" class="muted">No text encoders match "{{ encoderQuery }}"</li>
             </ul>
           </section> 
-
-          <!-- VISION (mmproj) -->
           <section v-if="section === 'vision' && visionHasEntries()">
             <div class="section-head">
               <h3>Vision (mmproj)</h3>
@@ -1076,9 +1236,96 @@ onMounted(async () => {
               <li v-if="!visionEntries.length" class="muted">No vision entries for this diffusion type.</li>
               <li v-else-if="!filteredVisionEntries.length" class="muted">No vision models match "{{ visionQuery }}"</li>
             </ul>
-          </section> 
+          </section>
+          <section v-if="section === 'tokenizer' && tokenizerHasEntries()">
+            <div class="section-head">
+              <h3>Tokenizer</h3>
+              <button :disabled="appStore.catalogScanning" @click="refreshHub()">
+                {{ appStore.catalogScanning ? 'Scanning…' : 'Refresh hub' }}
+              </button>
+            </div>
+            <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p>
 
-          <!-- SAMPLING -->
+            <p class="muted">
+              The tokenizer (tokenizer.json) converts prompts into model tokens. Only present for
+              diffusion types that declare a tokenizer dependency.
+            </p>
+
+            <label class="muted">Diffusion type</label>
+            <select v-model="tokenizerType">
+              <option v-for="t in diffusionTypes" :key="t" :value="t">{{ t }}</option>
+            </select>
+
+            <input
+              v-model="tokenizerQuery"
+              class="model-search"
+              type="text"
+              placeholder="Filter tokenizers — space, '-' and '_' are equivalent"
+            />
+
+            <h4>Installed</h4>
+            <ul class="file-list">
+              <li v-for="f in filteredTokenizerFiles" :key="f.name">
+                <span class="mono">{{ f.name }}</span>
+                <span class="faint">{{ fmtBytes(f.size) }}</span>
+                <DownloadProgress
+                  v-if="installedDlState('tokenizer', f.name)"
+                  class="grow"
+                  :downloaded-bytes="installedDlState('tokenizer', f.name)!.downloadedBytes"
+                  :total-bytes="installedDlState('tokenizer', f.name)!.totalBytes"
+                />
+                <button class="icon danger" title="Delete" @click="removeTokenizer(f.name)">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14" />
+                  </svg>
+                </button>
+              </li>
+              <li v-if="!tokenizerFiles.length" class="muted">No tokenizers downloaded yet.</li>
+              <li v-else-if="!filteredTokenizerFiles.length" class="muted">No installed tokenizers match "{{ tokenizerQuery }}"</li>
+            </ul>
+
+            <h4>Available from hub</h4>
+            <ul class="file-list">
+              <li v-for="e in filteredTokenizerEntries" :key="e.id" class="dl-item">
+                <div class="dl-item-top">
+                  <span class="mono">{{ e.name }}</span>
+                  <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
+                  <template v-if="tokenizerInstalledNames.has(e.name)">
+                    <span class="ok-tag">installed</span>
+                  </template>
+                  <template v-else>
+                    <button
+                      v-if="tokenizerDlState(e)"
+                      class="dl-btn"
+                      disabled
+                      :title="`${tokenizerDlState(e)!.downloadedBytes} / ${tokenizerDlState(e)!.totalBytes} downloaded`"
+                    >
+                      Downloading…
+                    </button>
+                    <button v-else class="dl-btn" @click="downloadTokenizer(e)">Download</button>
+                  </template>
+                  <button
+                    class="set-default"
+                    :class="{ active: defaultTokenizer === e.name }"
+                    @click="setDefaultTokenizer(e.name)"
+                  >
+                    {{ defaultTokenizer === e.name ? 'Default' : 'Set default' }}
+                  </button>
+                </div>
+                <DownloadProgress
+                  v-if="tokenizerDlState(e)"
+                  class="grow"
+                  :downloaded-bytes="tokenizerDlState(e)!.downloadedBytes"
+                  :total-bytes="tokenizerDlState(e)!.totalBytes"
+                />
+              </li>
+              <li v-if="!tokenizerEntries.length" class="muted">No tokenizer entries for this diffusion type.</li>
+              <li v-else-if="!filteredTokenizerEntries.length" class="muted">No tokenizers match "{{ tokenizerQuery }}"</li>
+            </ul>
+          </section>
+          <section v-if="section === 'lora'">
+            <LoraBrowser />
+          </section>
           <section v-if="section === 'sampling'">
             <h3>Sampling</h3>
             <label class="muted">Diffusion type</label>
@@ -1119,6 +1366,12 @@ onMounted(async () => {
                   </td>
                 </tr>
                 <tr>
+                  <td>Flow shift</td>
+                  <td>
+                    <input v-model.number="samplingOverride.flow_shift" type="number" step="0.1" placeholder="(default)" style="width: 90px" />
+                  </td>
+                </tr>
+                <tr>
                   <td>Width</td>
                   <td><input v-model.number="samplingOverride.width" type="number" min="1" style="width: 90px" /></td>
                 </tr>
@@ -1151,8 +1404,6 @@ onMounted(async () => {
               <button @click="resetSampling()">Reset to defaults</button>
             </div>
           </section> 
-
-          <!-- PERFORMANCE -->
           <section v-if="section === 'performance'">
             <h3>Performance</h3>
             <p class="muted">
@@ -1247,8 +1498,6 @@ onMounted(async () => {
               every generation.
             </p>
           </section> 
-
-          <!-- RUNTIME -->
           <section v-if="section === 'runtime'">
             <div class="section-head">
               <h3>Runtime</h3>
@@ -1277,8 +1526,6 @@ onMounted(async () => {
                 :class="{ 'dl-item': settingsStore.runtimeDownloading?.version === v.version }"
               >
                 <template v-if="settingsStore.runtimeDownloading?.version === v.version">
-                  <!-- Downloading: stack the progress details below the row so
-                       they never overlap or clip against neighboring rows. -->
                   <div class="dl-item-top">
                     <span class="mono">v{{ v.version }}</span>
                     <span v-if="v.installed" class="ok-tag">installed</span>
@@ -1328,8 +1575,6 @@ onMounted(async () => {
               <span class="mono">{{ 'data/runtime/<version>/' }}</span>.
             </p>
           </section>
-
-          <!-- DOWNLOADS (control UI) -->
           <section v-if="section === 'downloads'">
             <div class="section-head">
               <h3>Downloads</h3>
@@ -1345,8 +1590,6 @@ onMounted(async () => {
               Model downloads are staged in <span class="mono">{{ 'data/tmp/' }}</span> and moved into
               place after a full, size-verified fetch. Background retries resume on launch.
             </p>
-
-            <!-- runtime row -->
             <template v-if="settingsStore.downloadsRuntime && settingsStore.downloadsRuntime.version">
               <ul class="file-list">
                 <li class="dl-entry">
@@ -1418,8 +1661,48 @@ onMounted(async () => {
               </li>
             </ul>
           </section>
+          <section v-if="section === 'tokens'">
+            <div class="section-head">
+              <h3>Tokens</h3>
+            </div>
+            <p class="faint">
+              Per-source auth tokens for private repos, stored in
+              <span class="mono">data/hub-tokens.json</span> keyed
+              <span class="mono">{{ '<source>:<repo>' }}</span>. A trailing
+              <span class="mono">*</span> is a wildcard:
+              <span class="mono">org/*</span> covers every repo of an org,
+              <span class="mono">*</span> covers every repo of the source.
+            </p>
 
-          <!-- APPEARANCE -->
+            <h4>Token entries</h4>
+            <ul class="file-list">
+              <li v-for="e in tokenEntries" :key="e.key" class="token-entry">
+                <div class="dl-item-top">
+                  <span class="mono" :title="e.key">{{ e.key }}</span>
+                  <span class="mono token-masked">{{ e.maskedToken }}</span>
+                  <button class="dl-btn" @click="openEditToken(e)">Edit</button>
+                  <button class="dl-btn danger" @click="deleteTokenEntry(e)">Delete</button>
+                </div>
+                <div class="token-sub faint">{{ tokenPatternCaption(e) }}</div>
+              </li>
+              <li v-if="!tokenEntries.length" class="faint">
+                No token entries. Add one to authenticate private repo downloads.
+              </li>
+            </ul>
+
+            <div class="row">
+              <button class="dl-btn" @click="openAddToken()">+ Add Token Entry</button>
+              <button class="dl-btn" @click="importTokensFromFile()">Import</button>
+              <button class="dl-btn" @click="exportTokensToFile()">Export</button>
+            </div>
+
+            <TokenEntryDialog
+              v-if="tokenDialogOpen"
+              :entry="editingToken"
+              @close="tokenDialogOpen = false"
+              @saved="onTokenSaved"
+            />
+          </section>
           <section v-if="section === 'appearance'">
             <h3>Theme</h3>
             <table class="kv">
@@ -1436,8 +1719,6 @@ onMounted(async () => {
               </tbody>
             </table>
           </section>
-
-          <!-- LOGS -->
           <section v-if="section === 'logs'">
             <div class="section-head">
               <h3>Logs</h3>
@@ -1501,6 +1782,11 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  /* Scroll the section list when the dialog is too short to show every
+     entry (stretched to .dialog-body's height, which is already clamped
+     by .dialog's fixed height + overflow: hidden). */
+  overflow-y: auto;
+  min-height: 0;
 }
 .dialog-nav button {
   text-align: left;
@@ -1553,6 +1839,18 @@ onMounted(async () => {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 0 6px;
+}
+/* Auth marker for entries whose download source needs an API token
+   (CivitAI): same tag shape as .quant-tag but in the accent color so it
+   draws the eye. Hover for where to configure the token. */
+.auth-tag {
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--bg-panel);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 0 6px;
+  white-space: nowrap;
 }
 .about-section {
   display: flex;
@@ -1696,6 +1994,14 @@ onMounted(async () => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Hub description line under the model name (Installed + Available lists). */
+.dl-item-desc {
+  width: 100%;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
 .file-list li .mono {
   flex: 1;
   overflow: hidden;
@@ -1815,5 +2121,21 @@ label {
   white-space: pre-wrap;
   word-break: break-word;
   user-select: text;
+}
+
+/* Tokens section */
+.token-entry {
+  flex-direction: column;
+  align-items: stretch;
+}
+/* .dl-item-top .mono gives every mono span flex: 1; the masked token must
+   stay compact (the key takes the remaining width, ellipsized). Same
+   specificity as .dl-item-top .mono — later rule wins. */
+.token-entry .token-masked {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+}
+.token-sub {
+  font-size: 12px;
 }
 </style>

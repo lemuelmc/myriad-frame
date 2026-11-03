@@ -9,7 +9,8 @@ import { app } from 'electron'
 import { ChildProcess, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import type { GenerationRequest, PerformanceSettings } from '@shared/types'
+import type { GenerationRequest, LoraApplyMode, PerformanceSettings } from '@shared/types'
+import { isValidSeed } from '@shared/types'
 
 export interface SdCliPaths {
   model: string
@@ -22,9 +23,23 @@ export interface SdCliPaths {
   /** encoder bundle (SD3.5-style): each file + the CLI flag it is passed under */
   encoders?: { path: string; useAs: string }[]
   vision?: string
-  /** img2img init image — emitted as `--init-img` when set; the referenced
-   *  image reinterpreted as the input image (see gen:start) */
+  /** tokenizer file (e.g. tokenizer.json) — emitted as `--tokenizer` when set */
+  tokenizer?: string
+  /** init image — emitted as `--init-img` when set; sourced from the
+   *  input-image channel or the previous image chained "As input"
+   *  (see gen:start) */
   initImage?: string
+  /** inpaint/outpaint mask — emitted as `--mask` when set; main never sets
+   *  `mask` without `initImage` (masks apply to img2img-style runs only) */
+  mask?: string
+  /**
+   * Per-session LoRA config; omitted entirely when the session's mode is
+   * 'off' (or unset) — neither flag is emitted then. LoRA SELECTION is
+   * prompt-driven (`<lora:filename:weight>` tags in the prompt, resolved by
+   * sd-cli against `dir`); these two flags only say WHERE to look and HOW to
+   * merge.
+   */
+  lora?: { dir: string; mode: Exclude<LoraApplyMode, 'off'> }
   references: string[]
   output: string
 }
@@ -38,12 +53,21 @@ export interface SdCliPaths {
  * conditioners and VAE, so the standalone `--vae` override is skipped), the
  * text encoder to
  * `--llm` (single-file) or to one `--<use_as>` flag per bundle file
- * (SD3.5-style multi-encoder: `--clip_g`, `--clip_l`, `--t5xxl`), the vision
- * (mmproj) model to `--llm_vision` (this build has no `--mmproj` flag),
- * an optional init image to `--init-img` (img2img input) together with
- * `--strength` (the pair is emitted only when the init image is set), the
- * reference images to repeatable `--ref-image` entries (before `--output`),
- * and the result image to `--output`.
+ *  (SD3.5-style multi-encoder: `--clip_g`, `--clip_l`, `--t5xxl`), the vision
+ *  (mmproj) model to `--llm_vision` (this build has no `--mmproj` flag), the
+ *  tokenizer file to `--tokenizer` (when the diffusion type declares one),
+ *  an optional init image to `--init-img` (input image) together with
+ *  `--strength` (the pair is emitted only when the init image is set), a
+ *  resolved sigma scheduler to `--scheduler` and a resolved flow-model shift
+ *  to `--flow-shift` (each omitted when unset), a fixed seed from the request
+ *  to `--seed` (a fresh random seed per run when the request carries none,
+ *  since sd-cli's own default is a FIXED 42), the reference images to
+ *  repeatable `--ref-image` entries (before `--output`), and the result image
+ *  to `--output`.
+ *
+ * The per-session LoRA config (when the session enabled it) emits
+ * `--lora-model-dir` + `--lora-apply-mode`; mode 'off' (or an absent config)
+ * emits neither, leaving sd-cli's own defaults untouched.
  *
  * Performance flags (flash attention, direct conv, VAE tiling, CPU offload,
  * params backend) are appended only when the corresponding setting is enabled.
@@ -72,12 +96,20 @@ export function buildArgs(req: GenerationRequest, p: SdCliPaths): string[] {
     '--sampling-method', req.sampler,
     '--width', String(req.resolution.width),
     '--height', String(req.resolution.height),
-    '--seed', String(randomSeed())
+    // Fixed seed when the request carries a valid one; otherwise a fresh
+    // random seed per run (sd-cli's own default is a FIXED 42, so random
+    // mode must keep emitting a seed).
+    '--seed', String(isValidSeed(req.seed) ? Math.floor(req.seed) : randomSeed())
   ]
   // Sigma scheduler — emitted only when the resolved value is a concrete,
   // non-empty string (main resolves the 'model-specific' sentinel to undefined
   // before spawn, so buildArgs() never sees it; null/undefined/'' ⇒ skip).
   if (req.scheduler && req.scheduler.trim()) args.push('--scheduler', req.scheduler.trim())
+  // Flow-model shift — emitted only for a finite number (gen:start already
+  // normalized the value; 0 is a legal value and must be emitted).
+  if (typeof req.flowShift === 'number' && Number.isFinite(req.flowShift)) {
+    args.push('--flow-shift', String(req.flowShift))
+  }
   // Negative prompt — emitted only when non-empty (sd-cli default is "").
   const neg = req.negativePrompt?.trim()
   if (neg) args.push('--negative-prompt', quotePrompt(neg))
@@ -103,11 +135,27 @@ export function buildArgs(req: GenerationRequest, p: SdCliPaths): string[] {
   // declares a `vision` dependency in hub.json. Note: this sd-cli build
   // exposes it as `--llm_vision` (there is no `--mmproj` flag).
   if (p.vision) args.push('--llm_vision', p.vision)
+  // Tokenizer — emitted only when the diffusion type declares a tokenizer
+  // dependency in hub.json (single tokenizer.json path form; the
+  // comma-separated assignment form is not used by the app).
+  if (p.tokenizer) args.push('--tokenizer', p.tokenizer)
+  // LoRA — emitted only when the session enabled it. 'off' (or absent) emits
+  // NEITHER flag, so sd-cli's own defaults apply untouched. LoRA SELECTION is
+  // prompt-driven: the user's prompt carries <lora:filename:weight> tags that
+  // sd-cli resolves against this directory — the two flags only tell sd-cli
+  // WHERE to look and HOW to merge.
+  if (p.lora) {
+    args.push('--lora-model-dir', p.lora.dir)
+    args.push('--lora-apply-mode', p.lora.mode)
+  }
   if (p.initImage) {
     args.push('--init-img', p.initImage)
     // denoise strength — only meaningful with an init image, so the pair is
     // emitted together and txt2img command lines stay free of `--strength`
     args.push('--strength', String(req.strength))
+    // inpaint/outpaint mask — emitted only alongside the init image,
+    // mirroring the --init-img/--strength pairing above
+    if (p.mask) args.push('--mask', p.mask)
   }
   for (const ref of p.references) args.push('--ref-image', ref)
 
@@ -226,6 +274,7 @@ export function createSdCliService(): SdCliService {
       /\s/.test(a) && !(a.startsWith('"') && a.endsWith('"')) ? `"${a}"` : a
     // Debug aid: log the complete command line (binary + args) so generation
     // issues can be diagnosed from the main-process console.
+    console.log(`[sd-cli] ${[binary, ...args.map(quoteArg)].join(' ')}`)
     const child = spawn(binary, args, {
       cwd: dataRoot(),
       env: { ...process.env },

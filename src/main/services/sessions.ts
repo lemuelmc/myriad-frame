@@ -7,8 +7,8 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { SCHEDULER_MODEL_DEFAULT } from '@shared/types'
-import type { ChatMessage, Session, SessionInputs } from '@shared/types'
+import { SCHEDULER_MODEL_DEFAULT, isValidSeed } from '@shared/types'
+import type { ChatMessage, LoraApplyMode, Session, SessionInputs, SessionLora } from '@shared/types'
 import { dataRoot } from './data'
 
 function sessionsRoot(): string {
@@ -155,7 +155,7 @@ export function createSessionsService(): SessionsService {
     }
     // sampling: null CLEARS the saved override (the dialog Reset button's
     // explicit clear signal — different from the `resolution: null` = ignore
-    // semantics); object → whitelist the 5 keys with per-key validation.
+    // semantics); object → whitelist the 6 keys with per-key validation.
     // Width/height are no longer session-overridable.
     if (patch.sampling === null) {
       delete merged.sampling
@@ -179,7 +179,41 @@ export function createSessionsService(): SessionsService {
         const v = str(sc)
         if (v) dst.scheduler = v
       }
+      const fs = patch.sampling.flow_shift
+      // Flow shift: '' / null store an explicit "none" (overwrites a previous
+      // number); a finite number (incl 0) stores as-is; a numeric string is
+      // normalized to a number; undefined drops the key (inherit).
+      if (fs === null || (typeof fs === 'string' && !fs.trim())) dst.flow_shift = ''
+      else if (typeof fs === 'number' && Number.isFinite(fs)) dst.flow_shift = fs
+      else if (typeof fs === 'string' && Number.isFinite(Number(fs.trim()))) dst.flow_shift = Number(fs.trim())
+      const sd = patch.sampling.seed
+      // Seed: a finite integer in [0, SEED_MAX] stores as a fixed seed
+      // (floored); null / undefined / anything else drops the key — absent =
+      // random every run. Strict: invalid values are deleted, never clamped
+      // (the dialog-side clamp is UX friendliness only).
+      if (isValidSeed(sd)) dst.seed = Math.floor(sd)
+      else delete dst.seed
       if (Object.keys(dst).length) merged.sampling = dst
+    }
+    // lora: null CLEARS the saved config (the dialog Reset button's explicit
+    // clear signal); object → validate. The mode must be one of the four
+    // LoraApplyMode literals and the dir (when present) a non-empty string —
+    // anything else drops the whole patch so a bogus renderer payload can
+    // never poison the session file (same defensive philosophy as `sampling`).
+    // Note the branch REPLACES merged.lora wholesale (never merges onto the
+    // old object) so clearing `dir` is a plain `{ mode }` save.
+    if (patch.lora === null) {
+      delete merged.lora
+    } else if (patch.lora && typeof patch.lora === 'object') {
+      const m = patch.lora.mode
+      const modes: LoraApplyMode[] = ['off', 'auto', 'immediately', 'at_runtime']
+      if (modes.includes(m)) {
+        const dst: SessionLora = { mode: m }
+        if (typeof patch.lora.dir === 'string' && patch.lora.dir.trim() !== '') {
+          dst.dir = patch.lora.dir.trim()
+        }
+        merged.lora = dst
+      }
     }
     s.inputs = merged
     write(s)

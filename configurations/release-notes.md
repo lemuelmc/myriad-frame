@@ -1,35 +1,29 @@
 # Release Notes
 
-## v0.1.2
+## v0.1.3
 
-This version adds several new model families, lets each session remember its own model and resolution, and lets you build images from your last result. It also adds finer control over how images are generated — choose your sampler and scheduler, write a negative prompt, and override sampling per session.
+This version expands the kinds of models you can use and adds powerful new ways to edit images. You can now paint over a photo to change it, mask an area to replace just that part, or gently expand the edges of a picture. New model sources bring more choices, and you can control your images even more precisely by locking in the random seed for the same result every time. It also checks for new models automatically when you open the app.
 
 ### Added
 
-- **More model families** — the app now ships support for SD3.5, Krea 2, SDXL, and Anima models alongside the existing ones, so you can work across a wider range of diffusion types.
-- **More models to choose from** — the built-in model catalog is expanded, adding new SD3.5, Krea 2, SDXL, and Anima options from additional providers, so there are more quantizations and sizes to pick from.
-- **Reference image from your last generation** — when a model supports image-to-image, you can start a new image from the one you just generated. This is available only for models that opt in, and controls how much the original is changed.
-- **SD3.5 multi-encoder support** — SD3.5-style models that bundle several text encoders are now handled automatically, resolving and passing each encoder file instead of a single one.
-- **Sampler and scheduler selection** — choose from a set of samplers and schedulers in Settings → Sampling instead of relying on the default. The chosen scheduler is only sent to the runtime when it is explicitly set, so models that prefer their own default keep working out of the box.
-- **Negative prompt** — enter a negative prompt in Settings → Sampling, or override it per session from the chat composer. It is only sent when you actually type something.
-- **Per-session sampling override** — each chat session can now keep its own sampling settings (steps, CFG, strength, sampler, scheduler) on top of the model defaults, so you can fine-tune one session without affecting the others. The current override shows in the session summary.
-- **Remember model and resolution per session** — each chat session now keeps the model and resolution you last chose. Switching to a session restores those inputs, so you don't have to re-pick them every time.
-- **App logging** — Settings → Logs shows the latest application log on demand, which helps diagnose problems. Logs are written and rolled automatically so they don't grow without limit.
-- **Save image-as with a quick open-folder action** — after saving a generated image, a toast offers to open the folder containing it.
-- **Resume downloads** — pause, cancel, or retry a download anytime. Interrupted downloads won't leave broken or incomplete files behind.
-- **Update models and settings from the app** — Settings → Runtime and Settings → Models now have **Check** and **Reset** buttons. **Check** downloads the latest available models and settings from the internet, so you don't need to reinstall the app to get new options. **Reset** restores the original built-in options.
-- **Better model selection** — a new searchable list replaces the old dropdown, showing a short description for each model so you can pick the right one.
-- **Search models** — a search box is now available in the Settings dialog for models, VAE, text encoder, and vision models.
-- **Full-width image preview** — click any generated image in the chat to view it larger.
+- **Paint directly onto a photo** — a new brush tool lets you draw over an image to change or cover parts of it, then send it along with your request.
+- **Edit a part of an image** — you can now mask (highlight) a section of a photo so only that area gets redrawn, or expand the edges of a picture to make it larger. This works for models that support it.
+- **LoRA support** — LoRA files are small add-ons that teach a model a new style, look, or character. You can pick them from a gallery and apply them per chat session, so you don't have to re-choose them each time.
+- **More model sources** — the app now pulls models from CivitAI, a popular site for sharing AI models, in addition to the existing source. This gives you access to a much wider library of models.
+- **See model sizes at a glance** — each model now shows how much space it takes up, so you can tell a small file from a large one without guessing.
+- **Control the random seed** — each image starts from a random number. You can now pin that number (the "seed") so a good result can be repeated later, or roll a fresh one with a single click.
+- **New model types** — support for additional model families such as Flux and Moss has been added, along with a new "edit" mode tuned for changing existing images.
+- **Tokenizer support** — some models need an extra helper file to read your words correctly. The app can now download and use these files automatically.
+- **Flow-shift setting** — a new quality slider (available on supported models) that helps the model produce cleaner, more detailed images.
+- **Automatic update check** — when you open the app, it quietly checks for newer model and runtime settings and gently reminds you when something new is available, so you can keep your options up to date without extra effort.
+- **Manage private-model access** — a new section in Settings lets you add, edit, or remove access tokens for private or paid model sources, so you can download models that need a login. Tokens can be given broad or narrow access with simple wildcards.
+- **Search tokens** — managing access tokens is easier with a dedicated, searchable list in Settings → Tokens.
 
 ### Improved
 
-- The model browser now scans model repositories more precisely, so only the files relevant to a model show up instead of unrelated files from other folders.
-- Model selection is more reliable when pausing, cancelling, or resuming a download.
-- The app renders more smoothly while downloading. Progress updates are now throttled so the interface stays responsive during large downloads instead of stuttering or lagging.
-- After checking for new models, the app automatically refreshes the available list.
-- Model and settings options are organized more cleanly.
-- Session sampling overrides are now resolved before width/height, so per-session sampling changes take precedence over the model's defaults.
-- The negative-prompt dialog now prefills with the session's existing prompt so editing is smoother.
-- Downloaded models are excluded from the model selector when they are VAE or LoRA variants, so only full diffusion models show up for selection.
-- The app menu (File, Edit, View, …) is now hidden in the window to give the image-generation interface a cleaner look.
+- **Better model organization** — the model browser was reworked so it can support many different model sites cleanly, and models now show clear, human-readable names instead of long file-style codes.
+- **Clearer error messages** — when a generation fails, the app now records the details in the log and shows a simple reminder, instead of dumping confusing technical text into your chat.
+- **Cross-platform builds** — the app can now be built for Linux and macOS as well as Windows, bringing it to more computers.
+- **New website** — a landing page now showcases the app's features, screenshots, and a video demo, making it easier to learn what it can do.
+- **Smoother downloads** — background checks for new settings run quietly at startup without interrupting your work, and failed checks are treated as "nothing new" rather than an error.
+- **More models to choose from** — the built-in catalog grew with new providers and model variants, so there are more styles and sizes to pick from.

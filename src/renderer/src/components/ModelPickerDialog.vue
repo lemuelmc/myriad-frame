@@ -1,3 +1,9 @@
+<!--
+Myriad Frame — Electron + Vue 3 desktop front-end for sd-cli (stable-diffusion.cpp).
+Author: Lemuel Raganas
+License: Apache License 2.0 — permissive; allows use, modification, and distribution
+(commercial or private) provided the license notice and copyright are preserved.
+-->
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { CatalogEntry } from '@shared/types'
@@ -55,6 +61,21 @@ const rows = computed(() => {
 
 function baseName(name: string): string {
   return name.split('/').pop() ?? name
+}
+
+/** Format an on-disk size in bytes as a human-readable string, matching the
+ * Models section's fmtBytes in SettingsDialog.vue. */
+function fmtBytes(n: number): string {
+  if (!n || n <= 0) return ''
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let value = n
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit++
+  }
+  const rounded = unit === 0 ? Math.round(value) : Math.round(value * 10) / 10
+  return `${rounded} ${units[unit]}`
 }
 
 /**
@@ -135,10 +156,6 @@ onBeforeUnmount(() => {
         <p v-else-if="!rows.length" class="muted no-match">No models match "{{ query }}"</p>
 
         <div v-else class="list-wrap">
-          <!-- Card-style rows instead of a dense table: the name owns the full
-               first line (wraps instead of being ellipsized) and the provider +
-               description share the full second line, so both stay readable at
-               a glance. The whole row is clickable to select. -->
           <ul class="model-list">
             <li
               v-for="e in rows"
@@ -153,21 +170,24 @@ onBeforeUnmount(() => {
                   <span class="mono model-name">{{ baseName(e.name) }}</span>
                   <span class="tag">{{ e.diffusionType }}</span>
                   <span v-if="e.quant" class="tag">{{ e.quant }}</span>
+                  <span
+                    v-if="e.source === 'civitai'"
+                    class="tag auth-tag"
+                    title="Downloads from CivitAI — requires a CivitAI API token (Settings → Tokens)"
+                  >Auth</span>
                   <span v-if="isDownloading(e)" class="status-tag status-dl">Downloading…</span>
                   <span v-else-if="isInstalled(e)" class="status-tag status-ok">Downloaded</span>
                   <span v-else class="status-tag status-none">Not Downloaded</span>
                 </div>
                 <div class="item-sub">
                   <span class="provider">{{ providerLabel(e.provider, hubProviders) }}</span>
+                  <span v-if="e.size" class="faint"> · {{ fmtBytes(e.size) }}</span>
                   <template v-if="e.description">
                     <span class="sep">·</span>
                     <span class="desc">{{ e.description }}</span>
                   </template>
                 </div>
               </div>
-              <!-- The currently selected entry stays clickable: picking it
-                   assigns the identical entry reference (a watcher no-op)
-                   and simply closes the dialog. -->
               <button
                 class="set-default"
                 :class="{ active: selected?.id === e.id }"
@@ -285,6 +305,13 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-sm);
   padding: 0 6px;
   white-space: nowrap;
+}
+/* Auth marker for entries downloaded from CivitAI — accent-colored so it
+   stands out from the neutral family/quant tags. Hover for where to
+   configure the token. */
+.tag.auth-tag {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 .status-tag {
   font-size: 11px;

@@ -53,7 +53,7 @@ linux:
   target:
     - appimage
     - deb
-  icon: src/assets/logo-square-small.png
+  icon: src/assets/logo-square-medium.png
   category: Graphics
 
 # macOS target: signed DMG. Codesigning is left off (see win section note).

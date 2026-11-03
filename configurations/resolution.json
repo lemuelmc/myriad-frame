@@ -52,5 +52,28 @@
     { "name": "2:3 Photo", "width": 832, "height": 1216 },
     { "name": "16:9 Widescreen", "width": 1344, "height": 768 },
     { "name": "9:16 Vertical", "width": 768, "height": 1344 }
+  ],
+  "qwen_image_edit": [
+    { "name": "1:1 Square", "width": 1024, "height": 1024 },
+    { "name": "4:3 Landscape", "width": 1152 , "height": 864 },
+    { "name": "3:4 Portrait", "width": 864 , "height": 1152 },
+    { "name": "3:2 Photo (W)", "width": 1248 , "height": 832 },
+    { "name": "2:3 Photo", "width": 832 , "height": 1248 },
+    { "name": "16:9 Widescreen", "width": 1536 , "height": 864 },
+    { "name": "9:16 Vertical", "width": 864 , "height": 1536 }
+  ],
+  "moss_image": [
+    { "name": "1:1 Square (1.0mp)", "width": 1024, "height": 1024 },
+    { "name": "1:1 Square (1.5mp)", "width": 1232 , "height": 1232  },
+    { "name": "1:1 Square (2.0mp)", "width": 1424 , "height": 1424  },
+    { "name": "4:3 (1.0mp)", "width": 1152, "height": 864 },
+    { "name": "4:3 (1.5mp)", "width": 1408, "height": 1056 },
+    { "name": "4:3 (2.0mp)", "width": 1632, "height": 1216 },
+    { "name": "3:2 (1.0mp)", "width": 1232, "height": 816 },
+    { "name": "3:2 (1.5mp)", "width": 1504, "height": 1008 },
+    { "name": "3:2 (2.0mp)", "width": 1728, "height": 1152 },
+    { "name": "16:9 (1.0mp)", "width": 1344, "height": 756 },
+    { "name": "16:9 (1.5mp)", "width": 1632, "height": 912 },
+    { "name": "16:9 (2.0mp)", "width": 1888, "height": 1056 }
   ]
 }

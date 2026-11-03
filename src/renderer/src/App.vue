@@ -1,4 +1,10 @@
-﻿<script setup lang="ts">
+<!--
+Myriad Frame — Electron + Vue 3 desktop front-end for sd-cli (stable-diffusion.cpp).
+Author: Lemuel Raganas
+License: Apache License 2.0 — permissive; allows use, modification, and distribution
+(commercial or private) provided the license notice and copyright are preserved.
+-->
+<script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useAppStore } from './stores/app'
 import { useSessionsStore } from './stores/sessions'
@@ -65,6 +71,11 @@ onMounted(async () => {
     // init.ready-gated refetch never fired. Reload now that the pipeline is done.
     if (!appStore.catalog) await appStore.loadCatalog()
   })
+  // Launch-time config update check (detect-only): main toasts via this push
+  // when the remote hub/runtime config differs from the active one. IPC
+  // ordering guarantees this arrives after app:ready, so it never fires under
+  // the InitOverlay.
+  window.api.onUpdateAvailable((p) => appStore.notifyUpdates(p))
   window.api.onRuntimeProgress((p) => {
     settingsStore.runtimeDownloading = {
       version: p.version,
@@ -104,6 +115,12 @@ onMounted(async () => {
   }
   appStore.ready = init.ready
 
+  // Launch-check catch-up: if the check completed before this page mounted
+  // (rare — it starts after app:ready), the push was lost; pull the stored
+  // status instead. The store's dedupe flags make this idempotent with the
+  // push path above.
+  appStore.notifyUpdates(await window.api.updateStatus())
+
   await appStore.loadConfigs()
   await appStore.loadCatalog()
   // If the pipeline finished (and wrote the catalog) before we loaded it,
@@ -133,9 +150,7 @@ onMounted(async () => {
     <ConfirmDialog />
     <Toasts />
   </div>
-  <!-- Startup-only bat splash: halloween theme only, renders once, then dismisses on completion. -->
   <BatSplash v-if="showBatSplash" @complete="showBatSplash = false" />
-  <!-- Startup-only snow splash: christmas theme only, renders once, then dismisses on completion. -->
   <SnowSplash v-if="showSnowSplash" @complete="showSnowSplash = false" />
 </template>
 

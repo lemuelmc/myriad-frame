@@ -13,51 +13,55 @@ import { basename, join } from 'node:path'
 import type {
   AllConfigs,
   ChatMessage,
+  ConfigUpdateStatus,
   DownloadProgress,
   GenProgress,
   GenerationRequest,
   HubCatalog,
   HubCheckResult,
-  HubConfig,
   LogLevel,
   LogsInfo,
+  LoraApplyMode,
+  MaskSaveRequest,
+  MaskSaveResult,
   ModelFile,
   ModelType,
   PlatformInfo,
   ResolutionEntry,
   RuntimeCheckResult,
-  RuntimeConfig,
   RuntimeKey,
   RuntimeVersionInfo,
   SamplingDefaults,
   Session,
   SessionInputs,
   Settings,
-  ThemeKey
+  ThemeKey,
+  TokenEntry,
+  TokenEntryInput,
+  TokenEntryResult,
+  TokenImportResult
 } from '@shared/types'
 import {
   loadAllConfigs,
   loadApplicationConfig,
-  loadHubConfig,
-  loadRuntimeConfig,
-  readHubOverride,
-  readRuntimeOverride,
   resetHubConfig,
   resetRuntimeConfig,
   saveHubConfig,
-  saveRuntimeConfig,
-  validateHubConfig,
-  validateRuntimeConfig
+  saveRuntimeConfig
 } from './services/config'
-import { DownloadAbortError, fetchText, headSize } from './services/download'
+import { DownloadAbortError, headSize } from './services/download'
 import { createHubService } from './services/hub'
 import { getInitState } from './services/init'
-import { createModelsService, ensureModelDirs } from './services/models'
+import { authHeadersForUrl, createModelsService, ensureModelDirs } from './services/models'
 import { detectPlatform } from './services/platform'
+import { clearMask, saveMask } from './services/masks'
 import { createRuntimeService } from './services/runtime'
 import { createSessionsService } from './services/sessions'
 import { createSettingsService } from './services/settings'
 import { createSdCliService, newOutputPath } from './services/sdcli'
+import { sourceNames } from './services/sources'
+import { addToken, deleteToken, exportTokens, importTokens, listTokens, updateToken } from './services/tokens'
+import { checkHubConfig, checkRuntimeConfig, getConfigUpdateStatus } from './services/updates'
 import {
   cancelDownload,
   getRuntimeState,
@@ -69,7 +73,7 @@ import {
   setPaused,
   setRuntimeProgressBroadcaster
 } from './services/downloads'
-import { SCHEDULER_MODEL_DEFAULT } from '@shared/types'
+import { SCHEDULER_MODEL_DEFAULT, isValidSeed } from '@shared/types'
 import type { DownloadsListResult } from '@shared/types'
 
 const hub = createHubService()
@@ -84,31 +88,6 @@ const activeGens = new Map<
   string,
   { gen: { child: import('node:child_process').ChildProcess; stopped: boolean }; sessionId: string; messageId: string }
 >()
-
-/** Raw source of the up-to-date runtime config (Settings â†’ Runtime â†’ Check). */
-const RUNTIME_CONFIG_URL =
-  'https://raw.githubusercontent.com/lemuelmc/myriad-frame/master/configurations/runtime.json'
-
-/** Raw source of the up-to-date hub config (Settings â†’ Models â†’ Check). */
-const HUB_CONFIG_URL =
-  'https://raw.githubusercontent.com/lemuelmc/myriad-frame/master/configurations/hub.json'
-
-/**
- * Recursively sort object keys before stringifying, so the update check's
- * comparison is key-order-stable: a plain `JSON.stringify` is order-sensitive
- * and would report a spurious "updated" (plus a backup) whenever upstream
- * reorders keys with identical content.
- */
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) return JSON.stringify(value.map(stableStringify))
-  if (value !== null && typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`)
-    return `{${entries.join(',')}}`
-  }
-  return JSON.stringify(value)
-}
 
 /**
  * Best-effort serialization for a forwarded renderer console argument
@@ -134,18 +113,111 @@ function sendProgress(
   }
 }
 
+/** Toast-friendly cap for a generation error line; the full text goes to the log. */
+const GEN_ERROR_TOAST_MAX = 200
+
+/**
+ * Collapse a raw sd-cli failure into one short toast-friendly line: whitespace
+ * (including newlines — stderr often arrives as a wall of repeated
+ * tensor/loader warnings) collapsed, then hard-truncated. The untruncated
+ * text is logged by the caller, so the toast is a pointer to the log, never
+ * the record itself.
+ */
+function shortGenError(message: string): string {
+  const flat = message.replace(/\s+/g, ' ').trim()
+  if (flat.length <= GEN_ERROR_TOAST_MAX) return flat
+  return flat.slice(0, GEN_ERROR_TOAST_MAX - 1).trimEnd() + '…'
+}
+
+/**
+ * A saved inpaint/outpaint mask rides on every Send as `maskPath` +
+ * `initImagePath` — but the renderer's sticky maskState is paths-only and the
+ * mask files live under the ephemeral `data/tmp/masks` tree (wiped on every
+ * launch), so a session can carry dead references. Purge: delete the saved
+ * mask files (clearMask only ever touches data/tmp/masks — the inpaint
+ * background may live outside it and is left alone), push `masks:invalidated`
+ * so the renderer drops its sticky state, show a warning dialog, and reject
+ * the generation with a re-apply instruction. The renderer suppresses the
+ * duplicate error toast for this message (it matches on 'purged').
+ */
+async function purgeStaleMask(
+  req: GenerationRequest,
+  missing: 'mask' | 'background'
+): Promise<never> {
+  const paths = [req.maskPath, req.initImagePath].filter((p): p is string => !!p)
+  clearMask(paths)
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('masks:invalidated', { sessionId: req.sessionId })
+  }
+  log.warn(
+    `[gen] stale inpaint/outpaint reference (session ${req.sessionId}): ` +
+      `${missing === 'mask' ? 'mask file' : 'mask background'} no longer exists — purged`
+  )
+  await dialog.showMessageBox({
+    type: 'warning',
+    title: 'Mask reference removed',
+    message: 'A referenced image used for inpainting/outpainting has been removed.',
+    detail:
+      'The application has purged the stale reference (the saved mask and its background). ' +
+      'Please re-apply the mask and execute the generation again.',
+    buttons: ['OK']
+  })
+  throw new Error(
+    missing === 'mask'
+      ? 'The saved mask no longer exists — the stale reference has been purged. Please re-apply the mask and execute the generation again.'
+      : 'The mask background no longer exists — the stale reference has been purged. Please re-apply the mask and execute the generation again.'
+  )
+}
+
+/**
+ * A saved paint rides on every Send as `paintImagePath` — same ephemeral
+ * data/tmp/masks lifecycle as the mask files, so a file deleted externally
+ * mid-session leaves the renderer's sticky paintState pointing at nothing.
+ * Purge: delete the saved paint file, push `masks:invalidated` so the renderer
+ * drops its sticky state (the handler clears BOTH the mask and paint states),
+ * show a warning dialog, and reject the generation — the paint must be
+ * re-applied. The renderer suppresses the duplicate error toast for the
+ * 'purged' message, same as the mask purge.
+ */
+async function purgeStalePaint(req: GenerationRequest): Promise<never> {
+  if (req.paintImagePath) clearMask([req.paintImagePath])
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('masks:invalidated', { sessionId: req.sessionId })
+  }
+  log.warn(
+    `[gen] stale paint reference (session ${req.sessionId}): ` +
+      `painted image no longer exists — purged`
+  )
+  await dialog.showMessageBox({
+    type: 'warning',
+    title: 'Paint reference removed',
+    message: 'A painted image used for this generation has been removed.',
+    detail:
+      'The application has purged the stale reference (the saved painted image). ' +
+      'Please re-apply the paint and execute the generation again.',
+    buttons: ['OK']
+  })
+  throw new Error(
+    'The painted image no longer exists — the stale reference has been purged. Please re-apply the paint and execute the generation again.'
+  )
+}
+
 function effectiveSampling(diffusionType: string, cfg: AllConfigs): SamplingDefaults {
   const base = cfg.sampling[diffusionType] ?? {
-    diffusion_behavior: 'standalone',
-    allow_reference: false,
-    max_reference: 0,
-    img2img: false,
+  diffusion_behavior: 'standalone',
+  allow_reference: false,
+  max_reference: 0,
+  allow_image_input: false,
+  max_image_input: 0,
+  allow_inpainting: false,
+  allow_painting: false,
     strength: 0.75,
     steps: 25,
     cfg: 1.0,
     sampler: 'euler',
     scheduler: null,
     negative: null,
+    flow_shift: null,
     width: 1024,
     height: 1024
   }
@@ -248,6 +320,28 @@ export function registerIpc(): void {
     return res.canceled ? [] : res.filePaths
   })
 
+  // Native directory picker (the LoRA dialog's custom-dir Browse button;
+  // generic name so future features can reuse it). Resolves null when
+  // canceled — never an error.
+  ipcMain.handle('app:pickDirectory', async (): Promise<string | null> => {
+    const win = BrowserWindow.getFocusedWindow?.() ?? BrowserWindow.getAllWindows()[0]
+    const res = await dialog.showOpenDialog(win, {
+      title: 'Choose LoRA directory',
+      properties: ['openDirectory', 'createDirectory']
+    })
+    return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]
+  })
+
+  // ---------- masks (data/tmp/masks — inpaint / outpaint) ----------
+  // Persist the renderer's painted mask (and the padded init image for
+  // outpaint) as PNG files under data/tmp/masks; the returned absolute paths
+  // ride on the sticky composer state and the gen:start request.
+  ipcMain.handle('masks:save', (_e, req: MaskSaveRequest): MaskSaveResult => saveMask(req))
+  // Delete saved mask / init files. clearMask() restricts deletion to
+  // data/tmp/masks — the renderer controls the paths, so nothing outside that
+  // directory can ever be removed.
+  ipcMain.handle('masks:clear', (_e, paths: string[]): void => clearMask(paths))
+
   ipcMain.handle('app:imageFromPath', (_e, p: string): string => {
     if (!existsSync(p)) return ''
     const buf = readFileSync(p)
@@ -306,49 +400,13 @@ export function registerIpc(): void {
   )
 
   ipcMain.handle('runtime:checkUpdates', async (): Promise<RuntimeCheckResult> => {
-    const url = RUNTIME_CONFIG_URL
-    console.log(`[runtime:checkUpdates] Fetching runtime config from: ${url}`)
-
-    // Detect a corrupt override *before* fetching: loadRuntimeConfig() falls
-    // back silently to the bundled config on parse/shape failure, so it alone
-    // cannot surface the problem. On corruption nothing is fetched and no
-    // files are touched.
-    const override = readRuntimeOverride()
-    if (override.status === 'corrupt') {
-      console.error('[runtime:checkUpdates] Current runtime config is corrupted')
-      throw new Error(
-        'Current runtime config is corrupted â€” click Reset in Settings â†’ Runtime (or restore a .bak) and retry'
-      )
-    }
-
-    let remoteRaw: string
-    try {
-      remoteRaw = await fetchText(url)
-    } catch (e) {
-      console.error('[runtime:checkUpdates] Fetch failed:', e)
-      throw new Error(`Failed to fetch runtime config from ${url}: ${(e as Error).message}`)
-    }
-
-    let remote: RuntimeConfig
-    try {
-      remote = JSON.parse(remoteRaw) as RuntimeConfig
-    } catch (e) {
-      console.error('[runtime:checkUpdates] Remote runtime config is not valid JSON:', e)
-      throw new Error(`Remote runtime config is not valid JSON: ${(e as Error).message}`)
-    }
-    const problem = validateRuntimeConfig(remote)
-    if (problem) {
-      console.error('[runtime:checkUpdates] Remote runtime config is invalid:', problem)
-      throw new Error(`Remote runtime config is invalid: ${problem}`)
-    }
-
-    // The existing override was already validated by readRuntimeOverride()
-    // above, so loadRuntimeConfig() *is* the effective config here (valid
-    // override, else bundled). Compare key-order-stable.
-    const current = loadRuntimeConfig()
-    if (stableStringify(remote) === stableStringify(current)) {
+    // Fetch + validate + key-order-stable compare live in the shared helper
+    // (also used by the launch-time update check); this handler adds the
+    // apply step: back up + write the override, then diff the version keys.
+    const { changed, remote, current } = await checkRuntimeConfig()
+    if (!changed) {
       console.log(
-        `[runtime:checkUpdates] Success: no update needed â€” runtime config is up to date`
+        `[runtime:checkUpdates] Success: no update needed — runtime config is up to date`
       )
       return { updated: false, newVersions: [], removedVersions: [] }
     }
@@ -394,49 +452,12 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle('hub:checkUpdates', async (): Promise<HubCheckResult> => {
-    const url = HUB_CONFIG_URL
-    console.log(`[hub:checkUpdates] Fetching hub config from: ${url}`)
-
-    // Detect a corrupt override *before* fetching: loadHubConfig() falls back
-    // silently to the bundled config on parse/shape failure, so it alone
-    // cannot surface the problem. On corruption nothing is fetched and no
-    // files are touched.
-    const override = readHubOverride()
-    if (override.status === 'corrupt') {
-      console.error('[hub:checkUpdates] Current hub config is corrupted')
-      throw new Error(
-        'Current hub config is corrupted â€” click Reset in Settings â†’ Models (or restore a .bak) and retry'
-      )
-    }
-
-    let remoteRaw: string
-    try {
-      remoteRaw = await fetchText(url)
-    } catch (e) {
-      console.error('[hub:checkUpdates] Fetch failed:', e)
-      throw new Error(`Failed to fetch hub config from ${url}: ${(e as Error).message}`)
-    }
-
-    let remote: HubConfig
-    try {
-      remote = JSON.parse(remoteRaw) as HubConfig
-    } catch (e) {
-      console.error('[hub:checkUpdates] Remote hub config is not valid JSON:', e)
-      throw new Error(`Remote hub config is not valid JSON: ${(e as Error).message}`)
-    }
-    const problem = validateHubConfig(remote)
-    if (problem) {
-      console.error('[hub:checkUpdates] Remote hub config is invalid:', problem)
-      throw new Error(`Remote hub config is invalid: ${problem}`)
-    }
-
-    // The existing override was already validated by readHubOverride() above,
-    // so loadHubConfig() *is* the effective config here (valid override, else
-    // bundled). Compare key-order-stable: a key reorder with identical
-    // content is NOT an update.
-    const current = loadHubConfig()
-    if (stableStringify(remote) === stableStringify(current)) {
-      console.log('[hub:checkUpdates] Success: no update needed â€” hub config is up to date')
+    // Fetch + validate + key-order-stable compare live in the shared helper
+    // (also used by the launch-time update check); this handler adds the
+    // apply step: back up + write the override, then diff the model names.
+    const { changed, remote, current } = await checkHubConfig()
+    if (!changed) {
+      console.log('[hub:checkUpdates] Success: no update needed — hub config is up to date')
       return { updated: false, addedModels: [], removedModels: [] }
     }
 
@@ -460,6 +481,15 @@ export function registerIpc(): void {
     // backups.
     resetHubConfig()
   })
+
+  // ---------- updates ----------
+  // Result of the launch-time config update check (detect-only; the check
+  // itself is fired from index.ts at the end of the init pipeline and its
+  // notify callback broadcasts updates:available). The renderer pulls this on
+  // mount to catch up when the check completed before it mounted — the same
+  // pattern as app:initState. null until the first check of the session
+  // completes.
+  ipcMain.handle('updates:get', (): ConfigUpdateStatus | null => getConfigUpdateStatus())
 
   // ---------- models ----------
   ipcMain.handle('models:list', (_e, type: ModelType): ModelFile[] => models.list(type))
@@ -506,10 +536,66 @@ export function registerIpc(): void {
     ): Promise<{ ok: boolean; actual: number; expected: number }> => {
       const p = models.pathFor(type, name)
       const actual = existsSync(p) ? statSync(p).size : 0
-      const expected = await headSize(url)
+      // Authenticated probe: the models:verify HEAD runs OUTSIDE the download
+      // manager, so the manager's two header threads never reach it. Without
+      // headers a private repo's HEAD answers 401 → expected === 0 → the
+      // `expected === 0 || actual === expected` fallback below reports
+      // ok: true with zero verification (a truncated private file always
+      // passes). authHeadersForUrl yields {} when no source/token — the
+      // pre-existing anonymous semantics.
+      const expected = await headSize(url, undefined, undefined, await authHeadersForUrl(url))
       return { ok: expected === 0 || actual === expected, actual, expected }
     }
   )
+
+  // ---------- tokens / sources ----------
+  // Token management for data/hub-tokens.json (Settings → Tokens). Import/
+  // Export do their file-dialog I/O entirely in main — the renderer has no
+  // arbitrary-file read/write IPC (the existing dialog IPCs are
+  // image-specific). Raw token values reach the renderer only through the
+  // add/edit input field (unavoidable) — never via the list (masked) and
+  // never via export (written to disk here, in the live store format).
+  ipcMain.handle('tokens:list', (): TokenEntry[] => listTokens())
+  ipcMain.handle('tokens:add', (_e, input: TokenEntryInput): TokenEntryResult => addToken(input))
+  ipcMain.handle('tokens:update', (_e, key: string, token: string): TokenEntryResult =>
+    updateToken(key, token)
+  )
+  ipcMain.handle('tokens:delete', (_e, key: string): void => deleteToken(key))
+  ipcMain.handle('tokens:importFile', async (): Promise<TokenImportResult | null> => {
+    const win = BrowserWindow.getFocusedWindow?.() ?? BrowserWindow.getAllWindows()[0]
+    const res = await dialog.showOpenDialog(win, {
+      title: 'Import Tokens',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+      properties: ['openFile']
+    })
+    if (res.canceled || res.filePaths.length === 0) return null // canceled ≠ error
+    let raw: unknown
+    try {
+      raw = JSON.parse(readFileSync(res.filePaths[0], 'utf-8'))
+    } catch (err) {
+      throw new Error(`Could not read ${basename(res.filePaths[0])}: ${(err as Error).message}`)
+    }
+    return importTokens(raw)
+  })
+  ipcMain.handle('tokens:exportFile', async (): Promise<string | null> => {
+    const win = BrowserWindow.getFocusedWindow?.() ?? BrowserWindow.getAllWindows()[0]
+    const res = await dialog.showSaveDialog(win, {
+      title: 'Export Tokens',
+      defaultPath: 'hub-tokens.json',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+      buttonLabel: 'Export'
+    })
+    if (res.canceled || res.filePath === '') return null
+    // Written in the LIVE store format ({ key: { token } }) — a valid
+    // drop-in backup: hand-copying it back over data/hub-tokens.json
+    // restores exactly that state. Never sent to the renderer.
+    const fs = await import('node:fs')
+    await fs.promises.writeFile(res.filePath, JSON.stringify(exportTokens(), null, 2), 'utf-8')
+    return res.filePath
+  })
+  // Registered source NAMES (deduped — the registry is keyed by both domains
+  // and names) for the add/edit dialog source dropdown.
+  ipcMain.handle('sources:list', (): string[] => sourceNames())
 
   // ---------- settings ----------
   ipcMain.handle('settings:get', (): Settings => settings.get())
@@ -584,39 +670,143 @@ export function registerIpc(): void {
     if (req.vision && visionPath && !existsSync(visionPath)) {
       throw new Error(`Vision model not found: ${req.vision}`)
     }
+    const tokenizerPath = req.tokenizer ? models.pathFor('tokenizer', req.tokenizer) : undefined
+    if (req.tokenizer && tokenizerPath && !existsSync(tokenizerPath)) {
+      throw new Error(`Tokenizer not found: ${req.tokenizer}`)
+    }
 
-    const refs = [...req.referencePaths]
+    // ---------- two-channel routing ----------
+    // Reference channel (--ref-image): user-picked references plus the
+    // previous image when chained "As Reference". Defense-in-depth: a
+    // request's referencePaths are dropped for a type that forbids them.
+    const prevExists = !!req.previousImagePath && existsSync(req.previousImagePath)
+    const refs: string[] = sampling.allow_reference === true ? [...req.referencePaths] : []
     if (
       req.usePrevious &&
+      req.previousImageMode === 'reference' &&
       sampling.allow_reference === true &&
-      req.previousImagePath &&
-      existsSync(req.previousImagePath)
+      prevExists
     ) {
-      if (!refs.includes(req.previousImagePath)) refs.push(req.previousImagePath)
+      if (!refs.includes(req.previousImagePath!)) refs.push(req.previousImagePath!)
     }
     if (refs.length > sampling.max_reference) refs.length = sampling.max_reference
 
-    // img2img: when the diffusion type declares img2img support (and allows
-    // references at all) and the user ticked 'Use previous image', the
-    // referenced image is reinterpreted as the init image and passed via
-    // `--init-img` (-i) instead of `--ref-image` (-r). `--init-img` accepts a
-    // single path, so the first existing reference becomes the init image and
-    // any leftovers stay references (max_reference is 1 for every
-    // img2img-enabled type today, so in practice no `-r` is emitted).
-    const useInitImg =
-      sampling.img2img === true &&
-      sampling.allow_reference === true &&
-      req.usePrevious === true
+    // Input channel (--init-img): user-picked input images plus the previous
+    // image when chained "As input". --init-img is single-valued, so only the
+    // first valid path survives; the previous image takes the slot ahead of
+    // any user-picked inputs (first valid wins). Defense-in-depth: the
+    // channel is dropped entirely for a type that forbids it.
+    const inputImages: string[] =
+      sampling.allow_image_input === true ? [...(req.inputImagePaths ?? [])] : []
+    if (
+      req.usePrevious &&
+      req.previousImageMode === 'input' &&
+      sampling.allow_image_input === true &&
+      prevExists
+    ) {
+      inputImages.unshift(req.previousImagePath!)
+    }
+    if (inputImages.length > sampling.max_image_input) {
+      inputImages.length = sampling.max_image_input
+    }
+    const existingInputs = inputImages.filter((r) => existsSync(r)).slice(0, 1)
+
     const existingRefs = refs.filter((r) => existsSync(r))
-    const initImage = useInitImg ? existingRefs.shift() : undefined
+    let initImage: string | undefined
+    let maskPath: string | undefined
+    // Inpainting / outpainting: when the request carries an explicit mask +
+    // init image (both saved by the dialogs and captured at dialog time), the
+    // gate is `allow_inpainting` — NOT the reference/input channels. The
+    // explicit init image wins over the previous-image init chaining and is
+    // dropped from the refs so it is never double-emitted as --ref-image.
+    // When the gate is off the fields are dropped entirely (defense-in-depth,
+    // same style as the channel guards): a stale request can never emit mask
+    // flags for a type that forbids them.
+    if (req.maskPath && req.initImagePath) {
+      if (sampling.allow_inpainting === true) {
+        // Stale reference (data/tmp/masks is wiped on launch): purge the saved
+        // files, drop the renderer's sticky mask state, inform the user, and
+        // reject the generation — the mask must be re-applied.
+        if (!existsSync(req.maskPath)) await purgeStaleMask(req, 'mask')
+        if (!existsSync(req.initImagePath)) await purgeStaleMask(req, 'background')
+        maskPath = req.maskPath
+        initImage = req.initImagePath
+        const i = existingRefs.indexOf(req.initImagePath)
+        if (i >= 0) existingRefs.splice(i, 1)
+      } else {
+        req.maskPath = undefined
+        req.initImagePath = undefined
+      }
+    }
+    // Paint tool gate (configurations/sampling.json `allow_painting`): when
+    // off, the fields are dropped entirely (defense-in-depth, same style as
+    // the mask/channel guards) — a stale request can never route a painted
+    // image for a type that forbids the tool.
+    if (req.paintImagePath && sampling.allow_painting !== true) {
+      req.paintImagePath = undefined
+      req.paintTarget = undefined
+    }
+    // Paint tool: when the request carries a merged painted image, route it by
+    // the target decided at paint-save time. Mutually exclusive with the mask
+    // by construction (the composer's switch-guard keeps one tool state at a
+    // time); the guard here makes an impossible mask+paint combo unable to
+    // emit both. The 'init' target wins the same precedence slot as the mask
+    // background — over the previous-image chaining and user-picked inputs;
+    // the 'reference' target replaces the FIRST --ref-image slot (or becomes
+    // the only ref when the channel is empty). Defense-in-depth: the fields
+    // are dropped for a type whose channel config forbids the target, and an
+    // unrecognized target is treated as absent.
+    const paintTarget =
+      req.paintImagePath && (req.paintTarget === 'init' || req.paintTarget === 'reference')
+        ? req.paintTarget
+        : undefined
+    if (req.paintImagePath && paintTarget && !(maskPath && initImage)) {
+      if (!existsSync(req.paintImagePath)) await purgeStalePaint(req)
+      if (paintTarget === 'init') {
+        if (sampling.allow_image_input === true) {
+          initImage = req.paintImagePath
+          const k = existingInputs.indexOf(req.paintImagePath)
+          if (k >= 0) existingInputs.splice(k, 1)
+          const r = existingRefs.indexOf(req.paintImagePath)
+          if (r >= 0) existingRefs.splice(r, 1)
+        } else {
+          req.paintImagePath = undefined
+          req.paintTarget = undefined
+        }
+      } else {
+        if (sampling.allow_reference === true) {
+          // Remove any duplicate occurrence first, then take slot 0 — or
+          // become the only ref when the channel is empty (guarded against a
+          // degenerate allow_reference + max_reference 0 config).
+          const dup = existingRefs.indexOf(req.paintImagePath)
+          if (dup >= 0) existingRefs.splice(dup, 1)
+          if (existingRefs.length > 0) existingRefs[0] = req.paintImagePath
+          else if (sampling.max_reference > 0) existingRefs.push(req.paintImagePath)
+        } else {
+          req.paintImagePath = undefined
+          req.paintTarget = undefined
+        }
+      }
+    }
+    // Init image precedence: the mask background wins, then the previous
+    // image chained "As input", then the first user-picked input image.
+    // When the mask background is also an input image it is removed from the
+    // input slot — initImage already carries it and --init-img is
+    // single-valued.
+    if (!initImage) initImage = existingInputs[0]
+    if (initImage) {
+      const j = existingInputs.indexOf(initImage)
+      if (j >= 0) existingInputs.splice(j, 1)
+    }
 
     const session = sessions.get(req.sessionId)
     if (!session) throw new Error(`Session ${req.sessionId} not found`)
 
-    // Session-level sampling override (5 whitelisted fields) wins over the
+    // Session-level sampling override (6 whitelisted fields) wins over the
     // global effective sampling. Main consumes from `sampling` only
-    // diffusion_behavior / allow_reference / max_reference / img2img â€” none
-    // session-overridable. steps/cfg/strength/sampler already arrive merged in
+    // diffusion_behavior / allow_reference / max_reference / allow_image_input
+    // â€” none session-overridable. steps/cfg/strength/sampler already arrive
+    // merged in
     // `req` from the renderer, so this is defense-in-depth; what main actually
     // needs is the scheduler/negative fallbacks resolved below. Width/height
     // are no longer session-overridable â€” the resolution selected in the chat
@@ -628,6 +818,10 @@ export function registerIpc(): void {
       if (sessSampling.strength !== undefined) sampling.strength = sessSampling.strength
       if (sessSampling.sampler !== undefined) sampling.sampler = sessSampling.sampler
       if (sessSampling.scheduler !== undefined) sampling.scheduler = sessSampling.scheduler
+      if (sessSampling.flow_shift !== undefined) sampling.flow_shift = sessSampling.flow_shift
+      // `!== undefined` (not a truthiness check): an explicit null must
+      // overwrite a previously saved fixed seed.
+      if (sessSampling.seed !== undefined) sampling.seed = sessSampling.seed
     }
     // Negative prompt: request value (sent by renderer) wins; else the session
     // file's saved value (defense-in-depth); else the global per-type default.
@@ -642,13 +836,52 @@ export function registerIpc(): void {
     // only an absent value falls back to the global default.
     const raw = req.scheduler ?? sampling.scheduler
     req.scheduler = raw && raw !== SCHEDULER_MODEL_DEFAULT && String(raw).trim() ? String(raw).trim() : undefined
+    // Flow shift: `req.flowShift` carries the RAW renderer value (a finite
+    // number, '', null, or undefined). Request value wins; else the global
+    // effective default. A finite number (incl 0) or a numeric string
+    // survives; '' / null / undefined / non-numeric => undefined => buildArgs
+    // emits no --flow-shift flag (sd-cli default: auto).
+    const rawFlow = req.flowShift ?? sampling.flow_shift
+    req.flowShift =
+      typeof rawFlow === 'number' && Number.isFinite(rawFlow)
+        ? rawFlow
+        : typeof rawFlow === 'string' && rawFlow.trim() !== '' && Number.isFinite(Number(rawFlow))
+          ? Number(rawFlow)
+          : undefined
+    // Seed: `req.seed` carries the RAW merged value (a finite integer in
+    // [0, SEED_MAX], null, or undefined). Request value wins; else the
+    // session-saved override (defense-in-depth). A valid integer survives as
+    // a fixed seed; anything else => undefined => buildArgs generates a fresh
+    // random seed per run.
+    const rawSeed = req.seed ?? sampling.seed
+    req.seed = isValidSeed(rawSeed) ? Math.floor(rawSeed) : undefined
+
+    // LoRA: the per-session config lives in session.inputs.lora (the renderer
+    // never sends it on the request — main is the source of truth at spawn
+    // time, same as the negative-prompt fallback above). mode 'off' (or no
+    // saved config) emits NEITHER flag. A custom dir that no longer exists on
+    // disk silently falls back to the default store — the dialog's Clear
+    // button is the supported way to remove the override. The default store
+    // is data/models/lora (LoRAs nest per provider under it, like the other
+    // model types).
+    let loraSpawn: { dir: string; mode: Exclude<LoraApplyMode, 'off'> } | undefined
+    const loraCfg = session.inputs?.lora
+    if (loraCfg && loraCfg.mode !== 'off') {
+      const dir =
+        loraCfg.dir && existsSync(loraCfg.dir) ? loraCfg.dir : join(dataRoot(), 'models', 'lora')
+      // The default dir is created by initDataDirs(); mkdir here is cheap
+      // idempotence that also covers a freshly-picked custom dir.
+      mkdirSync(dir, { recursive: true })
+      loraSpawn = { dir, mode: loraCfg.mode }
+    }
 
     const messageId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
     const userMsg: ChatMessage = {
       id: messageId,
       role: 'user',
       text: req.prompt,
-      refs: refs.map((r) => r),
+      // display-only: both channels land in the persisted user message
+      refs: [...refs, ...inputImages],
       createdAt: Date.now()
     }
     sessions.addMessage(req.sessionId, userMsg)
@@ -670,7 +903,14 @@ export function registerIpc(): void {
       encoder: encoderRefs.length ? undefined : encoderPath,
       encoders: encoderRefs.length ? encoderRefs : undefined,
       vision: visionPath,
+      tokenizer: tokenizerPath,
+      // Per-session LoRA flags; undefined when the session's mode is 'off'
+      // (or unset) — buildArgs emits neither flag then.
+      lora: loraSpawn,
       initImage,
+      // inpaint/outpaint mask — always set together with initImage (main
+      // never emits --mask without --init-img)
+      mask: maskPath,
       references: existingRefs,
       output
     }
@@ -696,9 +936,16 @@ export function registerIpc(): void {
         })
       },
       onError: (message) => {
+        // Errors live in the log (full detail) and as a toast (short line via
+        // gen:progress); the chat message carries only the generic failure
+        // status — raw sd-cli output never lands in the chat response.
+        log.error(`[gen] generation failed (session ${req.sessionId}): ${message}`)
         activeGens.delete(req.sessionId)
-        sessions.updateMessage(req.sessionId, assistantMsg.id, { status: 'error', error: message })
-        sendProgress(req.sessionId, assistantMsg.id, { status: 'error', error: message })
+        sessions.updateMessage(req.sessionId, assistantMsg.id, { status: 'error' })
+        sendProgress(req.sessionId, assistantMsg.id, {
+          status: 'error',
+          error: shortGenError(message) || 'Generation failed'
+        })
       }
     })
 
@@ -796,6 +1043,7 @@ export function initDataDirs(): void {
     'models/diffusion',
     'models/encoder',
     'models/vae',
+    'models/lora',
     'output',
     'sessions',
     'cache',

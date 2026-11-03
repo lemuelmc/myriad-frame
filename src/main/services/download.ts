@@ -24,6 +24,15 @@ export interface DownloadCallbacks {
    * fetch so the Range path can never resume a stale/corrupt file.
    */
   fresh?: boolean
+  /**
+   * Caller-supplied request headers (e.g. an Authorization header for a
+   * private repo). Applied AFTER the per-hop Range merge so neither clobbers
+   * the other — custom headers win on collision. Warning: a caller-supplied
+   * `Range` would clobber the resume header and break partial-resume (the
+   * auth layer never sends one). With no headers the behavior is
+   * byte-identical to the pre-headers transport.
+   */
+  headers?: Record<string, string>
 }
 
 /** Error thrown when a download is aborted via its signal. */
@@ -55,6 +64,12 @@ function safeUnlink(p: string): void {
  * against the server's content-length and deletes the file on mismatch, so
  * a truncated/corrupted model is never silently treated as complete.
  * Returns the final destination path.
+ *
+ * Caller-supplied headers (cb.headers) are applied on the first hop and on
+ * every same-host redirect hop, and DROPPED for the whole remainder of the
+ * chain once a redirect crosses hosts (auth is expressed only as headers;
+ * a credential header must not leak to a third-party CDN — curl strips
+ * Authorization on cross-host redirects by default).
  */
 export function downloadFile(
   url: string,
@@ -66,7 +81,7 @@ export function downloadFile(
     // can never silently resume a stale/corrupt file.
     if (cb.fresh) rmSync(destPath, { force: true })
     mkdirSync(dirname(destPath), { recursive: true })
-    const doFetch = (u: string, redirectsLeft = 5, retried = false): void => {
+    const doFetch = (u: string, redirectsLeft = 5, retried = false, carryCaller = true): void => {
       // Abort before issuing any request when already cancelled.
       if (cb.signal?.aborted) {
         safeUnlink(destPath)
@@ -78,6 +93,15 @@ export function downloadFile(
       const existing = existsSync(destPath) ? statSync(destPath).size : 0
       const headers: Record<string, string> = {}
       if (existing > 0) headers['Range'] = `bytes=${existing}-`
+      // Caller-supplied headers are applied after the Range merge so neither
+      // clobbers the other (custom headers win on collision). Kept separate
+      // from the per-hop header build above (which owns Range) so a future
+      // cross-host redirect policy can skip applying cb.headers wholesale
+      // without mutating the caller's object.
+      // carryCaller: the caller-supplied set is dropped for the whole
+      // remainder of the chain once a redirect crosses hosts (see the
+      // cross-host branch below).
+      if (cb.headers && carryCaller) Object.assign(headers, cb.headers)
       // The write stream, tracked for the abort handler: its fd must be
       // released before the partial file can actually be unlinked (Windows
       // delete-pending semantics — see onAbort).
@@ -90,7 +114,19 @@ export function downloadFile(
             reject(new Error(`Too many redirects for ${url}`))
             return
           }
-          doFetch(new URL(res.headers.location, u).toString(), redirectsLeft - 1, retried)
+          const loc = new URL(res.headers.location, u).toString()
+          // Cross-host redirect: drop the ENTIRE caller-supplied header set
+          // (cb.headers) from subsequent hops — auth is expressed only as
+          // headers, so dropping the whole set closes the credential-leak
+          // class for ANY header name (curl strips Authorization on
+          // cross-host redirects by default). Transport-internal headers
+          // (Range, rebuilt per hop from the local partial) are kept, and
+          // same-host hops keep the caller-supplied set; once dropped, stays
+          // dropped. Location may be relative or protocol-relative, so it is
+          // resolved against the current hop's URL (the same resolved URL the
+          // next hop actually requests) before comparing hosts.
+          const crossHost = new URL(loc).host !== new URL(u).host
+          doFetch(loc, redirectsLeft - 1, retried, carryCaller && !crossHost)
           return
         }
         if (status === 416) {
@@ -103,7 +139,7 @@ export function downloadFile(
             return
           }
           rmSync(destPath, { force: true })
-          doFetch(u, redirectsLeft, true)
+          doFetch(u, redirectsLeft, true, carryCaller)
           return
         }
         if (status !== 200 && status !== 206) {
@@ -190,11 +226,23 @@ export function downloadFile(
  * instead of leaving its row reported 'downloading' (spinner bar alive,
  * further Cancel clicks no-op) until the request finishes — or hits its
  * 15 s timeout — on its own.
+ *
+ * `headers` (optional, appended as the FOURTH parameter so the existing
+ * positional contract is untouched) are applied to the HEAD request — the
+ * auth layer's per-source Authorization headers, so private-repo HEADs
+ * authenticate (without them a 401 collapses to size 0 and the caller's
+ * `expected > 0` size guard silently no-ops). Same-host redirect hops keep
+ * the headers; a cross-host hop drops the ENTIRE caller-supplied set (curl
+ * strips Authorization on cross-host redirects by default), and once dropped
+ * it stays dropped. Resolves 0 on any failure — including a 401 from a stale
+ * token — which cannot be distinguished from being offline without an API
+ * change.
  */
 export function headSize(
   url: string,
   signal?: AbortSignal,
-  redirectsLeft = 5
+  redirectsLeft = 5,
+  headers?: Record<string, string>
 ): Promise<number> {
   return new Promise((resolve) => {
     // Abort before issuing any request when already cancelled.
@@ -205,7 +253,7 @@ export function headSize(
     const mod = url.startsWith('http://') ? http : https
     const req = mod.request(
       url,
-      { method: 'HEAD', timeout: 15000 },
+      { method: 'HEAD', timeout: 15000, headers },
       (res) => {
         const status = res.statusCode ?? 0
         if (status >= 300 && status < 400 && res.headers.location) {
@@ -214,7 +262,16 @@ export function headSize(
             resolve(0)
             return
           }
-          headSize(new URL(res.headers.location, url).toString(), signal, redirectsLeft - 1).then(
+          const loc = new URL(res.headers.location, url).toString()
+          // Same-host hops keep the caller-supplied headers; a cross-host hop
+          // drops the ENTIRE caller-supplied set (see the downloadFile
+          // cross-host rule). Once dropped, stays dropped — the recursive
+          // call passes undefined. Location may be relative or
+          // protocol-relative, so it is resolved against the current hop's
+          // URL before comparing hosts.
+          const carryCaller =
+            headers !== undefined && new URL(loc).host === new URL(url).host
+          headSize(loc, signal, redirectsLeft - 1, carryCaller ? headers : undefined).then(
             resolve
           )
           return

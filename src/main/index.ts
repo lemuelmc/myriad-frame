@@ -15,6 +15,7 @@ import { initLogging } from './services/logging'
 import { detectPlatform } from './services/platform'
 import { createRuntimeService } from './services/runtime'
 import { createSettingsService } from './services/settings'
+import { checkForConfigUpdates } from './services/updates'
 import { startAllPending } from './services/downloads'
 import type { InitStatus } from '@shared/types'
 
@@ -37,6 +38,10 @@ function createWindow(): void {
     // Window title derives from application.json (app identity config).
     title: loadApplicationConfig().label,
     backgroundColor: '#0f1115',
+    // App icon. Resolves to the bundled logo in dev (src/main) and packaged
+    // builds (out/main); falls back to Electron's default when the asset is
+    // missing so the window still launches.
+    icon: join(__dirname, '../assets/logo-square-small.png'),
     // Default application menu (Edit, View, Window, Help) is enabled by omitting `menu`.
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -142,6 +147,20 @@ async function runInitPipeline(win: BrowserWindow): Promise<void> {
 
   setInitState({ ready: true, stage: 'done', message: 'Ready' })
   send('app:ready', { platform })
+
+  // 3. launch-time config update check (detect-only): fetch the remote
+  // hub.json / runtime.json and toast the renderer when either differs from
+  // the active config. Fire-and-forget AFTER app:ready so it can never delay
+  // readiness or toast under the InitOverlay; failures are swallowed inside
+  // the orchestrator (an offline launch must not nag — the manual Settings
+  // → Check buttons surface errors). The notify callback broadcasts
+  // `updates:available` to all windows; each send is guarded like `send`
+  // above so a fast-closed window cannot crash the check.
+  void checkForConfigUpdates((status) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('updates:available', status)
+    }
+  })
 }
 
 // Single instance: two app instances share the same userData/data tree — a

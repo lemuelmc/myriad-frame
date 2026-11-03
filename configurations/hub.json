@@ -1,12 +1,18 @@
 {
-  "updatedOn": "2026-10-31 00:00:00",
+  "updatedOn": "2026-11-01 00:00:00",
   "diffusion_models": [
     { "name": "qwen_image_2_1", "label": "Qwen Image 2.1", "type": "image", "mode": "image_unified" },
     { "name": "z_image", "label": "Z-Image Turbo", "type": "image", "mode": "image" },
     { "name": "sd3_5", "label": "SD3.5", "type": "image", "mode": "image" },
     { "name": "krea2", "label": "Krea 2", "type": "image", "mode": "image" },
     { "name": "sdxl", "label": "SDXL-1.0", "type": "image", "mode": "image"},
-    { "name": "anima", "label": "Anima", "type": "image", "mode": "image"}
+    { "name": "anima", "label": "Anima", "type": "image", "mode": "image"},
+    { "name": "qwen_image_edit", "label": "Qwen Image Edit", "type": "image", "mode": "image_edit" },
+    { "name": "flux_1", "label": "Flux 1", "type": "image", "mode": "image"},
+    { "name": "flux_2", "label": "Flux 2", "type": "image", "mode": "image"},
+    { "name": "flux_3", "label": "Flux 3", "type": "image", "mode": "image"},
+    { "name": "flux_1_kontext", "label": "Flux 1 Kontext", "type": "image", "mode": "image_edit"},
+    { "name": "moss_image", "label": "Moss Image", "type": "image", "mode": "image"}
   ],
   "providers": [
     {"name": "unsloth", "label": "Unsloth"},
@@ -19,7 +25,31 @@
     {"name": "realrebelai", "label": "Rebel AI"},
     {"name": "stabilityai", "label": "Stability AI"},
     {"name": "circlestone_labs", "label": "CircleStone Labs" },
-    {"name": "run_diffusion", "label": "RunDiffusion"}
+    {"name": "run_diffusion", "label": "RunDiffusion"},
+    {"name": "euge_", "label": "Euge_"},
+    {"name": "lykon", "label": "Lykon"},
+    {"name": "jrd_2212", "label": "JRD_2212"},
+    {"name": "kranos94", "label": "Kranos94"},
+    {"name": "captain_daddy", "label": "captain_daddy"},
+    {"name": "angelomaiota", "label": "angelomaiota"},
+    {"name": "wackiii", "label": "Wackiii"},
+    {"name": "annguyentruongandrew142", "label": "Wackiannguyentruongandrew142ii"},
+    {"name": "darkessence", "label": "Darkessence"},
+    {"name": "arrssenne", "label": "arrssenne"},
+    {"name": "valpat1988108", "label": "valpat1988108"},
+    {"name": "theevildarkmage126", "label": "theevildarkmage126"},
+    {"name": "cyberthron", "label": "cyberthron"},
+    {"name": "krea", "label": "Krea"},
+    {"name": "unmods", "label": "Unmods"},
+    {"name": "diffusers", "label": "Diffusers"},
+    {"name": "tigerart", "label": "tigerart"},
+    {"name": "maxed_out", "label": "Maxed_Out"},
+    {"name": "were_catf", "label": "WereCatf"},
+    {"name": "cagliostro_lab", "label": "CagliostroLab"},
+    {"name": "leejet", "label": "leejet"},
+    {"name": "comfyanonymous", "label": "comfyanonymous"},
+    {"name": "quant_stack", "label": "QuantStack"},
+    {"name": "open_moss_team", "label": "OpenMOSS-Team"}
   ],
   "repo": {
     "vae": {
@@ -52,6 +82,36 @@
         "provider": "circlestone_labs",
         "url": "https://huggingface.co/circlestone-labs/Anima",
         "default": "split_files/vae/qwen_image_vae.safetensors"
+      },
+      "qwen_image_edit": {
+        "provider": "comfy_org",
+        "url": "https://huggingface.co/Comfy-Org/Qwen-Image",
+        "default": "split_files/vae/qwen_image_vae.safetensors"
+      },
+      "flux_1_kontext": {
+        "provider": "black_forest_labs",
+        "url": "https://huggingface.co/black-forest-labs/FLUX.1-dev",
+        "default": "ae.safetensors"
+      },
+      "flux_1": {
+        "provider": "black_forest_labs",
+        "url": "https://huggingface.co/black-forest-labs/FLUX.1-dev",
+        "default": "ae.safetensors"
+      },
+      "flux_2": {
+        "provider": "unsloth",
+        "url": "https://huggingface.co/unsloth/FLUX.2-VAE",
+        "default": "split_files/vae/flux2-vae.safetensors"
+      },
+      "flux_3": {
+        "provider": "unsloth",
+        "url": "https://huggingface.co/unsloth/FLUX.2-VAE",
+        "default": "split_files/vae/flux2-vae.safetensors"
+      },
+      "moss_image": {
+        "provider": "comfy_org",
+        "url": "https://huggingface.co/Comfy-Org/MOSS-Image",
+        "default": "vae/flux2-vae.safetensors"
       }
     },
     "encoder": {
@@ -88,6 +148,54 @@
         "label": "Anima Text Encoder",
         "url": "https://huggingface.co/circlestone-labs/Anima",
         "default": "split_files/text_encoders/qwen_3_06b_base.safetensors"
+      },
+      "qwen_image_edit": {
+        "provider": "comfy_org",
+        "label": "Qwen Image Encoder",
+        "url": "https://huggingface.co/Comfy-Org/Qwen-Image",
+        "default": "split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors"
+      },
+      "flux_1_kontext": {
+        "provider": "comfyanonymous",
+        "label": "Flux Text Encoder",
+        "url": "https://huggingface.co/comfyanonymous/flux_text_encoders",
+        "defaults": [
+          {"file": "clip_l.safetensors", "use_as": "clip_l"},
+          {"file": "t5xxl_fp16.safetensors", "use_as": "t5xxl"}
+        ]
+      },
+      "flux_1": {
+        "provider": "comfyanonymous",
+        "label": "comfyanonymous/Flux Text Encoder",
+        "url": "https://huggingface.co/comfyanonymous/flux_text_encoders",
+        "defaults": [
+          {"file": "clip_l.safetensors", "use_as": "clip_l"},
+          {"file": "t5xxl_fp16.safetensors", "use_as": "t5xxl"}
+        ]
+      },
+      "flux_2": {
+        "provider": "unsloth",
+        "label": "Unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF",
+        "url": "https://huggingface.co/unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF",
+        "default": "Mistral-Small-3.2-24B-Instruct-2506-Q4_0.gguf"
+      },
+      "flux_3": {
+        "provider": "qwen",
+        "label": "Qwen3-VL-4B-Instruct-GGUF",
+        "url": "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/tree/main",
+        "default": "Qwen3VL-4B-Instruct-Q4_K_M.gguf"
+      },
+      "moss_image": {
+        "provider": "unsloth",
+        "url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF",
+        "default": "Qwen3.5-9B-Q4_K_M.gguf"
+      }
+    },
+    "tokenizer": {
+      "moss_image": {
+        "provider": "open_moss_team",
+        "url": "https://huggingface.co/OpenMOSS-Team/MOSS-Image-Base",
+        "default": "tokenizer/tokenizer.json"
       }
     },
     "vision": {
@@ -98,6 +206,264 @@
         "default": "mmproj-Qwen3VL-8B-Instruct-F16.gguf"
       }
     },
+    "lora": [
+      {
+        "provider": "captain_daddy",
+        "label": "ENI Pattern",
+        "description": "ENI Pattern",
+        "triggers": ["Eni Pattern"],
+        "diffustion_types": ["z_image"],
+        "url": "https://civitai.com/models/3031938/eni-pattern-the-clb-author-of-dreams-z-image-turbo-character-lora-v3",
+        "path": "/",
+        "model_version_ids": [3444534]
+      },
+      {
+        "provider": "angelomaiota",
+        "label": "V67 Beautiful european",
+        "description": "Classical European Beauty",
+        "diffustion_types": ["z_image", "krea2"],
+        "triggers": [
+          "(V67 Beautiful european painting:1.1)",
+          "european beauty portrait",
+          "painterly european face",
+          "classical european elegance",
+          "soft ivory and olive skin",
+          "copper blonde and mediterranean beauty",
+          "adult men and women age 22-30",
+          "renaissance baroque chiaroscuro",
+          "old master oil blend",
+          "museum-quality european painting muse"
+        ],
+        "url": "https://civitai.com/models/3030918/v67-beautiful-european-painting",
+        "path": "/",
+        "model_version_ids": [3443140]
+      },
+      {
+        "provider": "angelomaiota",
+        "label": "V67 Weathered",
+        "description": "Transforms scenes into beautifully aged, distressed, and time-worn imagery",
+        "diffustion_types": ["z_image", "krea2"],
+        "url": "https://civitai.com/models/3030242/v67-weathered",
+        "path": "/",
+        "model_version_ids": [3442274]
+      },
+      {
+        "provider": "angelomaiota",
+        "label": "V67 Dieselpunk",
+        "description": "Step into an alternate 1930s-1950s where diesel power never faded - riveted steel, art deco lines, oil-stained machinery, and a gritty noir atmosphere",
+        "triggers": [
+          "(Dieselpunk:1.1)",
+          "dieselpunk",
+          "retro-futuristic",
+          "1930s industrial aesthetic",
+          "art deco design",
+          "riveted metal",
+          "brass machinery",
+          "exposed pistons",
+          "steam pipes",
+          "oil stains",
+          "soot",
+          "leather gear",
+          "aviator goggles",
+          "airship",
+          "diesel engine",
+          "gritty industrial atmosphere",
+          "cinematic lighting",
+          "detailed metal textures",
+          "smoky environment",
+          "noir mood",
+          "heroic industrial composition"
+        ],
+        "diffustion_types": ["z_image", "krea2"],
+        "url": "https://civitai.com/models/3029322/v67-dieselpunk",
+        "path": "/",
+        "model_version_ids": [3440998]
+      },
+      {
+        "provider": "angelomaiota",
+        "label": "V67 Elegant historical costumes",
+        "description": "Timeless Aristocratic Elegance - Renaissance, Baroque, Victorian, Roman, Greek, Japanese, Steampunk & Cinematic",
+        "triggers": [
+          "(V67 Elegant historical costumes:1.1)",
+          "elegant historical costume",
+          "historical clothing",
+          "aristocratic",
+          "courtly",
+          "ceremonial",
+          "formal",
+          "full-length",
+          "regal",
+          "refined",
+          "ornate",
+          "classic historical fashion",
+          "evening gown",
+          "court gown",
+          "ball gown",
+          "frock coat",
+          "waistcoat",
+          "breeches",
+          "bodice",
+          "corset",
+          "bustle",
+          "panniers",
+          "farthingale",
+          "ruff",
+          "cravat",
+          "mantle",
+          "cape",
+          "train",
+          "gloves",
+          "fan",
+          "parasol",
+          "tiara",
+          "headdress",
+          "jewelry",
+          "embroidery",
+          "brocade",
+          "damask",
+          "velvet",
+          "silk",
+          "satin",
+          "taffeta",
+          "lace",
+          "chiffon",
+          "muslin",
+          "wool",
+          "cashmere",
+          "jacquard",
+          "linen",
+          "pleated",
+          "draped",
+          "structured",
+          "tailored",
+          "layered",
+          "photorealistic costume reference"
+        ],
+        "diffustion_types": ["z_image", "krea2"],
+        "url": "https://civitai.com/models/3023033/v67-elegant-historical-costumes",
+        "path": "/",
+        "model_version_ids": [3432812]
+      },
+      {
+        "provider": "angelomaiota",
+        "label": "V67 Isometric",
+        "description": "Miniature Diorama Worlds, Orthographic Projection, Clean Stylized 3D",
+        "diffustion_types": ["z_image", "krea2"],
+        "url": "https://civitai.com/models/3022874/v67-isometric",
+        "path": "/",
+        "model_version_ids": [3436751]
+      },
+      {
+        "provider": "wackiii",
+        "label": "Oddling Reverie",
+        "description": "Cinematic surrealist LoRA that transforms ordinary subjects into extraordinary visual stories filled with strange little creatures, whimsical environments, and delightfully unexpected moments",
+        "diffustion_types": ["z_image", "krea2", "moss_image"],
+        "url": "https://civitai.com/models/3029966/oddling-reverie",
+        "path": "/",
+        "model_version_ids": [3444945]
+      },
+      {
+        "provider": "annguyentruongandrew142",
+        "label": "Jewelry Macro Ads Turbo V1",
+        "description": "A style LoRA designed for luxury jewelry advertising and high-end macro product photography",
+        "diffustion_types": ["z_image"],
+        "url": "https://civitai.com/models/3023397/jewelry-macro-ads-turbo-v1",
+        "path": "/",
+        "model_version_ids": [3433298]
+      },
+      {
+        "provider": "darkessence",
+        "label": "Oil pastel fantasy",
+        "description": "Oil pastel fantasy illustration",
+        "diffustion_types": ["z_image"],
+        "url": "https://civitai.com/models/3023309/oil-pastel-fantasy",
+        "path": "/",
+        "model_version_ids": [3433176]
+      },
+      {
+        "provider": "angelomaiota",
+        "label": "V67 SDXL Aesthetic",
+        "description": "SDXL Aesthetic",
+        "diffustion_types": ["sdxl"],
+        "url": "https://civitai.com/models/3031183/v67-sdxl-aesthetic",
+        "path": "/",
+        "model_version_ids": [3443536]
+      },
+      {
+        "provider": "arrssenne",
+        "label": "Roman baths",
+        "description": "SDXL Aesthetic",
+        "diffustion_types": ["sdxl"],
+        "url": "https://civitai.com/models/3030548/roman-baths",
+        "path": "/",
+        "model_version_ids": [3444230]
+      },
+      {
+        "provider": "valpat1988108",
+        "label": "Aircrayons-style",
+        "description": "SDXL Aesthetic",
+        "diffustion_types": ["sdxl"],
+        "url": "https://civitai.com/models/3029923/aircrayons-style",
+        "path": "/",
+        "model_version_ids": [3441814]
+      },
+      {
+        "provider": "theevildarkmage126",
+        "label": "DRKM4GE — Chiaroscuro",
+        "description": "SDXL Aesthetic: semi-realistic anime aesthetic, dramatic lighting, dimensional shading, intricate materials, and richer surface detail.",
+        "diffustion_types": ["krea2"],
+        "url": "https://civitai.com/models/3032139/drkm4ge-chiaroscuro-or-krea-2",
+        "path": "/",
+        "model_version_ids": [3444795]
+      },
+      {
+        "provider": "cyberthron",
+        "label": "Dark shadows & low lights - mood helper",
+        "description": "Dark shadows & low lights - mood helper",
+        "diffustion_types": ["krea2"],
+        "url": "https://civitai.com/models/3030877/dark-shadows-and-low-lights-mood-helper",
+        "path": "/",
+        "model_version_ids": [3443088]
+      },
+      {
+        "provider": "krea",
+        "label": "Rainy Window",
+        "description": "Rainy Window",
+        "triggers": ["rainy window style"],
+        "tags": ["<lora:rainywindow:1.0>"],
+        "diffustion_types": ["krea2"],
+        "url": "https://huggingface.co/krea/Krea-2-LoRA-rainywindow",
+        "path": "/"
+      },
+      {
+        "provider": "krea",
+        "label": "Sunsetblur",
+        "description": "Sunsetblur",
+        "triggers": ["ethereal motion blur style"],
+        "tags": ["<lora:sunsetblur:1.0>"],
+        "diffustion_types": ["krea2"],
+        "url": "https://huggingface.co/krea/Krea-2-LoRA-sunsetblur",
+        "path": "/"
+      },
+      {
+        "provider": "krea",
+        "label": "Darkbrush",
+        "description": "Darkbrush",
+        "triggers": ["monochrome ink wash style"],
+        "tags": ["<lora:darkbrush:1.0>"],
+        "diffustion_types": ["krea2"],
+        "url": "https://huggingface.co/krea/Krea-2-LoRA-darkbrush",
+        "path": "/"
+      },
+      {
+        "provider": "unmods",
+        "label": "Character Lora",
+        "description": "Famouse character LORAs",
+        "diffustion_types": ["krea2"],
+        "url": "https://huggingface.co/UntMods/Krea2_Chars_LoRA",
+        "max_page": 10
+      }
+    ],
     "diffusion": [
       {
         "provider": "unsloth",
@@ -202,6 +568,210 @@
         "quant_type": "safetensor",
         "diffusion_type": "sdxl",
         "url": "https://huggingface.co/RunDiffusion/Juggernaut-XI-v11",
+        "path": "/"
+      },
+      {
+        "provider": "unsloth",
+        "name": "unsloth_qwen_image_edit_2511",
+        "label": "Unsloth/Qwen Image Edit 2511",
+        "description": "Image editing model by Qwen",
+        "inference_type": "image",
+        "quant_type": "gguf",
+        "diffusion_type": "qwen_image_edit",
+        "url": "https://huggingface.co/unsloth/Qwen-Image-Edit-2511-GGUF",
+        "path": "/"
+      },
+      {
+        "provider": "euge_",
+        "name": "euge_anime_illust_diffusion_xl",
+        "label": "Euge_/Anime Illust Diffusion XL",
+        "description": "Stylized anime illustrations.",
+        "inference_type": "image",
+        "quant_type": "safetensor",
+        "diffusion_type": "sdxl",
+        "url": "https://civitai.com/models/124189/anime-illust-diffusion-xl",
+        "path": "/"
+      },
+      {
+        "provider": "lykon",
+        "name": "lykon_aam_xl_anime_mix",
+        "label": "lykon_/AAM XL Anime Mix",
+        "description": "Anime Screencap Style Model",
+        "inference_type": "image",
+        "quant_type": "safetensor",
+        "diffusion_type": "sdxl",
+        "url": "https://civitai.com/models/269232/aam-xl-anime-mix",
+        "path": "/"
+      },
+      {
+        "provider": "jrd_2212",
+        "name": "jrd_2212_realismengine_reprise_40_sdxl",
+        "label": "JRD_2212/(SDXL) Realism_Engine Reprise 4.0",
+        "description": "Photorealism, clean, coherent and natural.",
+        "inference_type": "image",
+        "quant_type": "safetensor",
+        "diffusion_type": "sdxl",
+        "url": "https://civitai.com/models/2625788/realismengine-reprise-40",
+        "path": "/",
+        "model_version_ids": [2948058]
+      },
+      {
+        "provider": "jrd_2212",
+        "name": "jrd_2212_realismengine_reprise_40_z_image",
+        "label": "JRD_2212/(Z-Image) Realism_Engine Reprise 4.0",
+        "description": "Photorealism, clean, coherent and natural.",
+        "inference_type": "image",
+        "quant_type": "safetensor",
+        "diffusion_type": "z_image",
+        "url": "https://civitai.com/models/2625788/realismengine-reprise-40",
+        "path": "/",
+        "model_version_ids": [3053181, 2985425, 2962504]
+      },
+      {
+        "provider": "kranos94",
+        "name": "kranos94_pikon_realism",
+        "label": "Kranos94/Pikon-Realism",
+        "description": "Photorealism at CFG 1",
+        "inference_type": "image",
+        "quant_type": "safetensor",
+        "diffusion_type": "sdxl",
+        "url": "https://civitai.com/models/1855140/pikon-realism",
+        "path": "/"
+      },
+      {
+        "provider": "diffusers",
+        "name": "diffusers_sdxl_inpainting_0_1",
+        "label": "SD-XL Inpainting 0.1",
+        "description": "SD-XL Inpainting 0.1",
+        "inference_type": "image",
+        "quant_type": "safetensor",
+        "diffusion_type": "sdxl",
+        "url": "https://huggingface.co/diffusers/stable-diffusion-xl-1.0-inpainting-0.1",
+        "path": "/unet"
+      },
+      {
+        "provider": "tigerart",
+        "name": "tigerart_haveallsdxl_inpaint_v1_0",
+        "label": "HaveallSDXL Inpaint",
+        "description": "Inpaint version of HaveallSDXL v1.0 model by Haveall",
+        "inference_type": "image",
+        "quant_type": "safetensor",
+        "diffusion_type": "sdxl",
+        "url": "https://civitai.com/models/441879/haveallsdxl-inpaint",
+        "path": "/",
+        "model_version_ids": [492148]
+      },
+      {
+        "provider": "maxed_out",
+        "name": "maxed_out_myper3d_inapainting_sdxl_pony",
+        "label": "Hyper3d Inpainting (SDXL | Pony)",
+        "description": "This is a merge of Hyper3D specifically for inpainting",
+        "inference_type": "image",
+        "quant_type": "safetensor",
+        "diffusion_type": "sdxl",
+        "url": "https://civitai.com/models/1691927/hyper3d-inpainting-sdxl-or-pony",
+        "path": "/",
+        "model_version_ids": [1914805]
+      },
+      {
+        "provider": "were_catf",
+        "name": "were_catf_animagine_xl_inpainting",
+        "label": "AnimagineXL inpainting",
+        "description": "This is an inpainting model of the excellent Animagine XL by @CagliostroLab",
+        "inference_type": "image",
+        "quant_type": "safetensor",
+        "diffusion_type": "sdxl",
+        "url": "https://civitai.com/models/430948/animaginexl-inpainting",
+        "path": "/",
+        "model_version_ids": [480117]
+      },
+      {
+        "provider": "cagliostro_lab",
+        "name": "cagliostro_lab_animagine_xl",
+        "label": "Animagine XL",
+        "description": "This open-source, anime-themed text-to-image model",
+        "inference_type": "image",
+        "quant_type": "safetensor",
+        "diffusion_type": "sdxl",
+        "url": "https://civitai.com/models/260267/animagine-xl-v31",
+        "path": "/",
+        "model_version_ids": [403131, 293564, 297102]
+      },
+      {
+        "provider": "were_catf",
+        "name": "were_catf_animagine_xl_inpainting",
+        "label": "Juggernaut XL inpainting",
+        "description": "This is an inpainting model of the excellent Juggernaut XL ",
+        "inference_type": "image",
+        "quant_type": "safetensor",
+        "diffusion_type": "sdxl",
+        "url": "https://civitai.com/models/403361/juggernaut-xl-inpainting",
+        "path": "/",
+        "model_version_ids": [456538, 449759]
+      },
+      {
+        "provider": "leejet",
+        "name": "leejet_flux_1_dev_gguf",
+        "label": "leejet/Flux 1 Dev GGUF",
+        "description": "Flux GGUF quantized files",
+        "inference_type": "image",
+        "quant_type": "gguf",
+        "diffusion_type": "flux_1",
+        "url": "https://huggingface.co/leejet/FLUX.1-dev-gguf",
+        "path": "/"
+      },
+      {
+        "provider": "leejet",
+        "name": "leejet_flux_1_schnell_gguf",
+        "label": "leejet/Flux 1 Schenll GGUF",
+        "description": "Flux GGUF quantized files",
+        "inference_type": "image",
+        "quant_type": "gguf",
+        "diffusion_type": "flux_1",
+        "url": "https://huggingface.co/leejet/FLUX.1-schnell-gguf",
+        "path": "/"
+      },
+      {
+        "provider": "quant_stack",
+        "name": "quant_stack_flux_1_Kontext_dev_GGUF",
+        "label": "QuantStack/FLUX.1-Kontext-dev-GGUF",
+        "description": "FLUX.1-Kontext-dev-GGUF",
+        "inference_type": "image",
+        "quant_type": "gguf",
+        "diffusion_type": "flux_1_kontext",
+        "url": "https://huggingface.co/QuantStack/FLUX.1-Kontext-dev-GGUF",
+        "path": "/"
+      },
+      {
+        "provider": "city96",
+        "name": "city96_flux_2_dev_gguf",
+        "label": "City96/FLUX.2-dev-gguf",
+        "description": "FLUX.2-dev-GGUF",
+        "inference_type": "image",
+        "quant_type": "gguf",
+        "diffusion_type": "flux_2",
+        "url": "https://huggingface.co/city96/FLUX.2-dev-gguf",
+        "path": "/"
+      },
+      {
+        "provider": "leejet",
+        "name": "leejet_flux_3_image_klein_gguf",
+        "label": "leejet/flux-3-image-klein GGUF quantized files",
+        "description": "Flux-3-image-klein GGUF quantized files",
+        "inference_type": "image",
+        "quant_type": "gguf",
+        "diffusion_type": "flux_3",
+        "url": "https://huggingface.co/leejet/flux-3-image-klein-GGUF",
+        "path": "/"
+      },
+      {
+        "provider": "leejet",
+        "name": "leejet_moss_image_sft_gguf",
+        "description": "MOSS-Image-SFT GGUF quantized files",
+        "inference_type": "image",
+        "quant_type": "gguf",
+        "diffusion_type": "moss_image",
+        "url": "https://huggingface.co/leejet/MOSS-Image-SFT-GGUF",
         "path": "/"
       }
     ]

@@ -7,7 +7,7 @@
 
 // Shared types used by main, preload and renderer.
 
-export type ModelType = 'diffusion' | 'encoder' | 'vae' | 'vision'
+export type ModelType = 'diffusion' | 'encoder' | 'vae' | 'vision' | 'lora' | 'tokenizer'
 
 /**
  * Renderer theme key. Kept open-ended (`string`) so new themes can be added in
@@ -65,6 +65,29 @@ export interface HubDiffusionEntry {
    * root's direct files (no recursion)
    */
   path?: string
+  /**
+   * Optional CivitAI version filter (CivitAI entries only): when present and
+   * non-null, the hub scan lists ONLY the model versions whose ids appear
+   * here — e.g. `[2948058]` pins the entry to that version's files (with
+   * `path: '/'`, its primary file). Ignored by every other source.
+   * Absent/null → every version is listed (subject to `path`).
+   */
+  model_version_ids?: number[]
+  /**
+   * Optional pagination cap (HuggingFace entries): the maximum number of
+   * PAGES the HF tree scan fetches (100 files per page). Absent → 1 page.
+   * Ignored by every other source.
+   */
+  max_page?: number
+  /**
+   * Optional model-source override: a source name (`huggingface`) or a domain
+   * (`huggingface.co`) that forces source selection regardless of the URL
+   * host. `source` wins over `domain` when both are present. Absent → the
+   * source is derived from the URL's hostname.
+   */
+  source?: string
+  /** Optional domain override (see `source`); `source` wins when both are set. */
+  domain?: string
 }
 
 /** One file of an encoder bundle (sd3.5-style). */
@@ -90,6 +113,15 @@ export interface HubEncoderEntry {
   default?: string
   /** array of `{ file, use_as }` pairs — the multi-file encoder bundle */
   defaults?: HubEncoderDefault[]
+  /**
+   * Optional model-source override: a source name (`huggingface`) or a domain
+   * (`huggingface.co`) that forces source selection regardless of the URL
+   * host. `source` wins over `domain` when both are present. Absent → the
+   * source is derived from the URL's hostname.
+   */
+  source?: string
+  /** Optional domain override (see `source`); `source` wins when both are set. */
+  domain?: string
 }
 
 /** VAE entry from hub.json repo.vae. */
@@ -99,6 +131,17 @@ export interface HubVaeEntry {
   url: string
   /** repo-relative file path (or full URL) of the default VAE */
   default: string
+  /**
+   * Optional model-source override: a source name (`huggingface`) or a domain
+   * (`huggingface.co`) that forces source selection regardless of the URL
+   * host. `source` wins over `domain` when both are present. Absent → the
+   * source is derived from the URL's hostname. (The legacy plain-URL VAE
+   * form — a bare URL string — cannot carry an override and relies on
+   * URL-host matching only.)
+   */
+  source?: string
+  /** Optional domain override (see `source`); `source` wins when both are set. */
+  domain?: string
 }
 
 /** Vision (mmproj) entry from hub.json repo.vision. */
@@ -109,6 +152,61 @@ export interface HubVisionEntry {
   url: string
   /** repo-relative file path (or full URL) of the default vision (mmproj) model */
   default: string
+  /**
+   * Optional model-source override: a source name (`huggingface`) or a domain
+   * (`huggingface.co`) that forces source selection regardless of the URL
+   * host. `source` wins over `domain` when both are present. Absent → the
+   * source is derived from the URL's hostname.
+   */
+  source?: string
+  /** Optional domain override (see `source`); `source` wins when both are set. */
+  domain?: string
+}
+
+/** Tokenizer entry from hub.json repo.tokenizer. */
+export interface HubTokenizerEntry {
+  /** provider key (e.g. 'open_moss_team') — selects the download subdirectory */
+  provider?: string
+  label?: string
+  url: string
+  /** repo-relative file path (or full URL) of the tokenizer file (e.g. 'tokenizer.json') */
+  default: string
+  /**
+   * Optional model-source override: a source name (`huggingface`) or a domain
+   * (`huggingface.co`) that forces source selection regardless of the URL
+   * host. `source` wins over `domain` when both are present. Absent → the
+   * source is derived from the URL's hostname.
+   */
+  source?: string
+  /** Optional domain override (see `source`); `source` wins when both are set. */
+  domain?: string
+}
+
+/** LoRA entry from hub.json repo.lora — a downloadable LoRA adapter repo
+ *  (CivitAI model page or HuggingFace repo). Unlike the other repo sections,
+ *  a lora entry serves MULTIPLE diffusion types (`diffustion_types[]`) and has
+ *  no `default` file — every scanned file is a catalog row. */
+export interface HubLoraEntry {
+  /** provider key (e.g. 'captain_daddy') — recorded on entries + the download registry */
+  provider: string
+  /** human-readable label (e.g. 'ENI Pattern') */
+  label: string
+  /** short description shown in the LoRA browser */
+  description?: string
+  /** diffusion types this LoRA is offered for (hub.json key kept as-is) */
+  diffustion_types: string[]
+  /** CivitAI model URL or HuggingFace repo URL */
+  url: string
+  /** optional scan restriction — same grammar as diffusion entries ('/' = repo-root direct children, absent = whole repo) */
+  path?: string
+  /** optional CivitAI version filter (same rule as diffusion entries) */
+  model_version_ids?: number[]
+  /** optional pagination cap (HuggingFace entries; same rule as diffusion entries) */
+  max_page?: number
+  /** optional model-source override (same semantics as diffusion entries) */
+  source?: string
+  /** optional domain override (see `source`); `source` wins when both are set. */
+  domain?: string
 }
 
 export interface HubConfig {
@@ -125,8 +223,12 @@ export interface HubConfig {
     encoder: Record<string, HubEncoderEntry>
     /** diffusionType -> vision (mmproj) repo + default file, when the diffusion_type needs a vision model; absent when none does */
     vision?: Record<string, HubVisionEntry>
+    /** diffusionType -> tokenizer repo + default file, when the diffusion_type needs a tokenizer; absent when none does */
+    tokenizer?: Record<string, HubTokenizerEntry>
     /** list of downloadable diffusion model quantizations */
     diffusion: HubDiffusionEntry[]
+    /** downloadable LoRA adapters; optional so older hub.json overrides without it stay valid */
+    lora?: HubLoraEntry[]
   }
 }
 
@@ -138,13 +240,24 @@ export interface SamplingDefaults {
    *  VAE inside the file) via `--model` */
   diffusion_behavior: 'all_in_one' | 'standalone'
   /** whether this diffusion type accepts reference images at all;
-   *  gates the 'Use previous image' checkbox and previous-image chaining */
+   *  gates the 'Add reference images' button and --ref-image chaining */
   allow_reference: boolean
   max_reference: number
-  /** img2img support: when true AND 'Use previous image' is checked, the
-   *  referenced image is passed as the init image (--init-img) instead of
-   *  a reference (--ref-image) */
-  img2img: boolean
+  /** whether this diffusion type accepts explicit input images at all
+   *  (img2img-style); gates the 'Add input images' button */
+  allow_image_input: boolean
+  /** max number of input images (single --init-img path, so >1 is a
+   *  picker-dialog cap only; sd-cli takes one init image) */
+  max_image_input: number
+  /** inpainting / outpainting support: when true the composer's Inpaint and
+   *  Outpaint buttons are enabled and a saved mask is emitted as `--mask`
+   *  alongside `--init-img` at spawn */
+  allow_inpainting: boolean
+  /** paint-tool support: when true the composer's Paint button is shown and a
+   *  saved painted image is routed into --init-img or the first --ref-image
+   *  at spawn; absent/false hides the button and main drops any paint fields
+   *  (defense-in-depth). Optional — older sampling.json entries may omit it. */
+  allow_painting?: boolean
   /** denoise strength for img2img runs — emitted as `--strength` only
    *  alongside the init image (sd-cli default 0.75) */
   strength: number
@@ -152,6 +265,20 @@ export interface SamplingDefaults {
   cfg: number
   sampler: string
   scheduler?: string | null
+  /**
+   * Flow-model timestep shift (--flow-shift). `null` / `''` / absent means the
+   * flag is NOT emitted (sd-cli default: auto); any finite number - including
+   * 0 - is emitted as `--flow-shift <n>`.
+   */
+  flow_shift?: number | '' | null
+  /**
+   * Per-run RNG seed. A finite integer in [0, SEED_MAX] is emitted as a fixed
+   * `--seed <n>` on every generation; null / absent (also the shipped
+   * sampling.json shape — the field is never set there) means a fresh random
+   * seed per run. `''` is a transient v-model artifact (dialog input), never
+   * persisted.
+   */
+  seed?: number | '' | null
   negative?: string | null
   width: number
   height: number
@@ -190,6 +317,17 @@ export const DEFAULT_SAMPLER = 'euler'
  * downstream checks stay single-path.
  */
 export const SCHEDULER_MODEL_DEFAULT = 'model-specific'
+
+/** sd-cli's seed bounds: 32-bit unsigned (man.txt:257 — "-s, --seed  RNG seed
+ *  (default: 42, use random seed for < 0)"). */
+export const SEED_MAX = 4294967295
+
+/** True for a storable fixed seed — a finite integer in [0, SEED_MAX]. Rejects
+ *  '', null, undefined, negatives, and out-of-range values. Shared by the
+ *  session-sampling dialog, the sessions whitelist, gen:start, and buildArgs. */
+export function isValidSeed(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= SEED_MAX
+}
 
 // ---------- configurations/resolution.json ----------
 export interface ResolutionEntry {
@@ -247,6 +385,20 @@ export interface HubCheckResult {
   removedModels: string[]
 }
 
+/**
+ * Which configs have unapplied remote changes, detected by the launch-time
+ * update check (`checkForConfigUpdates`). Detect-only: applying is a manual
+ * Settings → Models/Runtime → `Check` action. Delivered to the renderer via
+ * the `updates:available` push and the `updates:get` pull (null until the
+ * first launch check of the session completes).
+ */
+export interface ConfigUpdateStatus {
+  /** the remote hub.json differs from the active one */
+  hub: boolean
+  /** the remote runtime.json differs from the active one */
+  runtime: boolean
+}
+
 export interface AllConfigs {
   hub: HubConfig
   sampling: SamplingConfig
@@ -274,10 +426,20 @@ export interface CatalogEntry {
   description?: string
   /** for an encoder bundle file, the CLI flag name it is passed as (e.g. 'clip_g', 't5xxl') */
   useAs?: string
+  /**
+   * Model source provenance + download-time routing key (e.g. 'huggingface') —
+   * the post-override resolved source NAME stamped by buildCatalog on every
+   * source-dispatched entry. NOT the same as `HubCatalog.source` (the app
+   * name from application.json). Entries that bypass a source (legacy
+   * plain-URL VAE strings) carry no stamp and degrade to URL-host matching
+   * at download time.
+   */
+  source?: string
 }
 
 export interface HubCatalog {
   scannedAt: number
+  /** app identity from application.json — NOT the per-entry model-source routing key (CatalogEntry.source) */
   source: string
   entries: CatalogEntry[]
 }
@@ -298,6 +460,7 @@ export interface ChatMessage {
   /** reference image paths (user) */
   refs?: string[]
   status?: 'ok' | 'stopped' | 'error'
+  /** legacy only — raw error text is no longer persisted or rendered; errors live in the log + toasts */
   error?: string
   createdAt: number
 }
@@ -308,8 +471,22 @@ export interface ChatMessage {
  *  width/height rows, which are no longer overridable per session — the
  *  resolution selected in the chat panel always wins). */
 export type SessionSamplingOverride = Partial<
-  Pick<SamplingDefaults, 'steps' | 'cfg' | 'strength' | 'sampler' | 'scheduler'>
+  Pick<SamplingDefaults, 'steps' | 'cfg' | 'strength' | 'sampler' | 'scheduler' | 'flow_shift' | 'seed'>
 >
+
+/**
+ * Per-session LoRA loading mode — the value passed to sd-cli's
+ * `--lora-apply-mode`. `'off'` (the default for sessions without a saved
+ * config) emits NEITHER `--lora-model-dir` NOR `--lora-apply-mode`.
+ */
+export type LoraApplyMode = 'off' | 'auto' | 'immediately' | 'at_runtime'
+
+/** Per-session LoRA settings (session.inputs.lora). */
+export interface SessionLora {
+  mode: LoraApplyMode
+  /** absolute custom directory for --lora-model-dir; absent → default data/models/lora */
+  dir?: string
+}
 
 export interface SessionInputs {
   /** diffusion model file name (CatalogEntry.name) */
@@ -322,6 +499,8 @@ export interface SessionInputs {
   negativePrompt?: string
   /** per-session sampling override; null clears */
   sampling?: SessionSamplingOverride | null
+  /** per-session LoRA config; absent = off (no lora flags at spawn); null clears */
+  lora?: SessionLora | null
 }
 
 export interface Session {
@@ -344,6 +523,8 @@ export interface Settings {
   defaultEncoder?: Record<string, string>
   /** diffusionType -> vision (mmproj) file name (default vision model) */
   defaultVision?: Record<string, string>
+  /** diffusionType -> tokenizer file name (default tokenizer) */
+  defaultTokenizer?: Record<string, string>
   /** diffusionType -> sampling overrides */
   sampling?: Record<string, Partial<SamplingDefaults>>
   /** global performance / inference flags (applied to every generation) */
@@ -411,23 +592,76 @@ export interface GenerationRequest {
   encoders?: EncoderRef[]
   /** vision (mmproj) file name (from models dir) */
   vision?: string
+  /** tokenizer file name (from models dir) */
+  tokenizer?: string
   resolution: { width: number; height: number }
-  /** absolute paths of user reference images */
+  /** absolute paths of user reference images (--ref-image channel) */
   referencePaths: string[]
+  /** absolute paths of user input images (--init-img channel); distinct
+   *  from referencePaths (--ref-image channel) */
+  inputImagePaths: string[]
   usePrevious: boolean
+  /** how the previous image is chained this request: 'input' or 'reference'.
+   *  Chosen by the user in the composer dropdown; main re-validates. */
+  previousImageMode?: 'input' | 'reference'
   /** absolute path of the session's last generated image */
   previousImagePath?: string
+  /** absolute path of the saved mask PNG (data/tmp/masks); set only when
+   *  the user saved a mask in the inpaint/outpaint dialog */
+  maskPath?: string
+  /** absolute path of the init image the mask was drawn on (inpaint:
+   *  the background image; outpaint: the padded composition). Wins over
+   *  the img2img previous-image reinterpretation. */
+  initImagePath?: string
+  /** absolute path of the merged paint image (data/tmp/masks); set only
+   *  when the user saved a paint. Mutually exclusive with maskPath by
+   *  construction — the composer's switch-guard keeps one tool state at a
+   *  time, and main guards the combination anyway. */
+  paintImagePath?: string
+  /** how the paint image is routed: 'init' → the --init-img slot (wins over
+   *  the previous-image chaining and user-picked inputs, same precedence
+   *  slot as the mask background), 'reference' → the first --ref-image slot
+   *  (the original first ref is replaced). Decided at paint-save time from
+   *  the background's source; anything else is treated as absent by main. */
+  paintTarget?: 'init' | 'reference'
   steps: number
   cfg: number
   sampler: string
   /** sigma scheduler; omitted or 'model-specific' ⇒ no --scheduler flag */
   scheduler?: string
+  /** flow-model shift; RAW merged value (finite number incl 0, '', null, or
+   *  undefined). Main resolves the global fallback + normalization: a finite
+   *  number ⇒ --flow-shift; anything else ⇒ no flag. */
+  flowShift?: number | '' | null
+  /** RNG seed; RAW merged value (finite integer in [0, SEED_MAX], null, or
+   *  undefined). Main resolves the session fallback + normalization: a valid
+   *  integer ⇒ fixed --seed; anything else ⇒ buildArgs generates a fresh
+   *  random seed per run. */
+  seed?: number | '' | null
   /** negative prompt for this generation; empty/omitted ⇒ no --negative-prompt flag */
   negativePrompt?: string
   /** denoise strength for img2img runs (sampling.json `strength`) */
   strength: number
   /** global performance flags applied to this generation */
   performance?: Partial<PerformanceSettings>
+}
+
+/** Renderer → main payload for `masks:save` (inpaint / outpaint / paint dialog Save). */
+export interface MaskSaveRequest {
+  /** 'paint' carries the MERGED background+strokes image in `maskPng` (brush
+   *  colors preserved, no initPng); saveMask writes it like any mask PNG. */
+  kind: 'inpaint' | 'outpaint' | 'paint'
+  /** PNG data URL — painted = opaque, unpainted = transparent alpha (paint:
+   *  the merged image, opaque strokes over the background) */
+  maskPng: string
+  /** PNG data URL — outpaint only: the padded init image */
+  initPng?: string
+}
+
+/** Result of `masks:save` — absolute paths under data/tmp/masks. */
+export interface MaskSaveResult {
+  maskPath: string
+  initPath?: string
 }
 
 export interface GenProgress {
@@ -437,6 +671,7 @@ export interface GenProgress {
   step?: number
   totalSteps?: number
   image?: ChatImage
+  /** short toast-friendly failure line; the full detail lands in data/logs/latest.log */
   error?: string
 }
 
@@ -556,4 +791,52 @@ export interface LogsInfo {
   content: string
   /** full file size in bytes (content may be a shorter tail) */
   size: number
+}
+
+// ---------- tokens (data/hub-tokens.json) ----------
+/** A token entry returned by the tokens:list IPC. */
+export interface TokenEntry {
+  /** Full key (e.g. "huggingface:unsloth/Qwen-Image-2.1-GGUF" or "huggingface:*") */
+  key: string
+  /**
+   * Masked token — first 4 chars + "…" + last 4 chars (e.g. "hf_x…abcd");
+   * 8 bullets when the token is ≤12 chars. Raw token values NEVER reach the
+   * renderer through the list.
+   */
+  maskedToken: string
+  /** "exact", "partial-wildcard", or "full-wildcard" */
+  patternType: 'exact' | 'partial-wildcard' | 'full-wildcard'
+  /** Source name extracted from the key (e.g. "huggingface") */
+  source: string
+  /** Repo pattern extracted from the key (e.g. "unsloth/Qwen-Image-2.1-GGUF" or "*" or "unsloth/*") */
+  repoPattern: string
+}
+
+/** Payload for tokens:add. */
+export interface TokenEntryInput {
+  /** Source name (e.g. "huggingface") */
+  source: string
+  /** Repo pattern (e.g. "unsloth/Qwen-Image-2.1-GGUF", "unsloth/*", or "*") */
+  repoPattern: string
+  /** Token value (e.g. "hf_xxxxxxxxxxxx") */
+  token: string
+}
+
+/** Result of a tokens:add or tokens:update operation. */
+export interface TokenEntryResult {
+  key: string
+  maskedToken: string
+}
+
+/**
+ * Result of a tokens:importFile operation. `errors` and `skipped` are
+ * mutually exclusive: an entry with a specific problem is counted in
+ * `errors` (and NOT in `skipped`); `skipped` counts only entries ignored
+ * without a message (blank/non-string token values).
+ */
+export interface TokenImportResult {
+  added: number
+  updated: number
+  errors: string[]
+  skipped: number
 }

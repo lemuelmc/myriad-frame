@@ -1,3 +1,9 @@
+<!--
+Myriad Frame — Electron + Vue 3 desktop front-end for sd-cli (stable-diffusion.cpp).
+Author: Lemuel Raganas
+License: Apache License 2.0 — permissive; allows use, modification, and distribution
+(commercial or private) provided the license notice and copyright are preserved.
+-->
 <script setup lang="ts">
 import { nextTick, ref } from 'vue'
 import { useSessionsStore } from '../stores/sessions'

@@ -195,6 +195,24 @@ textarea:focus {
   border-color: transparent;
   color: var(--accent-hover);
 }
+/* Quiet dismiss affordance on every toast; pushed to the right edge so it
+   reads as chrome rather than a third text element. Theme-agnostic on
+   purpose (inherit + opacity) — the seasonal themes don't restyle toasts. */
+.toast-close {
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.55;
+  cursor: pointer;
+  padding: 0 0 0 2px;
+  font: inherit;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+.toast-close:hover {
+  opacity: 1;
+}
 .toast.error {
   border-left-color: var(--danger);
 }

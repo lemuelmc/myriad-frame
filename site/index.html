@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Myriad Frame — a desktop front-end for stable-diffusion.cpp</title>
+  <meta name="description" content="Myriad Frame is a free, open-source Electron + Vue 3 desktop app that manages model downloads and drives image generation through the bundled stable-diffusion.cpp (sd-cli) runtime." />
+  <meta name="theme-color" content="#0f1115" />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="Myriad Frame" />
+  <meta property="og:description" content="Manage sessions, download and select models, and drive sd-cli image generation — all in one desktop app." />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="assets/improved_model_selector.png" />
+
+  <link rel="icon" href="assets/logo-square-small.png" type="image/png" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- Nav -->
+  <nav>
+    <a class="brand" href="#top">
+      <img src="assets/logo-wide-small.png" alt="Myriad Frame" />
+    </a>
+    <div class="links">
+      <a class="hide-sm" href="#features">Features</a>
+      <a class="hide-sm" href="#how">How it works</a>
+      <a class="hide-sm" href="#video">Video Demo</a>
+      <a class="hide-sm" href="#screenshots">Screenshots</a>
+      <a class="hide-sm" href="#install">Install</a>
+      <a class="btn-gh" href="https://github.com/lemuelmc/myriad-frame" rel="noopener" target="_blank" aria-label="GitHub repository">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.37.5 0 5.87 0 12.5c0 5.3 3.44 9.8 8.21 11.39.6.11.82-.26.82-.58v-2.02c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.5.99.1-.78.42-1.3.76-1.6-2.67-.3-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.11-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6.01 0c2.29-1.55 3.3-1.23 3.3-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.6-2.81 5.62-5.49 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.22.7.83.58A12 12 0 0 0 24 12.5C24 5.87 18.63.5 12 .5z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <header class="hero" id="top">
+    <div class="wrap">
+      <img class="logo" src="assets/logo-wide-small.png" alt="Myriad Frame" />
+      <span class="eyebrow">Electron + Vue 3 · Open Source</span>
+      <h1>Myriad Frame</h1>
+      <p class="lead">A free, open-source desktop front-end for <a href="https://github.com/leejet/stable-diffusion.cpp" rel="noopener" target="_blank">stable-diffusion.cpp</a>. Manage chat sessions, download and select models, and drive image generation through a bundled <code>sd-cli</code> runtime — all in one place.</p>
+      <div class="ctas">
+        <a class="btn primary" href="https://github.com/lemuelmc/myriad-frame/releases" rel="noopener" target="_blank">Download Release</a>
+        <a class="btn" href="https://github.com/lemuelmc/myriad-frame" rel="noopener" target="_blank">View on GitHub</a>
+        <a class="btn bmc" href="https://buymeacoffee.com/lemuel.raganas" rel="noopener" target="_blank" aria-label="Buy me a coffee"></a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Features -->
+  <section id="features">
+    <div class="wrap">
+      <div class="center">
+        <span class="eyebrow">What it does</span>
+        <h2>Everything you need to generate images locally</h2>
+        <p class="lead">A clean, JSON-driven desktop app that keeps all behavior easy to configure.</p>
+      </div>
+      <div class="grid">
+        <div class="card reveal">
+          <div class="icon">💬</div>
+          <h3>Session & chat management</h3>
+          <p>Organize generations into chat sessions with per-session sampling, negative prompt, and image-persistence settings that save automatically.</p>
+        </div>
+        <div class="card reveal">
+          <div class="icon">🧩</div>
+          <h3>Model discovery & downloads</h3>
+          <p>Browse a searchable catalog of quantized diffusion, VAE, and encoder models from curated Hugging Face and CivitAI sources — download and manage them without leaving the app.</p>
+        </div>
+        <div class="card reveal">
+          <div class="icon">⚡</div>
+          <h3>Fast sd-cli runtime</h3>
+          <p>Runs on <a href="https://github.com/leejet/stable-diffusion.cpp" rel="noopener" target="_blank">stable-diffusion.cpp</a> with CUDA/Vulkan or CPU support. Recommended runtime is auto-selected per platform and GPU.</p>
+        </div>
+        <div class="card reveal">
+          <div class="icon">🖼️</div>
+          <h3>References & image input</h3>
+          <p>Attach reference images for style adaptation or use a previous output as an init image. Fullscreen lightbox previews every generated image.</p>
+        </div>
+        <div class="card reveal">
+          <div class="icon">🎨</div>
+          <h3>Inpainting & outpainting</h3>
+          <p>Paint a mask over an image to regenerate regions, or expand the frame outward — all with an in-canvas editor, no external image tools required.</p>
+        </div>
+        <div class="card reveal">
+          <div class="icon">🔌</div>
+          <h3>LoRA support</h3>
+          <p>Browse, download, and apply LoRA adapters per generation with a management UI and per-session apply mode.</p>
+        </div>
+        <div class="card reveal">
+          <div class="icon">🎛️</div>
+          <h3>JSON-driven config</h3>
+          <p>Model lists, sampling defaults, resolutions, and runtime URLs are all driven by JSON files in <code>configurations/</code> — edit behavior without touching code.</p>
+        </div>
+        <div class="card reveal">
+          <div class="icon">🌓</div>
+          <h3>Themed UI</h3>
+          <p>Dark-first interface with a theme picker (Default, Halloween, Christmas) and a polished, resizable layout.</p>
+        </div>
+        <div class="card reveal">
+          <div class="icon">🔐</div>
+          <h3>Per-source auth</h3>
+          <p>Store tokens for private Hugging Face and CivitAI repos via a built-in Tokens manager — never hand-edited, never logged.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section id="how">
+    <div class="wrap">
+      <div class="center">
+        <span class="eyebrow">Getting started</span>
+        <h2>How generation works</h2>
+        <p class="lead">From prompt to pixel in four steps.</p>
+      </div>
+      <div class="steps">
+        <div class="step reveal">
+          <div class="num">STEP 01</div>
+          <h3>Pick a model</h3>
+          <p>Choose a quantized diffusion model (and optional VAE/encoder) from the searchable catalog.</p>
+        </div>
+        <div class="step reveal">
+          <div class="num">STEP 02</div>
+          <h3>Configure</h3>
+          <p>Set a resolution, sampling defaults, and any reference images or prompts.</p>
+        </div>
+        <div class="step reveal">
+          <div class="num">STEP 03</div>
+          <h3>Generate</h3>
+          <p>The main process spawns <code>sd-cli</code>, streams step progress, and writes results to <code>data/output/</code>.</p>
+        </div>
+        <div class="step reveal">
+          <div class="num">STEP 04</div>
+          <h3>Preview</h3>
+          <p>Click any output to open a fullscreen lightbox. Regenerate, edit, or save.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Video -->
+  <section id="video">
+    <div class="wrap">
+      <div class="center">
+        <span class="eyebrow">Video demo</span>
+        <h2>Inpainting workflow</h2>
+        <p class="lead">Paint a mask over an image and regenerate the masked region — no external editors.</p>
+      </div>
+      <div class="video-wrap reveal">
+        <video controls preload="metadata">
+          <source src="assets/inpainting-20261101.mp4" type="video/mp4" />
+          Your browser does not support the video tag.
+        </video>
+      </div>
+    </div>
+  </section>
+
+  <!-- Screenshots -->
+  <section id="screenshots">
+    <div class="wrap">
+      <div class="center">
+        <span class="eyebrow">Screenshots</span>
+        <h2>Take a look</h2>
+        <p class="lead">A focused, dark-first workspace built for model-heavy workflows.</p>
+      </div>
+      <div class="gallery">
+        <figure class="reveal"><img src="assets/improved_model_selector.png" alt="Model picker dialog" loading="lazy" /><figcaption>Model picker</figcaption></figure>
+        <figure class="reveal"><img src="assets/improved_model_management.png" alt="Model management dialog" loading="lazy" /><figcaption>Model management</figcaption></figure>
+        <figure class="reveal"><img src="assets/sampling_settings.png" alt="Sampling settings" loading="lazy" /><figcaption>Sampling settings</figcaption></figure>
+        <figure class="reveal"><img src="assets/improved_sampling_settings.png" alt="Improved sampling settings" loading="lazy" /><figcaption>Improved sampling settings</figcaption></figure>
+        <figure class="reveal"><img src="assets/negative_override.png" alt="Negative prompt override" loading="lazy" /><figcaption>Negative prompt override</figcaption></figure>
+        <figure class="reveal"><img src="assets/appearance_settings.png" alt="Appearance settings" loading="lazy" /><figcaption>Appearance settings</figcaption></figure>
+        <figure class="reveal"><img src="assets/qwen_image_2_1_gen.png" alt="Qwen Image 2.1 generation" loading="lazy" /><figcaption>Qwen Image 2.1 — generation</figcaption></figure>
+        <figure class="reveal"><img src="assets/qwen_image_2_1_edit.png" alt="Qwen Image 2.1 editing" loading="lazy" /><figcaption>Qwen Image 2.1 — editing</figcaption></figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- Providers -->
+  <section id="providers">
+    <div class="wrap">
+      <div class="center">
+        <span class="eyebrow">Runtime & model providers</span>
+        <h2>Built on open, powerful tools</h2>
+      </div>
+      <div class="providers" style="justify-content:center;">
+        <a class="chip" href="https://github.com/leejet/stable-diffusion.cpp" rel="noopener" target="_blank">Runtime: stable-diffusion.cpp</a>
+        <a class="chip" href="https://huggingface.co/unsloth" rel="noopener" target="_blank">unsloth</a>
+        <a class="chip" href="https://huggingface.co/abenzerps" rel="noopener" target="_blank">abenzerps</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Install -->
+  <section id="install">
+    <div class="wrap">
+      <div class="center">
+        <span class="eyebrow">Build from source</span>
+        <h2>Run it yourself</h2>
+        <p class="lead">Myriad Frame is free and open-source. Clone the repo and build locally.</p>
+      </div>
+      <pre><span class="cmt"># Install dependencies (downloads the Electron binary)</span>
+npm install
+
+<span class="cmt"># Run in development</span>
+npm run dev
+
+<span class="cmt"># Build a production bundle to out/</span>
+npm run build</pre>
+      <p style="color:var(--text-dim);font-size:14px;margin-top:16px;">
+        Requires <a href="https://nodejs.org" rel="noopener" target="_blank">Node.js 20+</a>. A GPU (NVIDIA CUDA or Vulkan) is recommended; CPU-only runs are supported but slower.
+      </p>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="wrap row">
+      <div>
+        © <span id="year"></span> Myriad Frame · Open source under the Apache 2.0 License.
+      </div>
+      <div class="links">
+        <a href="https://github.com/lemuelmc/myriad-frame" rel="noopener" target="_blank">GitHub</a>
+        <a href="https://github.com/lemuelmc/myriad-frame/releases" rel="noopener" target="_blank">Releases</a>
+        <a href="https://github.com/lemuelmc/myriad-frame/blob/master/README.md">README</a>
+        <a class="bmc" href="https://buymeacoffee.com/lemuel.raganas" rel="noopener" target="_blank">
+          <img src="assets/bmc-brand-logo.png" alt="Buy me a coffee" />
+        </a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

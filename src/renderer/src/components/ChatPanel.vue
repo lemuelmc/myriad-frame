@@ -1,3 +1,9 @@
+<!--
+Myriad Frame — Electron + Vue 3 desktop front-end for sd-cli (stable-diffusion.cpp).
+Author: Lemuel Raganas
+License: Apache License 2.0 — permissive; allows use, modification, and distribution
+(commercial or private) provided the license notice and copyright are preserved.
+-->
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type {
@@ -6,6 +12,7 @@ import type {
   ModelType,
   ResolutionEntry,
   SessionInputs,
+  SessionLora,
   SessionSamplingOverride
 } from '@shared/types'
 import { DOWNLOAD_ABORTED_MESSAGE, DEFAULT_SAMPLER } from '@shared/types'
@@ -14,12 +21,17 @@ import { useSessionsStore } from '../stores/sessions'
 import { useSettingsStore, type ModelDownloadState } from '../stores/settings'
 import { resolveEncoderBundle, type EncoderBundleEntry } from '../deps'
 import { toast } from '../toast'
+import { confirm } from '../confirm'
 import { saveImageAs } from '../saveImage'
 import ImageFromPath from './ImageFromPath.vue'
 import DownloadProgress from './DownloadProgress.vue'
 import ModelPickerDialog from './ModelPickerDialog.vue'
 import NegativePromptDialog from './NegativePromptDialog.vue'
 import SessionSamplingDialog from './SessionSamplingDialog.vue'
+import LoraDialog from './LoraDialog.vue'
+import InpaintDialog from './InpaintDialog.vue'
+import OutpaintDialog, { type OutpaintMargins } from './OutpaintDialog.vue'
+import PaintDialog from './PaintDialog.vue'
 import logoTiny from '../../../assets/logo-square-tiny.png'
 
 const appStore = useAppStore()
@@ -35,8 +47,10 @@ const encoderEntry = ref<CatalogEntry | null>(null)
 // types, in which case `encoderEntry` stays null and the bundle wins.
 const encoderBundle = ref<EncoderBundleEntry[]>([])
 const visionEntry = ref<CatalogEntry | null>(null)
+const tokenizerEntry = ref<CatalogEntry | null>(null)
 const resolution = ref<ResolutionEntry | null>(null)
 const refImages = ref<string[]>([])
+const inputImages = ref<string[]>([])
 const usePrevious = ref(true)
 const busy = ref(false)
 // True while a drag is hovering over the textarea, for the drop highlight.
@@ -50,9 +64,10 @@ const messagesEl = ref<HTMLElement | null>(null)
 const textareaEl = ref<HTMLTextAreaElement | null>(null)
 // Model picker dialog (replaces the old composer model <select>).
 const pickerOpen = ref(false)
-// Negative-prompt + sampling-override dialogs.
+// Negative-prompt + sampling-override + lora dialogs.
 const negOpen = ref(false)
 const samplingOpen = ref(false)
+const loraOpen = ref(false)
 
 // ---------- per-session composer input persistence ----------
 // The one-shot saved resolution the model watcher consumes after computing
@@ -166,15 +181,485 @@ const sessionSampling = computed(() => {
   return so ? { ...global, ...so } : global
 })
 const maxRef = computed(() => sampling.value?.max_reference ?? 0)
-const refsEnabled = computed(() => maxRef.value > 0)
-// 'Use previous image' is offered only for diffusion types whose sampling
+const maxInput = computed(() => sampling.value?.max_image_input ?? 0)
+// 'Add reference images' is offered only for diffusion types whose sampling
 // config allows reference images at all (configurations/sampling.json).
 const allowRef = computed(() => sampling.value?.allow_reference === true)
-// 'allow_reference' false ⇒ the checkbox is hidden; reset its state so a
-// stale checked value never leaks into a request for a diffusion type
-// that forbids reference images.
-watch(allowRef, (allowed) => {
-  if (!allowed) usePrevious.value = false
+// 'Add input images' is offered only for types whose config allows explicit
+// input images (--init-img channel).
+const allowInput = computed(() => sampling.value?.allow_image_input === true)
+const refsEnabled = computed(() => allowRef.value && maxRef.value > 0)
+const inputsEnabled = computed(() => allowInput.value && maxInput.value > 0)
+// Stale-state reset on diffusion-type switches: clear each channel when its
+// gate turns off, and uncheck 'Use previous image' only when transitioning
+// into the fully-forbidden state (the checkbox is offered when either
+// channel is enabled).
+watch(
+  [allowRef, allowInput],
+  ([refOk, inputOk], [prevRefOk, prevInputOk]) => {
+    if (!refOk) refImages.value = []
+    if (!inputOk) inputImages.value = []
+    if (!refOk && !inputOk && (prevRefOk || prevInputOk)) usePrevious.value = false
+  }
+)
+// How the previous image is chained: 'input' (--init-img) or 'reference'
+// (--ref-image). The user picks the mode in the composer dropdown; it
+// defaults to 'reference' and persists across sends within the session.
+const previousMode = ref<'input' | 'reference'>('reference')
+
+// ---------- inpaint / outpaint (mask) ----------
+/** Sticky composer mask state — paths only, never data URLs (the background
+ *  and the saved mask are re-resolved via imageFromPath when a dialog opens;
+ *  outpaint restores its sliders from `margins`). Sticky until Clear: once
+ *  saved, the mask applies to every Send. */
+interface ComposerMaskState {
+  kind: 'inpaint' | 'outpaint'
+  maskPath: string
+  /** outpaint only — the padded init image passed as --init-img */
+  initPath?: string
+  /** image-derived request size used when overrideResolution is off */
+  width: number
+  height: number
+  /** outpaint only — slider values, restored on reopen */
+  margins?: OutpaintMargins
+  /** the image the mask was drawn on (inpaint: the background; outpaint: the
+   *  ORIGINAL image, so reopening re-derives sliders from it) */
+  backgroundPath: string
+  overrideResolution: boolean
+}
+const maskState = ref<ComposerMaskState | null>(null)
+const inpaintOpen = ref(false)
+const outpaintOpen = ref(false)
+const inpaintBg = ref('')
+const outpaintBg = ref('')
+const inpaintRestoredMask = ref('')
+const outpaintRestoredMargins = ref<OutpaintMargins | null>(null)
+const inpaintOverride = ref(false)
+const outpaintOverride = ref(false)
+// The background path captured at open time — the dialogs only receive data
+// URLs, so the panel remembers which file was shown (plain bookkeeping).
+let maskBgPath = ''
+
+// `allow_inpainting` gates BOTH buttons (configurations/sampling.json).
+const allowInpainting = computed(() => sampling.value?.allow_inpainting === true)
+// `allow_painting` gates the Paint button — a separate feature flag from
+// allow_inpainting: painting produces a MERGED image, not a mask.
+const allowPainting = computed(() => sampling.value?.allow_painting === true)
+// Background availability (same rule for both dialogs): the first attached
+// image wins; otherwise the previous image when 'Use previous image' is
+// ticked. When a mask is active the buttons stay enabled regardless —
+// reopening shows the SAVED background, not the current precedence winner.
+const maskBackgroundAvailable = computed(
+  () =>
+    refImages.value.length > 0 ||
+    inputImages.value.length > 0 ||
+    (usePrevious.value && !!sessionsStore.lastGeneratedImage)
+)
+const inpaintDisabled = computed(
+  () =>
+    busy.value ||
+    !sessionsStore.activeId ||
+    (!allowInpainting.value && maskState.value?.kind !== 'inpaint') ||
+    (maskState.value?.kind !== 'inpaint' && !maskBackgroundAvailable.value)
+)
+const outpaintDisabled = computed(
+  () =>
+    busy.value ||
+    !sessionsStore.activeId ||
+    (!allowInpainting.value && maskState.value?.kind !== 'outpaint') ||
+    (maskState.value?.kind !== 'outpaint' && !maskBackgroundAvailable.value)
+)
+const inpaintTitle = computed(() => {
+  const m = maskState.value
+  if (m?.kind === 'inpaint') {
+    return `Inpaint mask active — ${m.width}×${m.height}${m.overrideResolution ? ' · session resolution' : ''} — click to edit`
+  }
+  return 'Inpaint — paint a mask over an image'
+})
+const outpaintTitle = computed(() => {
+  const m = maskState.value
+  if (m?.kind === 'outpaint') {
+    return `Outpaint mask active — ${m.width}×${m.height}${m.overrideResolution ? ' · session resolution' : ''} — click to edit`
+  }
+  return 'Outpaint — expand the canvas'
+})
+
+async function openInpaint(): Promise<void> {
+  if (inpaintOpen.value) return
+  const active = maskState.value?.kind === 'inpaint' ? maskState.value : null
+  const bgPath =
+    active?.backgroundPath ??
+    refImages.value[0] ??
+    inputImages.value[0] ??
+    (usePrevious.value ? sessionsStore.lastGeneratedImage : undefined)
+  if (!bgPath) return
+  // Switch guard AFTER the background resolution: a confirmed switch can
+  // never clear the old state and then open nothing.
+  if (!(await confirmToolSwitch('inpaint'))) return
+  const bg = await window.api.imageFromPath(bgPath)
+  if (!bg) {
+    toast('The background image no longer exists', 'error')
+    return
+  }
+  maskBgPath = bgPath
+  inpaintBg.value = bg
+  inpaintOverride.value = active?.overrideResolution ?? false
+  if (active) {
+    // Re-open semantics: restore the SAVED mask as the initial paint layer
+    // (a restored mask counts as existing paint — Save is enabled on reopen
+    // without new strokes).
+    const mask = await window.api.imageFromPath(active.maskPath)
+    if (!mask) {
+      toast('The saved mask no longer exists — clear it and paint a new one', 'error')
+      return
+    }
+    inpaintRestoredMask.value = mask
+  } else {
+    inpaintRestoredMask.value = ''
+  }
+  inpaintOpen.value = true
+}
+
+async function openOutpaint(): Promise<void> {
+  if (outpaintOpen.value) return
+  const active = maskState.value?.kind === 'outpaint' ? maskState.value : null
+  const bgPath =
+    active?.backgroundPath ??
+    refImages.value[0] ??
+    inputImages.value[0] ??
+    (usePrevious.value ? sessionsStore.lastGeneratedImage : undefined)
+  if (!bgPath) return
+  // Switch guard AFTER the background resolution: a confirmed switch can
+  // never clear the old state and then open nothing.
+  if (!(await confirmToolSwitch('outpaint'))) return
+  const bg = await window.api.imageFromPath(bgPath)
+  if (!bg) {
+    toast('The background image no longer exists', 'error')
+    return
+  }
+  maskBgPath = bgPath
+  outpaintBg.value = bg
+  outpaintOverride.value = active?.overrideResolution ?? false
+  outpaintRestoredMargins.value = active?.margins ?? null
+  outpaintOpen.value = true
+}
+
+/** One owner of the file lifecycle: a Save cleans the previous state's files
+ *  via masksClear, stores the new sticky state, and sets the session's
+ *  sampling strength override to 1.0 (the Session Sampling dialog shows and
+ *  controls it; the next Send carries it with no extra wiring). */
+async function applyMaskSave(
+  kind: 'inpaint' | 'outpaint',
+  patch: Omit<ComposerMaskState, 'kind'>
+): Promise<void> {
+  const old = maskState.value
+  if (old) {
+    try {
+      await window.api.masksClear([old.maskPath, ...(old.initPath ? [old.initPath] : [])])
+    } catch {
+      /* cleanup failure is non-fatal — the launch wipe covers leftovers */
+    }
+  }
+  maskState.value = { kind, ...patch }
+  const id = sessionsStore.activeId
+  if (id) {
+    const prev = sessionsStore.active?.inputs?.sampling ?? {}
+    try {
+      await sessionsStore.setInputs(id, { sampling: { ...prev, strength: 1.0 } })
+    } catch (err) {
+      console.warn('[mask] saving strength override failed:', (err as Error)?.message ?? err)
+    }
+  }
+  toast('Mask saved — it applies to every Send until cleared', 'ok')
+}
+
+async function onInpaintSave(p: {
+  maskPath: string
+  width: number
+  height: number
+  overrideResolution: boolean
+}): Promise<void> {
+  await applyMaskSave('inpaint', {
+    maskPath: p.maskPath,
+    width: p.width,
+    height: p.height,
+    backgroundPath: maskBgPath,
+    overrideResolution: p.overrideResolution
+  })
+  inpaintOpen.value = false
+}
+
+async function onOutpaintSave(p: {
+  maskPath: string
+  initPath: string
+  width: number
+  height: number
+  margins: OutpaintMargins
+  overrideResolution: boolean
+}): Promise<void> {
+  await applyMaskSave('outpaint', {
+    maskPath: p.maskPath,
+    initPath: p.initPath,
+    width: p.width,
+    height: p.height,
+    margins: p.margins,
+    backgroundPath: maskBgPath,
+    overrideResolution: p.overrideResolution
+  })
+  outpaintOpen.value = false
+}
+
+/** Clear: delete the saved file(s) and reset the sticky state; the open
+ *  dialog stays up with a wiped canvas / zeroed sliders for fresh painting. */
+async function onMaskClear(): Promise<void> {
+  const st = maskState.value
+  if (st) {
+    try {
+      await window.api.masksClear([st.maskPath, ...(st.initPath ? [st.initPath] : [])])
+    } catch {
+      /* ignore */
+    }
+  }
+  maskState.value = null
+  toast('Mask cleared', 'info')
+}
+
+// A mask is specific to its session and to a diffusion type that allows
+// inpainting — drop the sticky state when either changes. Files are
+// ephemeral (data/tmp/masks is wiped at launch), so no deletion is needed.
+watch(allowInpainting, (v) => {
+  if (!v) maskState.value = null
+})
+watch(
+  () => sessionsStore.activeId,
+  () => {
+    maskState.value = null
+    paintState.value = null
+  }
+)
+
+// ---------- paint tool ----------
+/** Sticky composer paint state — the merged background+strokes image saved by
+ *  the Paint dialog. Paths only, never data URLs (the image is re-resolved
+ *  via imageFromPath when the dialog reopens). Sticky until cleared: once
+ *  saved, the painted image routes into --init-img or the first --ref-image
+ *  on every Send, per the target decided at save time. Mutually exclusive
+ *  with the inpaint/outpaint mask state via the switch-guard. */
+interface ComposerPaintState {
+  paintPath: string
+  /** how the painted image is routed: 'init' → the --init-img slot (wins
+   *  over the previous-image chaining and user-picked inputs), 'reference' →
+   *  the first --ref-image slot (the original first ref is replaced) */
+  target: 'init' | 'reference'
+  /** where the background came from — 'previous' suppresses the previous-
+   *  image chaining on sends (the painted image supersedes it) */
+  source: 'ref' | 'input' | 'previous'
+  /** the merged image's natural size — informational (composer chip) */
+  width: number
+  height: number
+}
+const paintState = ref<ComposerPaintState | null>(null)
+const paintOpen = ref(false)
+const paintBg = ref('')
+// The background's source, captured at open time — the routing target is
+// derived from it at save time (the dialog is modal, so the composer cannot
+// change in between).
+const paintSource = ref<'ref' | 'input' | 'previous'>('ref')
+
+// Button gating: NOT allow_inpainting (paint is not a mask feature) — the
+// same background rule as the mask dialogs applies (first attached image /
+// previous image when ticked). An active paint state keeps the button
+// enabled for reopen/clear even when no fresh background is available
+// (reopening shows the SAVED merged image).
+const paintDisabled = computed(
+  () =>
+    busy.value ||
+    !sessionsStore.activeId ||
+    (!maskBackgroundAvailable.value && !paintState.value)
+)
+const paintTitle = computed(() => {
+  const p = paintState.value
+  if (p) {
+    return `Painted image active — ${p.width}×${p.height} · ${p.target === 'init' ? 'as input' : 'as first reference'} — click to edit`
+  }
+  return 'Paint — paint onto an image and use it as input or reference'
+})
+
+/** Whether opening `target` would discard ANOTHER tool's active state (the
+ *  composer's image-editing tools — inpaint, outpaint, paint — are mutually
+ *  exclusive). Re-opening a tool's own state is never a conflict. */
+function switchConflict(target: 'inpaint' | 'outpaint' | 'paint'): boolean {
+  const m = maskState.value
+  const p = paintState.value
+  if (target === 'paint') return !!(m || p)
+  return !!(p || (m && m.kind !== target))
+}
+
+/** Human label of whichever tool state is active (for the guard message). */
+function activeStateLabel(): string {
+  const m = maskState.value
+  if (m) return m.kind === 'inpaint' ? 'an inpaint mask' : 'an outpaint mask'
+  return 'a painted image'
+}
+
+/** Delete the saved files of whichever tool states are active and drop them.
+ *  Only one can be set (mutual exclusion), but both are cleared defensively.
+ *  Mirrors onMaskClear: explicit, user-confirmed cleanup deletes the files;
+ *  the passive watchers only null the state (the launch wipe covers
+ *  leftovers). */
+async function clearActiveToolStates(): Promise<void> {
+  const m = maskState.value
+  if (m) {
+    try {
+      await window.api.masksClear([m.maskPath, ...(m.initPath ? [m.initPath] : [])])
+    } catch {
+      /* cleanup failure is non-fatal — the launch wipe covers leftovers */
+    }
+    maskState.value = null
+  }
+  const p = paintState.value
+  if (p) {
+    try {
+      await window.api.masksClear([p.paintPath])
+    } catch {
+      /* ignore */
+    }
+    paintState.value = null
+  }
+}
+
+/** The switch-guard: opening one image-editing tool while another tool's
+ *  state is active asks first (in-app confirm dialog — never a native one)
+ *  and clears the saved mask / painted image on confirmation. Returns false
+ *  when the user cancels; the caller must then abort the open. */
+async function confirmToolSwitch(target: 'inpaint' | 'outpaint' | 'paint'): Promise<boolean> {
+  if (!switchConflict(target)) return true
+  const label = activeStateLabel()
+  const targetLabel =
+    target === 'inpaint' ? 'Inpaint' : target === 'outpaint' ? 'Outpaint' : 'Paint'
+  const ok = await confirm(
+    `${label.charAt(0).toUpperCase()}${label.slice(1)} is active. Switching to ${targetLabel} will clear it.`,
+    { confirmLabel: 'Switch and clear' }
+  )
+  if (!ok) return false
+  await clearActiveToolStates()
+  return true
+}
+
+async function openPaint(): Promise<void> {
+  if (paintOpen.value) return
+  // Reopen shows the SAVED merged image (the strokes are baked into it —
+  // iterative editing); a fresh open takes the same precedence as the mask
+  // dialogs. Resolving the background BEFORE the guard guarantees a
+  // confirmed switch can never clear the old state and then open nothing.
+  const active = paintState.value
+  const bgPath =
+    active?.paintPath ??
+    refImages.value[0] ??
+    inputImages.value[0] ??
+    (usePrevious.value ? sessionsStore.lastGeneratedImage : undefined)
+  if (!bgPath) return
+  if (!(await confirmToolSwitch('paint'))) return
+  const bg = await window.api.imageFromPath(bgPath)
+  if (!bg) {
+    toast('The background image no longer exists', 'error')
+    return
+  }
+  paintBg.value = bg
+  paintSource.value = active
+    ? active.source
+    : refImages.value.length
+      ? 'ref'
+      : inputImages.value.length
+        ? 'input'
+        : 'previous'
+  paintOpen.value = true
+}
+
+/** Paint save: clean the previous paint state's file, derive the routing
+ *  target from the background's source (captured at open time — the dialog
+ *  is modal, so the composer cannot change in between), store the sticky
+ *  state, and set the session's sampling strength override to 1.0 (exactly
+ *  like applyMaskSave — the Session Sampling dialog shows and controls it). */
+async function onPaintSave(p: {
+  paintPath: string
+  width: number
+  height: number
+}): Promise<void> {
+  const old = paintState.value
+  if (old) {
+    try {
+      await window.api.masksClear([old.paintPath])
+    } catch {
+      /* cleanup failure is non-fatal — the launch wipe covers leftovers */
+    }
+  }
+  // previousMode's 'input' maps to the request's 'init' target (the dropdown
+  // label and the CLI flag name differ; the routing slot is the same).
+  const target: 'init' | 'reference' =
+    paintSource.value === 'ref'
+      ? 'reference'
+      : paintSource.value === 'input'
+        ? 'init'
+        : previousMode.value === 'input'
+          ? 'init'
+          : 'reference'
+  paintState.value = {
+    paintPath: p.paintPath,
+    target,
+    source: paintSource.value,
+    width: p.width,
+    height: p.height
+  }
+  const id = sessionsStore.activeId
+  if (id) {
+    const prev = sessionsStore.active?.inputs?.sampling ?? {}
+    try {
+      await sessionsStore.setInputs(id, { sampling: { ...prev, strength: 1.0 } })
+    } catch (err) {
+      console.warn('[paint] saving strength override failed:', (err as Error)?.message ?? err)
+    }
+  }
+  toast(
+    target === 'init'
+      ? 'Painted image saved — used as the input image on every Send until cleared'
+      : 'Painted image saved — used as the first reference on every Send until cleared',
+    'ok'
+  )
+  paintOpen.value = false
+}
+
+/** Clear from inside the Paint dialog: delete the saved paint file and drop
+ *  the sticky state; the dialog stays up with a wiped canvas for fresh
+ *  painting (no-op when nothing was saved yet). */
+async function onPaintClear(): Promise<void> {
+  const st = paintState.value
+  if (st) {
+    try {
+      await window.api.masksClear([st.paintPath])
+    } catch {
+      /* ignore */
+    }
+    paintState.value = null
+  }
+}
+
+// A paint state is specific to its session and to a diffusion type whose
+// channel config still allows its target — drop the sticky state when either
+// changes. Files are ephemeral (data/tmp/masks is wiped at launch), so no
+// deletion is needed (same as the mask watchers).
+watch([allowRef, allowInput], ([refOk, inputOk]) => {
+  const p = paintState.value
+  if (!p) return
+  if ((p.target === 'reference' && !refOk) || (p.target === 'init' && !inputOk)) {
+    paintState.value = null
+  }
+})
+// `allow_painting` turning off drops the state too — the button disappears
+// with it, so no orphan state can keep riding sends invisibly (same shape as
+// the allowInpainting watcher above).
+watch(allowPainting, (v) => {
+  if (!v) paintState.value = null
 })
 
 // selected model label shown in the model chip
@@ -202,7 +687,7 @@ function onPick(e: CatalogEntry): void {
 
 const installedModels = ref<Record<ModelType, Set<string>>>({} as never)
 async function refreshInstalled(): Promise<void> {
-  for (const t of ['diffusion', 'encoder', 'vae', 'vision'] as ModelType[]) {
+  for (const t of ['diffusion', 'encoder', 'vae', 'vision', 'tokenizer'] as ModelType[]) {
     const files = await window.api.modelsList(t)
     installedModels[t] = new Set(files.map((f) => f.name))
   }
@@ -301,6 +786,7 @@ watch(
       encoderEntry.value = null
       encoderBundle.value = []
       visionEntry.value = null
+      tokenizerEntry.value = null
       resolution.value = null
       return
     }
@@ -377,6 +863,27 @@ watch(
       (appStore.catalog?.entries ?? []).find((e) => e.type === 'vision' && e.diffusionType === dt && e.isDefault) ??
       (appStore.catalog?.entries ?? []).find((e) => e.type === 'vision' && e.diffusionType === dt) ??
       null
+    // Tokenizer — only present for diffusion_types that declare a `tokenizer`
+    // dependency in hub.json (e.g. moss_image). Resolution mirrors vision:
+    // user-configured default > hub.json `default` (matched by full path AND
+    // basename for stale cached catalogs) > the catalog's `isDefault` flag >
+    // any entry > null.
+    const userTokenizerName = st.defaultTokenizer?.[dt]
+    // `tokenizer` is optional in HubConfig — absent when the diffusion type declares no tokenizer dependency.
+    const defaultTokenizer = appStore.configs?.hub.repo.tokenizer?.[dt]?.default ?? ''
+    const defaultTokenizerName = defaultTokenizer.split('/').pop() ?? defaultTokenizer
+    tokenizerEntry.value =
+      (userTokenizerName
+        ? (appStore.catalog?.entries ?? []).find(
+            (e) => e.type === 'tokenizer' && e.diffusionType === dt && e.name === userTokenizerName
+          )
+        : undefined) ??
+      (appStore.catalog?.entries ?? []).find(
+        (e) => e.type === 'tokenizer' && e.diffusionType === dt && (e.name === defaultTokenizer || e.name === defaultTokenizerName)
+      ) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'tokenizer' && e.diffusionType === dt && e.isDefault) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'tokenizer' && e.diffusionType === dt) ??
+      null
     // Restore support: when a saved resolution is pending, prefer it —
     // matched against the new list by width+height — over the first entry,
     // then clear the one-shot marker so the resolution watchers resume
@@ -390,9 +897,10 @@ watch(
       null
     pendingRestoreResolution.value = null
     // Auto-download the selected diffusion model and its VAE / text encoder /
-    // vision dependencies in the background. Swallow rejections (a paused or
-    // canceled download rejects) so a background attempt never becomes an
-    // unhandled promise rejection — the error toast already surfaces it.
+    // vision / tokenizer dependencies in the background. Swallow rejections (a
+    // paused or canceled download rejects) so a background attempt never
+    // becomes an unhandled promise rejection — the error toast already
+    // surfaces it.
     if (modelEntry.value) void ensureDownloaded(modelEntry.value).catch(() => {})
     if (vaeEntry.value) void ensureDownloaded(vaeEntry.value).catch(() => {})
     if (encoderEntry.value) void ensureDownloaded(encoderEntry.value).catch(() => {})
@@ -400,6 +908,7 @@ watch(
     // keys by `${type}:${url}`)
     for (const e of encoderBundle.value) void ensureDownloaded(e).catch(() => {})
     if (visionEntry.value) void ensureDownloaded(visionEntry.value).catch(() => {})
+    if (tokenizerEntry.value) void ensureDownloaded(tokenizerEntry.value).catch(() => {})
   },
   { immediate: true }
 )
@@ -547,6 +1056,20 @@ function removeRef(p: string): void {
   refImages.value = refImages.value.filter((x) => x !== p)
 }
 
+async function addInputs(): Promise<void> {
+  const picked = await window.api.pickImages()
+  for (const p of picked) {
+    if (inputImages.value.length >= maxInput.value) {
+      toast(`Maximum of ${maxInput.value} input images`, 'error')
+      break
+    }
+    if (!inputImages.value.includes(p)) inputImages.value.push(p)
+  }
+}
+function removeInput(p: string): void {
+  inputImages.value = inputImages.value.filter((x) => x !== p)
+}
+
 // Drag-and-drop reference images onto the composer. Files dragged in from the OS
 // file explorer arrive as File objects whose `path` is the absolute disk path
 // Electron exposes; `window.api.imageFromPath` reads them back for thumbnails.
@@ -562,25 +1085,48 @@ function onDragLeave(e: DragEvent): void {
 function onDrop(e: DragEvent): void {
   e.preventDefault()
   dragActive.value = false
-  void addDroppedFiles(Array.from(e.dataTransfer.files))
+  if (!e.dataTransfer) return
+  const files = Array.from(e.dataTransfer.files)
+  if (!files.length) return
+  if (!refsEnabled.value && !inputsEnabled.value) {
+    toast('This model does not accept images', 'error')
+    return
+  }
+  // Ask the user which channel the dropped images belong to; the files are
+  // held in the modal state until the choice lands (dismiss discards them).
+  dropAsk.value = { files }
 }
-async function addDroppedFiles(files: File[]): Promise<void> {
-  if (!refsEnabled.value) return
-  for (const file of files) {
+// Dropped-image mode question state — files stay here (never pushed into
+// either list) until the user picks a channel, so the caps are checked
+// after the choice, not before.
+const dropAsk = ref<{ files: File[] } | null>(null)
+async function settleDrop(mode: 'input' | 'reference'): Promise<void> {
+  const ask = dropAsk.value
+  dropAsk.value = null
+  if (!ask) return
+  for (const file of ask.files) {
     if (!file.type.startsWith('image/')) {
       toast(`"${file.name}" is not an image`, 'error')
       continue
     }
-    if (refImages.value.length >= maxRef.value) {
-      toast(`Maximum of ${maxRef.value} reference images`, 'error')
-      break
-    }
     const path = (file as File & { path?: string }).path
     if (!path) {
-      toast(`Cannot use "${file.name}" as a reference`, 'error')
+      toast(`Cannot use "${file.name}" as an image`, 'error')
       continue
     }
-    if (!refImages.value.includes(path)) refImages.value.push(path)
+    if (mode === 'reference') {
+      if (refImages.value.length >= maxRef.value) {
+        toast(`Maximum of ${maxRef.value} reference images`, 'error')
+        break
+      }
+      if (!refImages.value.includes(path)) refImages.value.push(path)
+    } else {
+      if (inputImages.value.length >= maxInput.value) {
+        toast(`Maximum of ${maxInput.value} input images`, 'error')
+        break
+      }
+      if (!inputImages.value.includes(path)) inputImages.value.push(path)
+    }
   }
 }
 
@@ -619,23 +1165,26 @@ async function generate(): Promise<void> {
     // optimistic prompt is shown right away too; the user's text is restored if
     // pre-generation later fails.
     const refs = [...refImages.value]
+    const inputs = [...inputImages.value]
     pendingPrompt.value = text
-    pendingRefs.value = refs
+    pendingRefs.value = [...refs, ...inputs]
     busy.value = true
     progress.value = null
     prompt.value = ''
     refImages.value = []
-    // Ensure the diffusion model and the VAE / text encoder / vision deps are on
-    // disk (and complete) before spawning. Waits for an in-flight download, or
-    // starts one if none is running. On the bundle path `encoderEntry` is null,
-    // so the bundle entries must be iterated here too or the text encoders
-    // would silently be skipped.
+    inputImages.value = []
+    // Ensure the diffusion model and the VAE / text encoder / vision / tokenizer
+    // deps are on disk (and complete) before spawning. Waits for an in-flight
+    // download, or starts one if none is running. On the bundle path
+    // `encoderEntry` is null, so the bundle entries must be iterated here too or
+    // the text encoders would silently be skipped.
     for (const e of [
       modelEntry.value,
       vaeEntry.value,
       encoderEntry.value,
       ...encoderBundle.value,
-      visionEntry.value
+      visionEntry.value,
+      tokenizerEntry.value
     ]) {
       if (!e) continue
       try {
@@ -643,6 +1192,7 @@ async function generate(): Promise<void> {
       } catch (err) {
         prompt.value = text
         refImages.value = [...refs]
+        inputImages.value = [...inputs]
         pendingPrompt.value = null
         pendingRefs.value = []
         busy.value = false
@@ -652,9 +1202,18 @@ async function generate(): Promise<void> {
     }
 
     const s = sessionSampling.value
-    // Belt-and-braces with the allowRef watcher: the previous image is chained
-    // only when the user opted in AND the diffusion type allows references.
-    const chainPrevious = usePrevious.value && allowRef.value
+    // Belt-and-braces with the channel watchers: the previous image is chained
+    // only when the user opted in AND at least one image channel is enabled.
+    // A paint state sourced from the previous image supersedes it: chaining
+    // the raw previous image alongside its painted replacement would
+    // duplicate the reference (As Reference) or let the raw image steal the
+    // single init slot ahead of the painted one (As Input — main unshifts it
+    // first). The checkbox itself is left untouched; the suppression is
+    // per-send while the state is active.
+    const chainPrevious =
+      usePrevious.value &&
+      (allowRef.value || allowInput.value) &&
+      paintState.value?.source !== 'previous'
     const req: GenerationRequest = {
       sessionId: sessionsStore.activeId,
       prompt: text,
@@ -672,6 +1231,7 @@ async function generate(): Promise<void> {
         ? { encoders: encoderBundle.value.map((e) => ({ name: e.name, useAs: e.useAs, provider: e.provider })) }
         : { encoder: encoderEntry.value?.name, encoderProvider: encoderEntry.value?.provider }),
       vision: visionEntry.value?.name,
+      tokenizer: tokenizerEntry.value?.name,
       // The resolution selected in the chat panel always wins; per-session
       // width/height overrides are no longer supported.
       resolution:
@@ -679,10 +1239,12 @@ async function generate(): Promise<void> {
           ? { width: resolution.value.width, height: resolution.value.height }
           : { width: s?.width ?? 1024, height: s?.height ?? 1024 },
       referencePaths: [...refs],
+      inputImagePaths: [...inputs],
       usePrevious: chainPrevious,
       // omitted entirely when unchecked or disallowed — the request payload
       // carries no previous image unless the user explicitly opted in
       previousImagePath: chainPrevious ? sessionsStore.lastGeneratedImage : undefined,
+      previousImageMode: chainPrevious ? previousMode.value : undefined,
       steps: s?.steps ?? 25,
       cfg: s?.cfg ?? 1.0,
       sampler: s?.sampler ?? DEFAULT_SAMPLER,
@@ -691,8 +1253,44 @@ async function generate(): Promise<void> {
       // pre-resolving here would erase the distinction between "picked
       // model-specific" and "no scheduler chosen".
       scheduler: s?.scheduler ?? undefined,
+      // RAW merged value — a finite number (incl 0), '', or undefined. Main
+      // resolves the global fallback + normalization; `??` (never `||`) keeps
+      // 0 and '' intact.
+      flowShift: s?.flow_shift ?? undefined,
+      // RAW merged value — a valid fixed integer, null, or undefined. Main
+      // resolves the session fallback + normalization: a valid integer ⇒ a
+      // fixed --seed, anything else ⇒ a fresh random seed per run.
+      seed: s?.seed ?? undefined,
       negativePrompt: sessionNegative.value.trim() || undefined,
       strength: s?.strength ?? 0.75
+    }
+    // Sticky mask: a saved mask rides on EVERY Send until cleared. The
+    // renderer sends the exact background it drew on (initImagePath captured
+    // at dialog time — main validates both paths exist). With Override
+    // Resolution off the image-derived size replaces the dropdown value;
+    // with it ticked the session's resolution dropdown value is sent
+    // unchanged and sd-cli scales init + mask identically.
+    const mask = maskState.value
+    if (mask) {
+      req.maskPath = mask.maskPath
+      // The init image the mask was drawn on: outpaint → the padded
+      // composition written by masksSave; inpaint → the background image
+      // itself (it was never re-written, so `initPath` is undefined and the
+      // background path captured at dialog time is the init image).
+      req.initImagePath =
+        mask.initPath ?? (mask.kind === 'inpaint' ? mask.backgroundPath : undefined)
+      if (!mask.overrideResolution) {
+        req.resolution = { width: mask.width, height: mask.height }
+      }
+    }
+    // Sticky paint: a saved painted image rides on EVERY Send until cleared
+    // or switched away. The routing target was decided at save time from the
+    // background's source; main validates the path exists and applies the
+    // channel gates.
+    const paint = paintState.value
+    if (paint) {
+      req.paintImagePath = paint.paintPath
+      req.paintTarget = paint.target
     }
     try {
       await window.api.genStart(req)
@@ -704,11 +1302,15 @@ async function generate(): Promise<void> {
     } catch (err) {
       prompt.value = text
       refImages.value = [...refs]
+      inputImages.value = [...inputs]
       pendingPrompt.value = null
       pendingRefs.value = []
       busy.value = false
       void sessionsStore.refreshActive()
-      toast((err as Error).message, 'error')
+      // A purged stale mask reference already got a native warning dialog
+      // from main (which also pushed masks:invalidated) — don't double-toast.
+      const msg = (err as Error)?.message ?? ''
+      if (!msg.includes('purged')) toast(msg, 'error')
     }
   } finally {
     starting = false
@@ -731,6 +1333,12 @@ async function onSaveSampling(draft: SessionSamplingOverride | null): Promise<vo
   if (!id) return
   await sessionsStore.setInputs(id, { sampling: draft })
   samplingOpen.value = false
+}
+async function onSaveLora(draft: SessionLora | null): Promise<void> {
+  const id = sessionsStore.activeId
+  if (!id) return
+  await sessionsStore.setInputs(id, { lora: draft })
+  loraOpen.value = false
 }
 
 const lastMessage = computed(() => {
@@ -757,6 +1365,12 @@ function onGenProgress(p: {
   image?: { path: string; name: string }
   error?: string
 }): void {
+  // Every generation failure toasts — even when it belongs to a background
+  // session — because the chat bubble shows only a generic failure line; the
+  // detail lives in this toast and in data/logs/latest.log.
+  if (p.status === 'error') {
+    toast(p.error?.trim() || 'Generation failed', 'error', 8000)
+  }
   if (p.sessionId !== sessionsStore.activeId) return
   // Real messages are now flowing from main — drop the optimistic placeholders.
   pendingPrompt.value = null
@@ -777,7 +1391,6 @@ function onGenProgress(p: {
   if (p.status === 'error') {
     busy.value = false
     progress.value = null
-    toast(p.error ?? 'Generation failed', 'error', 8000)
   }
   // Real messages are now flowing from main — load them and drop the
   // optimistic placeholders.
@@ -810,6 +1423,13 @@ function autoGrow(): void {
 
 onMounted(async () => {
   window.api.onGenProgress(onGenProgress)
+  // Main purged a stale mask reference during gen:start (the mask/background
+  // file no longer exists — e.g. the launch wipe ate data/tmp/masks). Drop the
+  // sticky state; main already deleted the files and showed the dialog.
+  window.api.onMasksInvalidated(() => {
+    maskState.value = null
+    paintState.value = null
+  })
   await refreshInstalled()
   scrollToBottom()
 })
@@ -849,18 +1469,12 @@ function fmtBytes(n: number): string {
     </header>
 
     <div ref="messagesEl" class="messages">
-      <!-- empty state -->
       <div v-if="!sessionsStore.active" class="empty-state">
         <div class="empty-avatar">◈</div>
         <h3>Welcome to Myriad Frame</h3>
         <p>Create or select a session on the left to start generating images.</p>
       </div>
-
-      <!-- messages -->
       <template v-else>
-        <!-- optimistic prompt: shown locally between Send and the moment
-             main persists the real messages, so the panel is never empty
-             while the red Stop button is up. -->
         <div
           v-if="pendingPrompt !== null"
           class="msg user"
@@ -891,13 +1505,9 @@ function fmtBytes(n: number): string {
           </div>
           <div class="bubble">
             <div v-if="m.text" class="msg-text">{{ m.text }}</div>
-
-            <!-- user reference thumbnails -->
             <div v-if="m.refs && m.refs.length" class="refs">
               <ImageFromPath v-for="(r, i) in m.refs" :key="i" :path="r" :alt="'reference ' + (i + 1)" :max="120" />
             </div>
-
-            <!-- assistant generating indicator -->
             <div
               v-if="m.role === 'assistant' && busy && !m.image && m.status !== 'error' && m.status !== 'stopped'"
               class="gen-indicator"
@@ -911,8 +1521,6 @@ function fmtBytes(n: number): string {
               </span>
               <span class="dots"><span></span><span></span><span></span></span>
             </div>
-
-            <!-- assistant image -->
             <div v-else-if="m.image" class="image-wrap">
               <ImageFromPath :path="m.image.path" alt="generated image" :max="480" clickable />
               <button
@@ -927,10 +1535,8 @@ function fmtBytes(n: number): string {
                 </svg>
               </button>
             </div>
-
-            <!-- stopped / error -->
             <div v-if="m.status === 'stopped'" class="status muted">Generation stopped</div>
-            <div v-if="m.status === 'error'" class="status error">{{ m.error }}</div>
+            <div v-if="m.status === 'error'" class="status error">Generation failed — details in Settings → Logs</div>
           </div>
           <button
             v-if="m.text"
@@ -960,19 +1566,19 @@ function fmtBytes(n: number): string {
         </div>
       </template>
     </div>
-
-    <!-- composer -->
     <footer class="composer-wrap">
       <div class="composer">
-        <!-- reference image previews -->
-        <div v-if="refImages.length" class="refs">
-          <div v-for="p in refImages" :key="p" class="ref-thumb">
+        <div v-if="refImages.length || inputImages.length" class="refs">
+          <div v-for="p in refImages" :key="'r' + p" class="ref-thumb">
             <ImageFromPath :path="p" :max="72" />
             <button class="icon remove" title="Remove" @click="removeRef(p)">×</button>
           </div>
+          <div v-for="p in inputImages" :key="'i' + p" class="ref-thumb">
+            <ImageFromPath :path="p" :max="72" />
+            <span class="input-badge">input</span>
+            <button class="icon remove" title="Remove" @click="removeInput(p)">×</button>
+          </div>
         </div>
-
-        <!-- auto-downloading VAE / text encoder dependencies -->
         <div v-if="depDownloads.length" class="dep-dl">
           <DownloadProgress
             v-for="d in depDownloads"
@@ -1009,7 +1615,26 @@ function fmtBytes(n: number): string {
         </div>
 
         <div class="composer-tools">
-          <button class="icon" title="Add reference images" :disabled="busy || !refsEnabled || refImages.length >= maxRef" @click="addRefs()">
+          <button
+            v-if="allowInput"
+            class="icon"
+            title="Add input images"
+            :disabled="busy || !inputsEnabled || inputImages.length >= maxInput"
+            @click="addInputs()"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <path d="M12 8v8" />
+              <path d="M8 12h8" />
+            </svg>
+          </button>
+          <button
+            v-if="allowRef"
+            class="icon"
+            title="Add reference images"
+            :disabled="busy || !refsEnabled || refImages.length >= maxRef"
+            @click="addRefs()"
+          >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="3" y="3" width="18" height="18" rx="2" />
               <circle cx="8.5" cy="8.5" r="1.5" />
@@ -1046,13 +1671,94 @@ function fmtBytes(n: number): string {
               <circle cx="11" cy="18" r="2" fill="currentColor" />
             </svg>
           </button>
+          <button
+            class="icon"
+            :class="{ active: (sessionsStore.active?.inputs?.lora?.mode ?? 'off') !== 'off' }"
+            title="LoRA"
+            aria-label="LoRA settings"
+            aria-haspopup="dialog"
+            :disabled="busy || !sessionsStore.activeId"
+            @click="loraOpen = true"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="8" y="3" width="13" height="13" rx="2" />
+              <path d="M16 16v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h3" />
+            </svg>
+          </button>
+          <button
+            v-if="allowPainting"
+            class="icon"
+            :class="{ active: paintState }"
+            :title="paintTitle"
+            aria-label="Paint"
+            aria-haspopup="dialog"
+            :disabled="paintDisabled"
+            @click="openPaint()"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="13.5" cy="6.5" r=".5" fill="currentColor" />
+              <circle cx="17.5" cy="10.5" r=".5" fill="currentColor" />
+              <circle cx="8.5" cy="7.5" r=".5" fill="currentColor" />
+              <circle cx="6.5" cy="12.5" r=".5" fill="currentColor" />
+              <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.675-1.688 1.64 1.64 0 0 1 1.674 1.688c0 1.125-.437 2.164-1.152 2.936A9.996 9.996 0 0 0 22 12C22 6.5 17.5 2 12 2z" />
+            </svg>
+          </button>
+          <button
+            class="icon"
+            :class="{ active: maskState?.kind === 'inpaint' }"
+            :title="inpaintTitle"
+            aria-label="Inpaint"
+            aria-haspopup="dialog"
+            :disabled="inpaintDisabled"
+            @click="openInpaint()"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08" />
+              <path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z" />
+            </svg>
+          </button>
+          <button
+            class="icon"
+            :class="{ active: maskState?.kind === 'outpaint' }"
+            :title="outpaintTitle"
+            aria-label="Outpaint"
+            aria-haspopup="dialog"
+            :disabled="outpaintDisabled"
+            @click="openOutpaint()"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="8" y="8" width="8" height="8" />
+              <path d="M3 8V3h5M21 8V3h-5M3 16v5h5M21 16v5h-5" />
+            </svg>
+          </button>
+          <span v-if="maskState" class="muted faint">
+            {{ maskState.kind === 'inpaint' ? 'Inpaint' : 'Outpaint' }} mask ·
+            {{ maskState.width }}×{{ maskState.height }}<template v-if="maskState.overrideResolution"> · session resolution</template>
+          </span>
+          <span v-if="paintState" class="muted faint">
+            Painted image · {{ paintState.width }}×{{ paintState.height }} ·
+            {{ paintState.target === 'init' ? 'as input' : 'as first reference' }}
+          </span>
           <span v-if="refImages.length" class="muted faint">
             {{ refImages.length }}/{{ maxRef }} reference{{ refImages.length === 1 ? '' : 's' }}
           </span>
-          <label v-if="allowRef" class="chk">
+          <span v-if="inputImages.length" class="muted faint">
+            {{ inputImages.length }}/{{ maxInput }} input{{ inputImages.length === 1 ? '' : 's' }}
+          </span>
+          <label v-if="allowRef || allowInput" class="chk">
             <input v-model="usePrevious" type="checkbox" :disabled="busy" />
             Use previous image
           </label>
+          <select
+            v-if="usePrevious && (allowRef || allowInput)"
+            v-model="previousMode"
+            title="How the previous image is used"
+            :disabled="busy"
+            class="prev-mode"
+          >
+            <option value="input">As input</option>
+            <option value="reference">As Reference</option>
+          </select>
           <button
             class="model-chip"
             title="Model"
@@ -1070,11 +1776,25 @@ function fmtBytes(n: number): string {
             <option v-for="r in resolutions" :key="r.name" :value="r">{{ r.name }} ({{ r.width }}×{{ r.height }})</option>
           </select>
           <span v-if="sessionSampling" class="faint mono ml-auto">
-            {{ sessionSampling.steps }} steps · cfg {{ sessionSampling.cfg }} · {{ sessionSampling.sampler }} · {{ sessionSampling.scheduler || 'model-specific' }}
+            {{ sessionSampling.steps }} steps · cfg {{ sessionSampling.cfg }} · {{ sessionSampling.sampler }} · {{ sessionSampling.scheduler || 'model-specific' }}<template v-if="typeof sessionSampling.flow_shift === 'number'"> · flow {{ sessionSampling.flow_shift }}</template>
           </span>
         </div>
       </div>
     </footer>
+    <div v-if="dropAsk" class="modal-backdrop" @click.self="dropAsk = null">
+      <div class="modal-card">
+        <h3>Add dropped images</h3>
+        <p class="muted">
+          Add {{ dropAsk.files.length }} dropped image{{ dropAsk.files.length === 1 ? '' : 's' }} as
+          input (--init-img) or as reference (--ref-image)?
+        </p>
+        <div class="modal-actions">
+          <button @click="settleDrop('input')">As input</button>
+          <button @click="settleDrop('reference')">As Reference</button>
+          <button class="ghost" @click="dropAsk = null">Cancel</button>
+        </div>
+      </div>
+    </div>
 
     <ModelPickerDialog
       v-if="pickerOpen"
@@ -1093,6 +1813,37 @@ function fmtBytes(n: number): string {
       :session-name="sessionsStore.active?.name ?? ''"
       @save="onSaveSampling"
       @close="samplingOpen = false"
+    />
+    <LoraDialog
+      v-if="loraOpen"
+      :session-name="sessionsStore.active?.name ?? ''"
+      @save="onSaveLora"
+      @close="loraOpen = false"
+    />
+    <InpaintDialog
+      v-if="inpaintOpen"
+      :background="inpaintBg"
+      :restored-mask="inpaintRestoredMask"
+      :override-resolution="inpaintOverride"
+      @save="onInpaintSave"
+      @clear="onMaskClear"
+      @close="inpaintOpen = false"
+    />
+    <OutpaintDialog
+      v-if="outpaintOpen"
+      :background="outpaintBg"
+      :restored-margins="outpaintRestoredMargins"
+      :override-resolution="outpaintOverride"
+      @save="onOutpaintSave"
+      @clear="onMaskClear"
+      @close="outpaintOpen = false"
+    />
+    <PaintDialog
+      v-if="paintOpen"
+      :background="paintBg"
+      @save="onPaintSave"
+      @clear="onPaintClear"
+      @close="paintOpen = false"
     />
   </section>
 </template>
@@ -1402,6 +2153,67 @@ function fmtBytes(n: number): string {
 .ref-thumb {
   position: relative;
   display: inline-block;
+}
+.input-badge {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  padding: 1px 5px;
+  font-size: 9px;
+  line-height: 1.4;
+  border-radius: 4px 0 0 0;
+  background: var(--accent);
+  color: #fff;
+  pointer-events: none;
+}
+.prev-mode {
+  font-size: 12px;
+}
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+}
+.modal-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  width: 380px;
+  max-width: calc(100vw - 48px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+.modal-card h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+.modal-card p {
+  margin: 0 0 14px;
+  font-size: 13px;
+}
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.modal-actions button {
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.modal-actions button:hover {
+  border-color: var(--accent);
+}
+.modal-actions button.ghost {
+  background: transparent;
 }
 .msg-copy {
   align-self: center;

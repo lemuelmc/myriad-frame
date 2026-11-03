@@ -1,0 +1,39 @@
+name: Deploy landing page to GitHub Pages
+
+on:
+  push:
+    branches: ['main']
+  workflow_dispatch:
+
+# Only allow a single concurrent deployment.
+concurrency:
+  group: 'pages'
+  cancel-in-progress: true
+
+# Restrict the deployment token to Pages only.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Deploy site/ to GitHub Pages
+        id: deployment
+        # Uploads a GitHub Pages artifact from site/ and deploys it.
+        # For a project repo, the base path (e.g. /myriad-frame/) is auto-detected.
+        uses: actions/deploy-pages@v4
+        with:
+          artifact_name: github-pages
+          directory: site

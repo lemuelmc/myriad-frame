@@ -139,6 +139,15 @@ data/
   <figure style="margin:0"><img src="docs/assets/krea_2.png" alt="Krea" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Krea</figcaption></figure>
 </div>
 
+## Video Demo
+
+A short demo of the built-in inpainting workflow (painting a mask over an image and regenerating the masked region):
+
+<video controls preload="metadata" style="width:100%;border-radius:6px;">
+  <source src="docs/assets/inpainting-20261101.mp4" type="video/mp4">
+  Your browser does not support the video tag.
+</video>
+
 ## How generation works
 
 When you click **Generate**, the main process:

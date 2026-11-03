@@ -81,6 +81,18 @@ export type RuntimeProgressBroadcaster = (p: {
   phase?: RuntimePhase
 }) => void
 
+/**
+ * The source-aware model-download chokepoint signature — installed by
+ * models.ts via `setModelDownloadFn` so background retries route through the
+ * source registry too.
+ */
+export type ModelDownloadFn = (
+  type: ModelType,
+  url: string,
+  provider: string,
+  force: boolean
+) => Promise<string>
+
 // ---------- module state ----------
 /**
  * The manager's mutable state lives in ONE object stored on `globalThis`
@@ -107,6 +119,15 @@ interface DownloadsState {
   lastProgress: Map<string, LastProgress>
   modelBroadcaster?: ModelProgressBroadcaster
   runtimeBroadcaster?: RuntimeProgressBroadcaster
+  /**
+   * The source-aware model-download chokepoint used by startAllPending()
+   * background retries. Lives ON the shared globalThis state (never a
+   * module-scope variable): this module is emitted TWICE in the built bundle,
+   * and a per-copy hook would be set on one copy while the other copy's
+   * startAllPending() reads `undefined` — silently bypassing the source for
+   * every background retry. Populated by models.ts at module load.
+   */
+  modelDownloadFn?: ModelDownloadFn
 }
 
 const globalForDownloads = globalThis as typeof globalThis & {
@@ -121,7 +142,8 @@ const state: DownloadsState = (globalForDownloads.__myriadFrameDownloadsState ??
   paused: false,
   runtimeMap: new Map<string, RuntimeInflight>(),
   changeSubscribers: new Set<ChangeCallback>(),
-  lastProgress: new Map<string, LastProgress>()
+  lastProgress: new Map<string, LastProgress>(),
+  modelDownloadFn: undefined
 })
 
 const settingsService = createSettingsService()
@@ -361,17 +383,32 @@ function notifyRuntimeProgress(version: string, p: { downloadedBytes: number; to
 }
 
 // ---------- registry mutations ----------
-function entryName(url: string): string {
-  return basename(new URL(url).pathname)
+/**
+ * The stored filename for a model download: the optional source-supplied
+ * override wins, else the URL's path basename. The override exists for
+ * sources whose download URLs carry no filename in the path (CivitAI's
+ * `/api/download/models/<versionId>` — the basename is a bare version ID,
+ * which `gen:start`'s extension-filtered basename matching could never
+ * resolve). HF URLs end in the filename, so the fallback is byte-identical
+ * there.
+ */
+function entryName(url: string, filename?: string): string {
+  return filename ?? basename(new URL(url).pathname)
 }
 
-function upsertEntry(type: ModelType, url: string, provider: string | undefined, force: boolean): DownloadEntry {
+function upsertEntry(
+  type: ModelType,
+  url: string,
+  provider: string | undefined,
+  force: boolean,
+  filename?: string
+): DownloadEntry {
   const existing = state.registry.get(url)
   const entry: DownloadEntry = {
     type,
     url,
     provider: provider || 'default',
-    name: entryName(url),
+    name: entryName(url, filename),
     startedAt: existing?.startedAt ?? Date.now(),
     status: 'pending',
     force: force ?? existing?.force ?? false
@@ -455,7 +492,16 @@ export async function downloadModel(
   type: ModelType,
   url: string,
   provider?: string,
-  force = false
+  force = false,
+  /**
+   * Optional params threaded to the transport: `headers` — the source
+   * layer's auth/custom headers — and `filename` — the stored-filename
+   * override for sources whose download URLs carry no filename in the path
+   * (see entryName). `onProgress`/`signal` are deliberately NOT here: the
+   * manager is the sole progress broadcaster and owns the in-flight
+   * AbortController (forwarding either would double-broadcast / double-abort).
+   */
+  opts?: { headers?: Record<string, string>; filename?: string }
 ): Promise<string> {
   const prov = provider || 'default'
   // (1) Installed short-circuit — runs before any registry write and before the
@@ -464,9 +510,13 @@ export async function downloadModel(
   // stale registry entry. A genuine size mismatch falls through to a fresh
   // download, replacing a legacy truncated file.
   if (!force) {
-    const dest = join(modelDestDir(type, prov), entryName(url))
+    const dest = join(modelDestDir(type, prov), entryName(url, opts?.filename))
     if (existsSync(dest)) {
-      const expected = await headSize(url)
+      // Authenticated short-circuit probe: without headers a private repo's
+      // HEAD answers 401 → headSize resolves 0 → the size check below
+      // silently passes anything (auth plan §4 — one of the two in-manager
+      // headSize threads).
+      const expected = await headSize(url, undefined, undefined, opts?.headers)
       let actual = -1
       try {
         actual = statSync(dest).size
@@ -483,19 +533,21 @@ export async function downloadModel(
   // (2) Paused check — queue the entry as pending (preserving force) so it is
   // auto-retried on Resume, then reject with a clear error.
   if (state.paused) {
-    upsertEntry(type, url, provider, force)
+    upsertEntry(type, url, provider, force, opts?.filename)
     throw new Error('Downloads are paused')
   }
 
   // (3) Enqueue (joins an existing in-flight/queued download of the same URL).
-  return startModelDownload(type, url, prov, force)
+  return startModelDownload(type, url, prov, force, opts?.headers, opts?.filename)
 }
 
 function startModelDownload(
   type: ModelType,
   url: string,
   provider: string,
-  force: boolean
+  force: boolean,
+  headers?: Record<string, string>,
+  filename?: string
 ): Promise<string> {
   // A second request for a URL already queued/in-flight joins the existing
   // promise — no re-enqueue, no double download.
@@ -504,7 +556,7 @@ function startModelDownload(
 
   // Mark pending + enqueue. The registry write happens here (not in downloadModel)
   // so a fresh download always has an entry to retry from.
-  upsertEntry(type, url, provider, force)
+  upsertEntry(type, url, provider, force, filename)
 
   const abortController = new AbortController()
   let resolveFn: (p: string) => void = () => {}
@@ -519,7 +571,7 @@ function startModelDownload(
     abortController,
     resolve: resolveFn,
     reject: rejectFn,
-    work: () => runModelDownload(type, url, provider, force, entry)
+    work: () => runModelDownload(type, url, provider, force, entry, headers, filename)
   }
   state.modelMap.set(url, entry)
   enqueue(entry)
@@ -536,16 +588,18 @@ async function runModelDownload(
   url: string,
   provider: string,
   force: boolean,
-  entry: ModelInflight
+  entry: ModelInflight,
+  headers?: Record<string, string>,
+  filename?: string
 ): Promise<void> {
-  const name = entryName(url)
+  const name = entryName(url, filename)
   // Promoted from the wait-list to an active slot: emit the initial 0-byte
   // progress event now (a merely-queued entry emits nothing).
   notifyModelProgress(type, url, 0, 0)
   const tmp = modelTmpPath(type, provider, url)
   try {
     const finalDest = join(modelDestDir(type, provider), name)
-    await downloadToTemp(type, url, provider, entry.abortController.signal)
+    await downloadToTemp(type, url, provider, entry.abortController.signal, headers)
     // Move into place. Windows `renameSync` does not overwrite, so delete any
     // existing destination first (also clears legacy truncated files). A locked
     // destination (active generation holds it open) throws EPERM → "file in use".
@@ -617,15 +671,21 @@ async function downloadToTemp(
   type: ModelType,
   url: string,
   provider: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  headers?: Record<string, string>
 ): Promise<void> {
   const tmp = modelTmpPath(type, provider, url)
   rmSync(tmp, { force: true })
-  const expected = await headSize(url, signal)
+  // Authenticated size verification (auth plan §4 — the second in-manager
+  // headSize thread): without headers a private repo's HEAD answers 401 →
+  // expected === 0 → the `expected > 0` guard is false → a truncated private
+  // file would pass as complete.
+  const expected = await headSize(url, signal, undefined, headers)
   if (signal?.aborted) throw new DownloadAbortError()
   await downloadFile(url, tmp, {
     fresh: true,
     signal,
+    headers,
     onProgress: (downloadedBytes, totalBytes) => {
       notifyModelProgress(type, url, downloadedBytes, totalBytes)
     }
@@ -841,7 +901,11 @@ export function startAllPending(): void {
     .filter((e) => e.status === 'pending' || e.status === 'failed')
     .sort((a, b) => a.startedAt - b.startedAt)
   for (const e of entries) {
-    void downloadModel(e.type, e.url, e.provider, e.force ?? false).catch(() => {})
+    // Route through the source-aware chokepoint when installed (models.ts
+    // sets it at module load); bare downloadModel is the pre-source fallback.
+    void (state.modelDownloadFn ?? downloadModel)(e.type, e.url, e.provider, e.force ?? false).catch(
+      () => {}
+    )
   }
 }
 
@@ -875,6 +939,19 @@ export function setModelProgressBroadcaster(cb: ModelProgressBroadcaster): void 
 /** Install the callback that broadcasts `runtime:progress` to all windows. */
 export function setRuntimeProgressBroadcaster(cb: RuntimeProgressBroadcaster): void {
   state.runtimeBroadcaster = cb
+}
+
+/**
+ * Install the source-aware model-download chokepoint used by startAllPending()
+ * background retries. Stored ON the globalThis DownloadsState (never a
+ * module-scope variable): the main bundle emits this module TWICE, and a
+ * per-copy hook would be set on one copy while the other copy's
+ * startAllPending() reads `undefined` — silently bypassing the source for
+ * every background retry (a failed private-repo retry would 401 again).
+ * A field on the shared state object is visible to every module copy.
+ */
+export function setModelDownloadFn(fn: ModelDownloadFn): void {
+  state.modelDownloadFn = fn
 }
 
 // ---------- init ----------

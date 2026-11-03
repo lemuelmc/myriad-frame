@@ -9,6 +9,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AllConfigs,
   ChatMessage,
+  ConfigUpdateStatus,
   DownloadEntry,
   DownloadProgress,
   DownloadsListResult,
@@ -20,6 +21,8 @@ import type {
   InitStatus,
   LogLevel,
   LogsInfo,
+  MaskSaveRequest,
+  MaskSaveResult,
   ModelFile,
   ModelType,
   PlatformInfo,
@@ -30,7 +33,11 @@ import type {
   Session,
   SessionInputs,
   Settings,
-  ThemeKey
+  ThemeKey,
+  TokenEntry,
+  TokenEntryInput,
+  TokenEntryResult,
+  TokenImportResult
 } from '@shared/types'
 
 export interface AboutInfo {
@@ -47,11 +54,20 @@ const api = {
   configs: (): Promise<AllConfigs> => ipcRenderer.invoke('app:configs'),
   /** Full init state; lets the renderer catch up on init events it missed. */
   initState: (): Promise<InitState> => ipcRenderer.invoke('app:initState'),
+  /**
+   * Result of the launch-time config update check (the `updates:available`
+   * push payload), or null before the first check of the session completes.
+   * The renderer pulls it on mount to catch up when the check completed
+   * before it mounted — the same pattern as initState().
+   */
+  updateStatus: (): Promise<ConfigUpdateStatus | null> => ipcRenderer.invoke('updates:get'),
   platform: (): Promise<PlatformInfo> => ipcRenderer.invoke('app:platform'),
   resolutions: (diffusionType: string): Promise<ResolutionEntry[]> =>
     ipcRenderer.invoke('app:resolutions', diffusionType),
   about: (): Promise<AboutInfo> => ipcRenderer.invoke('app:about'),
   pickImages: (): Promise<string[]> => ipcRenderer.invoke('app:pickImages'),
+  /** Native directory picker (the LoRA dialog's custom dir); null when canceled. */
+  pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('app:pickDirectory'),
   imageFromPath: (p: string): Promise<string> => ipcRenderer.invoke('app:imageFromPath', p),
   /** Resolves the absolute saved file path, or null when canceled/failed. */
   saveImage: (p: string): Promise<string | null> => ipcRenderer.invoke('app:saveImage', p),
@@ -114,6 +130,23 @@ const api = {
   downloadsCancel: (arg: string): Promise<void> => ipcRenderer.invoke('downloads:cancel', arg),
   downloadsSetPaused: (paused: boolean): Promise<void> => ipcRenderer.invoke('downloads:setPaused', paused),
 
+  // tokens (data/hub-tokens.json — Settings → Tokens)
+  tokensList: (): Promise<TokenEntry[]> => ipcRenderer.invoke('tokens:list'),
+  tokensAdd: (input: TokenEntryInput): Promise<TokenEntryResult> =>
+    ipcRenderer.invoke('tokens:add', input),
+  tokensUpdate: (key: string, token: string): Promise<TokenEntryResult> =>
+    ipcRenderer.invoke('tokens:update', key, token),
+  tokensDelete: (key: string): Promise<void> =>
+    ipcRenderer.invoke('tokens:delete', key),
+  /** Main shows the open dialog, parses the file, merges entries; null when canceled. */
+  tokensImportFile: (): Promise<TokenImportResult | null> =>
+    ipcRenderer.invoke('tokens:importFile'),
+  /** Main shows the save dialog and writes the raw JSON; null when canceled. */
+  tokensExportFile: (): Promise<string | null> =>
+    ipcRenderer.invoke('tokens:exportFile'),
+  // Registered source NAMES (deduped) — populates the token dialog's source dropdown.
+  sourcesList: (): Promise<string[]> => ipcRenderer.invoke('sources:list'),
+
   // settings
   settingsGet: (): Promise<Settings> => ipcRenderer.invoke('settings:get'),
   settingsSave: (patch: Partial<Settings>): Promise<Settings> => ipcRenderer.invoke('settings:save', patch),
@@ -148,6 +181,21 @@ const api = {
   sessionsSetInputs: (id: string, patch: SessionInputs): Promise<Session> =>
     ipcRenderer.invoke('sessions:setInputs', id, patch),
 
+  // masks (data/tmp/masks — inpaint / outpaint)
+  /** Persist the painted mask (and padded init image for outpaint) as PNGs. */
+  masksSave: (req: MaskSaveRequest): Promise<MaskSaveResult> =>
+    ipcRenderer.invoke('masks:save', req),
+  /** Delete saved mask / init files; paths outside data/tmp/masks are ignored. */
+  masksClear: (paths: string[]): Promise<void> => ipcRenderer.invoke('masks:clear', paths),
+  /**
+   * Pushed when main purged a stale inpaint/outpaint reference during
+   * gen:start (the mask/background file no longer exists) — the renderer must
+   * drop its sticky maskState (main already showed the warning dialog).
+   */
+  onMasksInvalidated: (cb: (p: { sessionId: string }) => void): void => {
+    ipcRenderer.on('masks:invalidated', (_e, p: { sessionId: string }) => cb(p))
+  },
+
   // generation
   genStart: (req: GenerationRequest): Promise<string> => ipcRenderer.invoke('gen:start', req),
   genStop: (sessionId: string): Promise<void> => ipcRenderer.invoke('gen:stop', sessionId),
@@ -159,6 +207,10 @@ const api = {
   },
   onAppReady: (cb: (p: { platform?: PlatformInfo }) => void): void => {
     ipcRenderer.on('app:ready', (_e, p) => cb(p))
+  },
+  /** Pushed when the launch-time update check finds config changes (detect-only). */
+  onUpdateAvailable: (cb: (p: ConfigUpdateStatus) => void): void => {
+    ipcRenderer.on('updates:available', (_e, p: ConfigUpdateStatus) => cb(p))
   },
   onGenProgress: (cb: (p: GenProgress) => void): void => {
     ipcRenderer.on('gen:progress', (_e, p: GenProgress) => cb(p))

@@ -1,6 +1,12 @@
+<!--
+Myriad Frame — Electron + Vue 3 desktop front-end for sd-cli (stable-diffusion.cpp).
+Author: Lemuel Raganas
+License: Apache License 2.0 — permissive; allows use, modification, and distribution
+(commercial or private) provided the license notice and copyright are preserved.
+-->
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { SCHEDULER_MODEL_DEFAULT, SCHEDULERS } from '@shared/types'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { SCHEDULER_MODEL_DEFAULT, SCHEDULERS, SEED_MAX, isValidSeed } from '@shared/types'
 import type { SessionSamplingOverride } from '@shared/types'
 import { useAppStore } from '../stores/app'
 import { useSettingsStore } from '../stores/settings'
@@ -31,8 +37,50 @@ const draft = reactive<SessionSamplingOverride>({
   cfg: 1.0,
   strength: 0.75,
   sampler: 'euler',
-  scheduler: SCHEDULER_MODEL_DEFAULT
+  scheduler: SCHEDULER_MODEL_DEFAULT,
+  flow_shift: '',
+  seed: null
 })
+
+// ---------- seed ----------
+/** Dropdown view over draft.seed: null = random, a valid integer = fixed.
+ *  A view, not a second persisted field — only draft.seed is saved. */
+const seedMode = ref<'random' | 'fixed'>('random')
+/** Last valid fixed seed seen in this dialog session — restored when the user
+ *  toggles back to fixed (declared before onMounted uses it). */
+let lastFixed: number | null = null
+
+// Same math as main's randomSeed() in sdcli.ts: 32-bit unsigned range.
+function randomSeed(): number {
+  return Math.floor(Math.random() * 2 ** 32)
+}
+
+watch(seedMode, (mode, prevMode) => {
+  if (mode === 'fixed') {
+    // Restoring the remembered value matters: an accidental
+    // fixed → random → fixed round-trip must NOT mint a fresh seed. Only a
+    // first-time switch with nothing remembered generates one (rerollable via
+    // the dice button or editable in the input).
+    draft.seed = lastFixed ?? randomSeed()
+  } else if (mode === 'random') {
+    if (prevMode === 'fixed' && isValidSeed(draft.seed)) lastFixed = draft.seed
+    draft.seed = null
+  }
+})
+
+function save(): void {
+  const out: SessionSamplingOverride = { ...draft }
+  const s = out.seed
+  if (typeof s === 'number' && Number.isFinite(s) && s >= 0) {
+    // Clamp positives into sd-cli's 32-bit range rather than discarding the
+    // user's intent; only '' / negative fall back to random. (Main's
+    // whitelist stays strict — it deletes invalid values instead.)
+    out.seed = Math.min(Math.floor(s), SEED_MAX)
+  } else {
+    out.seed = null
+  }
+  emit('save', out)
+}
 
 function onKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape') {
@@ -55,6 +103,16 @@ onMounted(async () => {
     // Normalize a null/undefined global to the sentinel so the select has a
     // matching option (never a blank select).
     draft.scheduler = m.scheduler || SCHEDULER_MODEL_DEFAULT
+    // Normalize a null/undefined global to '' so an empty field displays
+    // (empty = explicit "none": no --flow-shift flag for this session).
+    draft.flow_shift = m.flow_shift ?? ''
+    // Seed: a valid stored integer prefills fixed; anything else is random.
+    // Assign draft.seed and lastFixed BEFORE the seedMode assignment — Vue
+    // watchers flush asynchronously, so the watch below sees both set and
+    // restores the same value instead of clobbering it.
+    draft.seed = isValidSeed(m.seed) ? m.seed : null
+    if (draft.seed !== null) lastFixed = draft.seed
+    seedMode.value = draft.seed === null ? 'random' : 'fixed'
   }
 })
 
@@ -104,12 +162,41 @@ function reset(): void {
             <option v-for="s in SCHEDULERS" :key="s" :value="s">{{ s }}</option>
           </select>
         </label>
+        <label class="kv-row">
+          <span>Flow shift</span>
+          <input v-model.number="draft.flow_shift" type="number" step="0.1" placeholder="(none)" />
+        </label>
+        <p class="faint">Flow shift: empty = no --flow-shift flag (model default); 0 is a real value.</p>
+        <label class="kv-row">
+          <span>Seed</span>
+          <input
+            v-model.number="draft.seed"
+            type="number"
+            min="0"
+            :max="SEED_MAX"
+            step="1"
+            :disabled="seedMode === 'random'"
+            placeholder="(random)"
+          />
+          <select v-model="seedMode" class="seed-mode">
+            <option value="random">random</option>
+            <option value="fixed">fixed</option>
+          </select>
+          <button
+            v-if="seedMode === 'fixed'"
+            class="dice"
+            title="New random seed"
+            aria-label="New random seed"
+            @click.prevent="draft.seed = randomSeed()"
+          >🎲</button>
+        </label>
+        <p class="faint">Seed: random = a new seed every generation; fixed = reuse this seed (dice rerolls it).</p>
       </div>
 
       <footer class="dialog-footer">
         <button @click="reset()">Reset</button>
         <button @click="emit('close')">Cancel</button>
-        <button class="primary" @click="emit('save', { ...draft })">Save</button>
+        <button class="primary" @click="save()">Save</button>
       </footer>
     </div>
   </div>
@@ -180,6 +267,21 @@ function reset(): void {
   padding: 6px 8px;
   color: var(--text);
   font-size: 13px;
+}
+.kv-row .seed-mode {
+  flex: 0 0 auto;
+  width: 96px;
+}
+.kv-row .dice {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  font-size: 14px;
+  line-height: 1;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  cursor: pointer;
 }
 .dialog-footer {
   display: flex;

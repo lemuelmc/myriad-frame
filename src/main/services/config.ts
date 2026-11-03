@@ -91,7 +91,16 @@ export function loadApplicationConfig(): ApplicationConfig {
  *   `name`, `label`, `inference_type`, `quant_type`, `diffusion_type`,
  *   `url` (`https://`); optional string `description`; optional non-empty
  *   string `path` (repo-relative folder restricting the hub scan to that
- *   folder's direct files; '/' restricts it to the repo root's direct files)
+ *   folder's direct files; '/' restricts it to the repo root's direct files);
+ *   optional `model_version_ids` (CivitAI version filter — absent or null
+ *   means no filter; otherwise a non-empty array of positive integers)
+ * - `repo.lora` is optional — absent is valid (older overrides keep working);
+ *   present must be an array (empty allowed) of objects with non-empty string
+ *   `provider`, `label`, `url` (`https://`) and a non-empty array
+ *   `diffustion_types` of non-empty strings (the shipped hub.json's spelling,
+ *   kept as-is); optional string `description`; optional non-empty string
+ *   `path`; optional `model_version_ids` (same rule as diffusion); optional
+ *   string `source` / `domain`
  * - `default` is a repo-relative path *or* full URL in practice — only a
  *   non-empty string is required, never an `https://` prefix
  *
@@ -284,6 +293,36 @@ export function validateHubConfig(cfg: unknown): string | undefined {
     }
   }
 
+  // Optional: absent is valid; present-must-be-valid.
+  const tokenizer = repoObj['tokenizer']
+  if (tokenizer !== undefined) {
+    if (tokenizer === null || typeof tokenizer !== 'object' || Array.isArray(tokenizer)) {
+      return 'hub config "repo.tokenizer" must be an object when present'
+    }
+    for (const [key, t] of Object.entries(tokenizer as Record<string, unknown>)) {
+      if (t === null || typeof t !== 'object' || Array.isArray(t)) {
+        return `repo.tokenizer["${key}"] must be an object`
+      }
+      const to = t as Record<string, unknown>
+      if (
+        typeof to['url'] !== 'string' ||
+        to['url'] === '' ||
+        !to['url'].startsWith('https://')
+      ) {
+        return `repo.tokenizer["${key}"].url must be a non-empty string starting with https://`
+      }
+      if (typeof to['default'] !== 'string' || to['default'] === '') {
+        return `repo.tokenizer["${key}"].default must be a non-empty string`
+      }
+      if (to['provider'] !== undefined && typeof to['provider'] !== 'string') {
+        return `repo.tokenizer["${key}"].provider must be a string when present`
+      }
+      if (to['label'] !== undefined && typeof to['label'] !== 'string') {
+        return `repo.tokenizer["${key}"].label must be a string when present`
+      }
+    }
+  }
+
   const diffusion = repoObj['diffusion']
   if (!Array.isArray(diffusion) || diffusion.length === 0) {
     return 'hub config "repo.diffusion" must be a non-empty array'
@@ -318,6 +357,101 @@ export function validateHubConfig(cfg: unknown): string | undefined {
       const p = dobj['path']
       if (typeof p !== 'string' || p.trim() === '') {
         return `repo.diffusion[${i}].path must be a non-empty string when present`
+      }
+    }
+    // Optional CivitAI version filter: absent or null = no filter; present =
+    // a non-empty array of positive-integer version ids.
+    const mvid = dobj['model_version_ids']
+    if (mvid !== undefined && mvid !== null) {
+      if (!Array.isArray(mvid) || mvid.length === 0) {
+        return `repo.diffusion[${i}].model_version_ids must be a non-empty array when present`
+      }
+      for (let j = 0; j < mvid.length; j++) {
+        const v = mvid[j]
+        if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) {
+          return `repo.diffusion[${i}].model_version_ids[${j}] must be a positive integer`
+        }
+      }
+    }
+    // Optional pagination cap (HuggingFace entries): absent or null = default
+    // 1-page scan; present = a positive integer.
+    const mp = dobj['max_page']
+    if (mp !== undefined && mp !== null) {
+      if (typeof mp !== 'number' || !Number.isInteger(mp) || mp <= 0) {
+        return `repo.diffusion[${i}].max_page must be a positive integer when present`
+      }
+    }
+  }
+
+  // repo.lora — optional (older overrides without it stay valid); present must
+  // be an array (empty allowed) of well-formed LoRA entries. The
+  // `diffustion_types` spelling is the shipped hub.json key and is validated
+  // as-is (plans/lora-support.md §9).
+  const lora = repoObj['lora']
+  if (lora !== undefined && lora !== null) {
+    if (!Array.isArray(lora)) {
+      return 'hub config "repo.lora" must be an array when present'
+    }
+    for (let i = 0; i < lora.length; i++) {
+      const l = lora[i]
+      if (l === null || typeof l !== 'object' || Array.isArray(l)) {
+        return `repo.lora[${i}] must be an object`
+      }
+      const lobj = l as Record<string, unknown>
+      for (const key of ['provider', 'label'] as const) {
+        const v = lobj[key]
+        if (typeof v !== 'string' || v === '') {
+          return `repo.lora[${i}].${key} must be a non-empty string`
+        }
+      }
+      const lurl = lobj['url']
+      if (typeof lurl !== 'string' || lurl === '' || !lurl.startsWith('https://')) {
+        return `repo.lora[${i}].url must be a non-empty string starting with https://`
+      }
+      const dts = lobj['diffustion_types']
+      if (!Array.isArray(dts) || dts.length === 0) {
+        return `repo.lora[${i}].diffustion_types must be a non-empty array`
+      }
+      for (let j = 0; j < dts.length; j++) {
+        const v = dts[j]
+        if (typeof v !== 'string' || v === '') {
+          return `repo.lora[${i}].diffustion_types[${j}] must be a non-empty string`
+        }
+      }
+      if (lobj['description'] !== undefined && typeof lobj['description'] !== 'string') {
+        return `repo.lora[${i}].description must be a string when present`
+      }
+      if (lobj['path'] !== undefined) {
+        const p = lobj['path']
+        if (typeof p !== 'string' || p.trim() === '') {
+          return `repo.lora[${i}].path must be a non-empty string when present`
+        }
+      }
+      // Optional CivitAI version filter — same rule as the diffusion branch.
+      const mvid = lobj['model_version_ids']
+      if (mvid !== undefined && mvid !== null) {
+        if (!Array.isArray(mvid) || mvid.length === 0) {
+          return `repo.lora[${i}].model_version_ids must be a non-empty array when present`
+        }
+        for (let j = 0; j < mvid.length; j++) {
+          const v = mvid[j]
+          if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) {
+            return `repo.lora[${i}].model_version_ids[${j}] must be a positive integer`
+          }
+        }
+      }
+      // Optional pagination cap — same rule as the diffusion branch.
+      const mp = lobj['max_page']
+      if (mp !== undefined && mp !== null) {
+        if (typeof mp !== 'number' || !Number.isInteger(mp) || mp <= 0) {
+          return `repo.lora[${i}].max_page must be a positive integer when present`
+        }
+      }
+      if (lobj['source'] !== undefined && typeof lobj['source'] !== 'string') {
+        return `repo.lora[${i}].source must be a string when present`
+      }
+      if (lobj['domain'] !== undefined && typeof lobj['domain'] !== 'string') {
+        return `repo.lora[${i}].domain must be a string when present`
       }
     }
   }
