@@ -28,6 +28,11 @@ jobs:
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
+        # Restrict the Pages artifact to the site/ folder. configure-pages owns
+        # the `directory` input; deploy-pages does not, so a directory here is
+        # silently ignored and the whole repo gets deployed instead.
+        with:
+          directory: site
 
       - name: Deploy site/ to GitHub Pages
         id: deployment
@@ -35,5 +40,6 @@ jobs:
         # For a project repo, the base path (e.g. /myriad-frame/) is auto-detected.
         uses: actions/deploy-pages@v4
         with:
-          artifact_name: github-pages
-          directory: site
+          # configure-pages uploads the artifact named `pages_artifact` (the
+          # deploy-pages default); the old `github-pages` name never matched it.
+          artifact_name: pages_artifact
