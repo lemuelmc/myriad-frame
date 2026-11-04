@@ -699,7 +699,7 @@
       },
       {
         "provider": "were_catf",
-        "name": "were_catf_animagine_xl_inpainting",
+        "name": "were_catf_juggernaut_xl_inpainting",
         "label": "Juggernaut XL inpainting",
         "description": "This is an inpainting model of the excellent Juggernaut XL ",
         "inference_type": "image",
@@ -767,6 +767,7 @@
       {
         "provider": "leejet",
         "name": "leejet_moss_image_sft_gguf",
+        "label": "leejet/MOSS-Image-SFT GGUF",
         "description": "MOSS-Image-SFT GGUF quantized files",
         "inference_type": "image",
         "quant_type": "gguf",
