@@ -9,10 +9,12 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type {
   CatalogEntry,
   DownloadEntry,
+  ModelFile,
   ModelType,
   PerformanceSettings,
   RuntimeKey,
   SamplingDefaults,
+  SamplingOverrideValues,
   TokenEntry
 } from '@shared/types'
 import {
@@ -22,8 +24,8 @@ import {
 } from '@shared/types'
 import { useAppStore } from '../stores/app'
 import { defaultPerformance, useSettingsStore, type ModelDownloadState } from '../stores/settings'
-import { matchesSearch, normalizeForSearch, providerLabel } from '../search'
-import { resolveEncoderBundle } from '../deps'
+import { baseName, matchesSearch, normalizeForSearch, providerLabel } from '../search'
+import { accessForFamily, requiredFamilyFor, resolveEncoderBundle } from '../deps'
 import { toast } from '../toast'
 import { confirm } from '../confirm'
 import { listThemes } from '../theme'
@@ -38,7 +40,7 @@ const emit = defineEmits<{ close: [] }>()
 const appStore = useAppStore()
 const settingsStore = useSettingsStore() 
 
-type Section = 'appearance' | 'about' | 'release-notes' | 'models' | 'vae' | 'encoder' | 'vision' | 'tokenizer' | 'lora' | 'sampling' | 'runtime' | 'performance' | 'downloads' | 'tokens' | 'logs'
+type Section = 'appearance' | 'about' | 'release-notes' | 'models' | 'vae' | 'encoder' | 'vision' | 'tokenizer' | 'audio_encoder' | 'audio_vae' | 'latent_upscaler' | 'lora' | 'sampling' | 'runtime' | 'performance' | 'downloads' | 'tokens' | 'logs'
 const section = ref<Section>('appearance')  // default to appearance instead of 'about'
 
 const sections: { id: Section; label: string }[] = [
@@ -49,6 +51,9 @@ const sections: { id: Section; label: string }[] = [
   { id: 'encoder', label: 'Text Encoder' },
   { id: 'vision', label: 'Vision' },
   { id: 'tokenizer', label: 'Tokenizer' },
+  { id: 'audio_encoder', label: 'Audio Encoder' },
+  { id: 'audio_vae', label: 'Audio VAE' },
+  { id: 'latent_upscaler', label: 'Latent Upscaler' },
   { id: 'lora', label: 'LoRA' },
   { id: 'sampling', label: 'Sampling' },
   { id: 'performance', label: 'Performance' },
@@ -107,6 +112,21 @@ const providerGroups = computed(() => {
   return [...map.entries()]
 })
 const installedNames = computed(() => new Set(modelFiles.value.map((f) => f.name)))
+
+/**
+ * Stable v-for key for an installed row (model-collision-hardening plan §6):
+ * duplicate basenames previously collided as Vue keys — the composite
+ * family/provider/name is unique per listed path.
+ */
+function rowKey(f: ModelFile): string {
+  return `${f.diffusionType ?? ''}/${f.provider ?? ''}/${f.name}`
+}
+
+/** The `family · provider` subtitle for an installed row — empty for legacy
+ *  flat rows (no context to show). */
+function rowContext(f: ModelFile): string {
+  return [f.diffusionType, f.provider].filter(Boolean).join(' · ')
+}
 
 /**
  * Models-section search filter. The needle is normalized (space, '-' and '_'
@@ -195,10 +215,24 @@ async function resetHubConfig(): Promise<void> {
 function isAbortedDownload(err: unknown): boolean {
   return (err as Error).message === DOWNLOAD_ABORTED_MESSAGE
 }
+/** Every catalog member of the entry's MoE group (same family + groupId), or
+ *  the entry alone for plain single-file models. A MoE pair is not optional —
+ *  downloading only the low-noise expert would make gen:start fail on the
+ *  missing high-noise companion. */
+function groupMembers(e: CatalogEntry): CatalogEntry[] {
+  if (!e.groupId) return [e]
+  return (appStore.catalog?.entries ?? []).filter(
+    (x) => x.type === 'diffusion' && x.groupId === e.groupId && x.diffusionType === e.diffusionType
+  )
+}
 async function downloadEntry(e: CatalogEntry): Promise<void> {
   try {
-    await settingsStore.downloadModel('diffusion', e.url, e.provider)
-    toast(`Downloaded ${e.name}`, 'ok')
+    const group = groupMembers(e)
+    for (const m of group) await settingsStore.downloadModel('diffusion', m.url, m.provider)
+    toast(
+      group.length > 1 ? `Downloaded ${e.name} (+${group.length - 1} MoE companion)` : `Downloaded ${e.name}`,
+      'ok'
+    )
   } catch (err) {
     if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
   }
@@ -206,26 +240,41 @@ async function downloadEntry(e: CatalogEntry): Promise<void> {
 /**
  * Force a redownload of a model that is already installed. `force` makes the
  * download flow re-download even when the file already exists with a matching
- * size, replacing the on-disk file.
+ * size, replacing the on-disk file. MoE groups redownload as a pair.
  */
 async function redownloadEntry(e: CatalogEntry): Promise<void> {
   try {
-    await settingsStore.downloadModel('diffusion', e.url, e.provider, true)
-    toast(`Redownloaded ${e.name}`, 'ok')
+    const group = groupMembers(e)
+    for (const m of group) await settingsStore.downloadModel('diffusion', m.url, m.provider, true)
+    toast(
+      group.length > 1 ? `Redownloaded ${e.name} (+${group.length - 1} MoE companion)` : `Redownloaded ${e.name}`,
+      'ok'
+    )
   } catch (err) {
     if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
   }
 }
-async function removeModel(name: string): Promise<void> {
-  const ok = await confirm(`Delete ${name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
+/**
+ * Delete an installed row by its exact location: the ModelFile row carries
+ * the provider/diffusionType context `models.list()` classified it with, so
+ * main deletes ONE path (model-collision-hardening plan §3.3) instead of
+ * every provider subdir matching the basename. List rows carry no url — no
+ * chain fallback.
+ */
+async function removeModel(f: ModelFile): Promise<void> {
+  const ok = await confirm(`Delete ${f.name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
   if (!ok) return
-  await settingsStore.removeModel('diffusion', name)
+  await settingsStore.removeModel('diffusion', f.name, f.provider, f.diffusionType)
 }
 function dlState(e: CatalogEntry) {
   return settingsStore.modelDownloads[`diffusion:${e.url}`]
 }
 function catalogEntryFor(type: ModelType, name: string): CatalogEntry | undefined {
-  return (appStore.catalog?.entries ?? []).find((e) => e.type === type && e.name === name)
+  // Basename compare: a slashed catalog name matches its on-disk basename
+  // after the manager's basename-normalized storage (plan §3.1).
+  return (appStore.catalog?.entries ?? []).find(
+    (e) => e.type === type && baseName(e.name) === baseName(name)
+  )
 }
 function installedDlState(type: ModelType, name: string) {
   const e = catalogEntryFor(type, name)
@@ -240,7 +289,27 @@ function installedDesc(name: string): string | undefined {
   return catalogEntryFor('diffusion', name)?.description
 }
 function diffusionTypeForName(name: string): string | undefined {
-  return diffusionEntries.value.find((e) => e.name === name)?.diffusionType
+  return diffusionEntries.value.find((e) => baseName(e.name) === baseName(name))?.diffusionType
+}
+/**
+ * Access badge for a hub entry's diffusion family, from the FRESH hub config
+ * (`diffusion_models[].access` via accessForFamily()): 'Auth' when downloads
+ * need an API token, 'Gated' when a token AND accepting the terms/license on
+ * the model page are required, null when freely downloadable. Rendered in
+ * the same accent style as the CivitAI source badge — which is suppressed
+ * while an access badge shows, since the access badge already covers the
+ * token requirement.
+ */
+function accessBadge(e: CatalogEntry): 'Auth' | 'Gated' | null {
+  const a = accessForFamily(e.diffusionType)
+  if (!a) return null
+  return a === 'gated' ? 'Gated' : 'Auth'
+}
+/** Hover text for the access badge — what it requires + where to configure the token. */
+function accessTitle(e: CatalogEntry): string {
+  return accessForFamily(e.diffusionType) === 'gated'
+    ? 'Gated model — requires a token AND accepting the terms/license on the model page. Configure a token (Settings → Tokens)'
+    : 'Requires authentication — configure a token (Settings → Tokens)'
 }
 function defaultDepEntry(type: ModelType, dt: string): CatalogEntry | undefined {
   const entries = (appStore.catalog?.entries ?? []).filter(
@@ -250,33 +319,47 @@ function defaultDepEntry(type: ModelType, dt: string): CatalogEntry | undefined 
   return entries.find((e) => e.isDefault) ?? entries[0]
 }
 function dependencyEntries(dt: string): CatalogEntry[] {
-  const v = defaultDepEntry('vae', dt)
+  // `requires` blocks route the VAE / encoder / audio-encoder dependencies to
+  // a DIFFERENT diffusion family (wan2_2_t2v uses the wan2_1 VAE + encoder;
+  // S2V adds the wan2_2 audio encoder). Absent → the diffusion type itself.
+  const vaeFamily = requiredFamilyFor(dt, 'vae')
+  const encFamily = requiredFamilyFor(dt, 'encoder')
+  const audFamily = requiredFamilyFor(dt, 'audio_encoder')
+  const v = defaultDepEntry('vae', vaeFamily)
   // Encoder slot: a bundle diffusion type (`defaults[]`, SD3.5-style)
   // downloads the whole bundle. Prefer the config-resolved bundle — a
   // catalog-only lookup leaves bundle types with zero dependency entries
   // whenever the cached catalog is stale — then every `isDefault` encoder
   // entry from the catalog, then the plain single-entry fallback.
-  const bundle = resolveEncoderBundle(dt)
+  const bundle = resolveEncoderBundle(encFamily)
   let enc: CatalogEntry[]
   if (bundle.length) {
     enc = bundle
   } else {
     const marked = (appStore.catalog?.entries ?? []).filter(
-      (e) => e.type === 'encoder' && e.diffusionType === dt && e.isDefault
+      (e) => e.type === 'encoder' && e.diffusionType === encFamily && e.isDefault
     )
     enc = marked.length
       ? marked
-      : [defaultDepEntry('encoder', dt)].filter((x): x is CatalogEntry => Boolean(x))
+      : [defaultDepEntry('encoder', encFamily)].filter((x): x is CatalogEntry => Boolean(x))
   }
   const vis = defaultDepEntry('vision', dt)
   const tok = defaultDepEntry('tokenizer', dt)
-  return [v, ...enc, vis, tok].filter((x): x is CatalogEntry => Boolean(x))
+  const aud = defaultDepEntry('audio_encoder', audFamily)
+  // LTX 2.5 companions — resolved from the diffusion type ITSELF (no
+  // `requires` indirection), so the per-family dependency bundle surfaced in
+  // the Models section includes the audio VAE and the latent upscaler too.
+  const av = defaultDepEntry('audio_vae', dt)
+  const lu = defaultDepEntry('latent_upscaler', dt)
+  return [v, ...enc, vis, tok, aud, av, lu].filter((x): x is CatalogEntry => Boolean(x))
 }
 const depDownloads = computed(() => {
   const out: { key: string; label: string; state: ModelDownloadState }[] = []
   const seen = new Set<string>()
   for (const f of modelFiles.value) {
-    const dt = diffusionTypeForName(f.name)
+    // The row's own classification wins (exact); the name lookup stays as the
+    // fallback for rows listed before the metadata existed.
+    const dt = f.diffusionType ?? diffusionTypeForName(f.name)
     if (!dt) continue
     for (const e of dependencyEntries(dt)) {
       const key = `${e.type}:${e.url}`
@@ -290,8 +373,13 @@ const depDownloads = computed(() => {
   }
   return out
 })
-async function downloadDependencies(name: string): Promise<void> {
-  const dt = diffusionTypeForName(name)
+/**
+ * Download the dependency set for an installed row. The row's own
+ * `diffusionType` (from models.list()) is authoritative; the name lookup
+ * stays as the fallback.
+ */
+async function downloadDependencies(f: ModelFile): Promise<void> {
+  const dt = f.diffusionType ?? diffusionTypeForName(f.name)
   if (!dt) {
     toast('Could not determine the diffusion type for this model', 'error')
     return
@@ -303,7 +391,9 @@ async function downloadDependencies(name: string): Promise<void> {
   }
   let missing = 0
   for (const e of deps) {
-    const installed = settingsStore.modelLists[e.type]?.some((f) => f.name === e.name)
+    const installed = settingsStore.modelLists[e.type]?.some(
+      (row) => baseName(row.name) === baseName(e.name)
+    )
     if (!installed) {
       missing++
       try {
@@ -389,10 +479,11 @@ async function downloadEncoder(e: CatalogEntry): Promise<void> {
     if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
   }
 }
-async function removeEncoder(name: string): Promise<void> {
-  const ok = await confirm(`Delete ${name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
+/** Context-scoped delete (one path — see removeModel). */
+async function removeEncoder(f: ModelFile): Promise<void> {
+  const ok = await confirm(`Delete ${f.name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
   if (!ok) return
-  await settingsStore.removeModel('encoder', name)
+  await settingsStore.removeModel('encoder', f.name, f.provider, f.diffusionType)
 }
 function encoderDlState(e: CatalogEntry) {
   return settingsStore.modelDownloads[`encoder:${e.url}`]
@@ -440,10 +531,11 @@ async function downloadVision(e: CatalogEntry): Promise<void> {
     if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
   }
 }
-async function removeVision(name: string): Promise<void> {
-  const ok = await confirm(`Delete ${name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
+/** Context-scoped delete (one path — see removeModel). */
+async function removeVision(f: ModelFile): Promise<void> {
+  const ok = await confirm(`Delete ${f.name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
   if (!ok) return
-  await settingsStore.removeModel('vision', name)
+  await settingsStore.removeModel('vision', f.name, f.provider, f.diffusionType)
 }
 function visionDlState(e: CatalogEntry) {
   return settingsStore.modelDownloads[`vision:${e.url}`]
@@ -496,10 +588,125 @@ async function downloadTokenizer(e: CatalogEntry): Promise<void> {
     if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
   }
 }
-async function removeTokenizer(name: string): Promise<void> {
-  const ok = await confirm(`Delete ${name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
+/** Context-scoped delete (one path — see removeModel). */
+async function removeTokenizer(f: ModelFile): Promise<void> {
+  const ok = await confirm(`Delete ${f.name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
   if (!ok) return
-  await settingsStore.removeModel('tokenizer', name)
+  await settingsStore.removeModel('tokenizer', f.name, f.provider, f.diffusionType)
+}
+
+// ---------- audio encoder (Wan2.2 S2V wav2vec2) ----------
+// The type dropdown lists diffusion types; the entries resolve from the
+// REQUIRED family (repo.audio_encoder is keyed by the wan2_2 family and
+// reached through `requires.audio_encoder.from`), so picking `wan2_2_s2v`
+// surfaces the wav2vec2 entry. Types without a required audio encoder list
+// none.
+const audioEncoderType = ref(diffusionTypes.value[0] ?? '')
+const audioEncoderFiles = computed(() => settingsStore.modelLists.audio_encoder ?? [])
+const audioEncoderEntries = computed(() =>
+  (appStore.catalog?.entries ?? []).filter(
+    (e) =>
+      e.type === 'audio_encoder' &&
+      e.diffusionType === requiredFamilyFor(audioEncoderType.value, 'audio_encoder')
+  )
+)
+const audioEncoderInstalledNames = computed(() => new Set(audioEncoderFiles.value.map((f) => f.name)))
+async function downloadAudioEncoder(e: CatalogEntry): Promise<void> {
+  try {
+    await settingsStore.downloadModel('audio_encoder', e.url, e.provider)
+    toast(`Downloaded ${e.name}`, 'ok')
+  } catch (err) {
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
+  }
+}
+function audioEncoderDlState(e: CatalogEntry) {
+  return settingsStore.modelDownloads[`audio_encoder:${e.url}`]
+}
+async function removeAudioEncoder(f: ModelFile): Promise<void> {
+  const ok = await confirm(`Delete ${f.name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
+  if (!ok) return
+  await settingsStore.removeModel('audio_encoder', f.name, f.provider, f.diffusionType)
+}
+// Pre-existing write-side gap fixed (ltx25-support plan §5.10): the Settings
+// type carried `defaultAudioEncoder` and the chat panel read it, but no UI
+// ever wrote it — the default picker below clones the tokenizer pattern.
+const defaultAudioEncoder = computed(() => settingsStore.settings.defaultAudioEncoder?.[audioEncoderType.value] ?? '')
+async function setDefaultAudioEncoder(name: string): Promise<void> {
+  const map = { ...(settingsStore.settings.defaultAudioEncoder ?? {}) }
+  if (name) map[audioEncoderType.value] = name
+  else delete map[audioEncoderType.value]
+  await settingsStore.save({ defaultAudioEncoder: map })
+}
+
+// ---------- audio vae (LTX 2.5 audio track) ----------
+// The type dropdown lists diffusion types; the entries resolve from the
+// diffusion type DIRECTLY (no `requires` indirection — repo.audio_vae is
+// keyed by the family itself). Types without a hub audio VAE list none.
+const audioVaeType = ref(diffusionTypes.value[0] ?? '')
+const audioVaeFiles = computed(() => settingsStore.modelLists.audio_vae ?? [])
+const audioVaeEntries = computed(() =>
+  (appStore.catalog?.entries ?? []).filter(
+    (e) => e.type === 'audio_vae' && e.diffusionType === audioVaeType.value
+  )
+)
+const audioVaeInstalledNames = computed(() => new Set(audioVaeFiles.value.map((f) => f.name)))
+const defaultAudioVae = computed(() => settingsStore.settings.defaultAudioVae?.[audioVaeType.value] ?? '')
+async function setDefaultAudioVae(name: string): Promise<void> {
+  const map = { ...(settingsStore.settings.defaultAudioVae ?? {}) }
+  if (name) map[audioVaeType.value] = name
+  else delete map[audioVaeType.value]
+  await settingsStore.save({ defaultAudioVae: map })
+}
+async function downloadAudioVae(e: CatalogEntry): Promise<void> {
+  try {
+    await settingsStore.downloadModel('audio_vae', e.url, e.provider)
+    toast(`Downloaded ${e.name}`, 'ok')
+  } catch (err) {
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
+  }
+}
+function audioVaeDlState(e: CatalogEntry) {
+  return settingsStore.modelDownloads[`audio_vae:${e.url}`]
+}
+async function removeAudioVae(f: ModelFile): Promise<void> {
+  const ok = await confirm(`Delete ${f.name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
+  if (!ok) return
+  await settingsStore.removeModel('audio_vae', f.name, f.provider, f.diffusionType)
+}
+
+// ---------- latent upscaler (LTX 2.5 hires fix) ----------
+// Same shape as the audio VAE section: the entries resolve from the diffusion
+// type DIRECTLY (repo.latent_upscaler is keyed by the family itself).
+const latentUpscalerType = ref(diffusionTypes.value[0] ?? '')
+const latentUpscalerFiles = computed(() => settingsStore.modelLists.latent_upscaler ?? [])
+const latentUpscalerEntries = computed(() =>
+  (appStore.catalog?.entries ?? []).filter(
+    (e) => e.type === 'latent_upscaler' && e.diffusionType === latentUpscalerType.value
+  )
+)
+const latentUpscalerInstalledNames = computed(() => new Set(latentUpscalerFiles.value.map((f) => f.name)))
+const defaultLatentUpscaler = computed(() => settingsStore.settings.defaultLatentUpscaler?.[latentUpscalerType.value] ?? '')
+async function setDefaultLatentUpscaler(name: string): Promise<void> {
+  const map = { ...(settingsStore.settings.defaultLatentUpscaler ?? {}) }
+  if (name) map[latentUpscalerType.value] = name
+  else delete map[latentUpscalerType.value]
+  await settingsStore.save({ defaultLatentUpscaler: map })
+}
+async function downloadLatentUpscaler(e: CatalogEntry): Promise<void> {
+  try {
+    await settingsStore.downloadModel('latent_upscaler', e.url, e.provider)
+    toast(`Downloaded ${e.name}`, 'ok')
+  } catch (err) {
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
+  }
+}
+function latentUpscalerDlState(e: CatalogEntry) {
+  return settingsStore.modelDownloads[`latent_upscaler:${e.url}`]
+}
+async function removeLatentUpscaler(f: ModelFile): Promise<void> {
+  const ok = await confirm(`Delete ${f.name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
+  if (!ok) return
+  await settingsStore.removeModel('latent_upscaler', f.name, f.provider, f.diffusionType)
 }
 function tokenizerDlState(e: CatalogEntry) {
   return settingsStore.modelDownloads[`tokenizer:${e.url}`]
@@ -519,7 +726,7 @@ function toggleSamplingJson(): void {
   samplingJsonExpanded.value = !samplingJsonExpanded.value
 }
 const samplingPrettyJson = computed(() => (samplingBase.value ? JSON.stringify(samplingBase.value, null, 2) : '—'))
-const samplingOverride = ref<Partial<SamplingDefaults>>({})
+const samplingOverride = ref<SamplingOverrideValues>({})
 function loadOverride(): void {
   samplingOverride.value = { ...(settingsStore.settings.sampling?.[samplingType.value] ?? {}) }
   // Map undefined and null → '' for the placeholder-bound fields so an
@@ -858,6 +1065,9 @@ onMounted(async () => {
   await settingsStore.listModels('vae')
   await settingsStore.listModels('vision')
   await settingsStore.listModels('tokenizer')
+  await settingsStore.listModels('audio_encoder')
+  await settingsStore.listModels('audio_vae')
+  await settingsStore.listModels('latent_upscaler')
   loadOverride()
 })
 </script> 
@@ -934,25 +1144,26 @@ onMounted(async () => {
 
             <h4>Installed</h4>
             <ul class="file-list">
-              <li v-for="f in filteredModelFiles" :key="f.name" class="dl-item">
+              <li v-for="f in filteredModelFiles" :key="rowKey(f)" class="dl-item">
                 <div class="dl-item-top">
                   <span class="mono">{{ f.name }}</span>
                   <span class="faint">{{ fmtBytes(f.size) }}</span>
                   <button
                     class="icon"
                     title="Download dependencies (VAE, text encoder, vision)"
-                    @click="downloadDependencies(f.name)"
+                    @click="downloadDependencies(f)"
                   >
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14" />
                     </svg>
                   </button>
-                  <button class="icon danger" title="Delete" @click="removeModel(f.name)">
+                  <button class="icon danger" title="Delete" @click="removeModel(f)">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14" />
                     </svg>
                   </button>
                 </div>
+                <div v-if="rowContext(f)" class="dl-item-desc">{{ rowContext(f) }}</div>
                 <div v-if="installedDesc(f.name)" class="dl-item-desc">{{ installedDesc(f.name) }}</div>
               </li>
               <li v-if="!modelFiles.length" class="muted">No models downloaded yet.</li>
@@ -979,12 +1190,17 @@ onMounted(async () => {
                     <span class="mono">{{ e.name }}</span>
                     <span v-if="e.quant" class="quant-tag">{{ e.quant }}</span>
                     <span
-                      v-if="e.source === 'civitai'"
+                      v-if="accessBadge(e)"
+                      class="auth-tag"
+                      :title="accessTitle(e)"
+                    >{{ accessBadge(e) }}</span>
+                    <span
+                      v-else-if="e.source === 'civitai'"
                       class="auth-tag"
                       title="Downloads from CivitAI — requires a CivitAI API token (Settings → Tokens)"
                     >Auth</span>
                     <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
-                    <template v-if="installedNames.has(e.name)">
+                    <template v-if="installedNames.has(baseName(e.name))">
                       <span class="ok-tag">installed</span>
                       <button
                         class="icon"
@@ -1086,16 +1302,17 @@ onMounted(async () => {
 
             <h4>Installed</h4>
             <ul class="file-list">
-              <li v-for="f in filteredEncoderFiles" :key="f.name">
+              <li v-for="f in filteredEncoderFiles" :key="rowKey(f)">
                 <span class="mono">{{ f.name }}</span>
                 <span class="faint">{{ fmtBytes(f.size) }}</span>
+                <span v-if="rowContext(f)" class="faint">{{ rowContext(f) }}</span>
                 <DownloadProgress
                   v-if="installedDlState('encoder', f.name)"
                   class="grow"
                   :downloaded-bytes="installedDlState('encoder', f.name)!.downloadedBytes"
                   :total-bytes="installedDlState('encoder', f.name)!.totalBytes"
                 />
-                <button class="icon danger" title="Delete" @click="removeEncoder(f.name)">
+                <button class="icon danger" title="Delete" @click="removeEncoder(f)">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14" />
                   </svg>
@@ -1116,7 +1333,7 @@ onMounted(async () => {
                   <span class="mono">{{ e.name }}</span>
                   <span v-if="e.quant" class="quant-tag">{{ e.quant }}</span>
                   <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
-                  <template v-if="encoderInstalledNames.has(e.name)">
+                  <template v-if="encoderInstalledNames.has(baseName(e.name))">
                     <span class="ok-tag">installed</span>
                   </template>
                   <template v-else>
@@ -1178,16 +1395,17 @@ onMounted(async () => {
 
             <h4>Installed</h4>
             <ul class="file-list">
-              <li v-for="f in filteredVisionFiles" :key="f.name">
+              <li v-for="f in filteredVisionFiles" :key="rowKey(f)">
                 <span class="mono">{{ f.name }}</span>
                 <span class="faint">{{ fmtBytes(f.size) }}</span>
+                <span v-if="rowContext(f)" class="faint">{{ rowContext(f) }}</span>
                 <DownloadProgress
                   v-if="installedDlState('vision', f.name)"
                   class="grow"
                   :downloaded-bytes="installedDlState('vision', f.name)!.downloadedBytes"
                   :total-bytes="installedDlState('vision', f.name)!.totalBytes"
                 />
-                <button class="icon danger" title="Delete" @click="removeVision(f.name)">
+                <button class="icon danger" title="Delete" @click="removeVision(f)">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14" />
                   </svg>
@@ -1204,7 +1422,7 @@ onMounted(async () => {
                   <span class="mono">{{ e.name }}</span>
                   <span v-if="e.quant" class="quant-tag">{{ e.quant }}</span>
                   <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
-                  <template v-if="visionInstalledNames.has(e.name)">
+                  <template v-if="visionInstalledNames.has(baseName(e.name))">
                     <span class="ok-tag">installed</span>
                   </template>
                   <template v-else>
@@ -1265,16 +1483,17 @@ onMounted(async () => {
 
             <h4>Installed</h4>
             <ul class="file-list">
-              <li v-for="f in filteredTokenizerFiles" :key="f.name">
+              <li v-for="f in filteredTokenizerFiles" :key="rowKey(f)">
                 <span class="mono">{{ f.name }}</span>
                 <span class="faint">{{ fmtBytes(f.size) }}</span>
+                <span v-if="rowContext(f)" class="faint">{{ rowContext(f) }}</span>
                 <DownloadProgress
                   v-if="installedDlState('tokenizer', f.name)"
                   class="grow"
                   :downloaded-bytes="installedDlState('tokenizer', f.name)!.downloadedBytes"
                   :total-bytes="installedDlState('tokenizer', f.name)!.totalBytes"
                 />
-                <button class="icon danger" title="Delete" @click="removeTokenizer(f.name)">
+                <button class="icon danger" title="Delete" @click="removeTokenizer(f)">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14" />
                   </svg>
@@ -1290,7 +1509,7 @@ onMounted(async () => {
                 <div class="dl-item-top">
                   <span class="mono">{{ e.name }}</span>
                   <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
-                  <template v-if="tokenizerInstalledNames.has(e.name)">
+                  <template v-if="tokenizerInstalledNames.has(baseName(e.name))">
                     <span class="ok-tag">installed</span>
                   </template>
                   <template v-else>
@@ -1321,6 +1540,222 @@ onMounted(async () => {
               </li>
               <li v-if="!tokenizerEntries.length" class="muted">No tokenizer entries for this diffusion type.</li>
               <li v-else-if="!filteredTokenizerEntries.length" class="muted">No tokenizers match "{{ tokenizerQuery }}"</li>
+            </ul>
+          </section>
+          <section v-if="section === 'audio_encoder' && audioEncoderEntries.length">
+            <div class="section-head">
+              <h3>Audio Encoder</h3>
+              <button :disabled="appStore.catalogScanning" @click="refreshHub()">
+                {{ appStore.catalogScanning ? 'Scanning…' : 'Refresh hub' }}
+              </button>
+            </div>
+            <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p>
+
+            <p class="muted">
+              The wav2vec2 audio encoder drives Wan2.2 S2V (speech-to-video). Only present for
+              diffusion types that require an audio encoder.
+            </p>
+
+            <label class="muted">Diffusion type</label>
+            <select v-model="audioEncoderType">
+              <option v-for="t in diffusionTypes" :key="t" :value="t">{{ t }}</option>
+            </select>
+
+            <h4>Installed</h4>
+            <ul class="file-list">
+              <li v-for="f in audioEncoderFiles" :key="rowKey(f)">
+                <span class="mono">{{ f.name }}</span>
+                <span class="faint">{{ fmtBytes(f.size) }}</span>
+                <span v-if="rowContext(f)" class="faint">{{ rowContext(f) }}</span>
+                <button class="icon danger" title="Delete" @click="removeAudioEncoder(f)">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14" />
+                  </svg>
+                </button>
+              </li>
+              <li v-if="!audioEncoderFiles.length" class="muted">No audio encoders downloaded yet.</li>
+            </ul>
+
+            <h4>Available from hub</h4>
+            <ul class="file-list">
+              <li v-for="e in audioEncoderEntries" :key="e.id" class="dl-item">
+                <div class="dl-item-top">
+                  <span class="mono">{{ e.name }}</span>
+                  <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
+                  <template v-if="audioEncoderInstalledNames.has(baseName(e.name))">
+                    <span class="ok-tag">installed</span>
+                  </template>
+                  <template v-else>
+                    <button
+                      v-if="audioEncoderDlState(e)"
+                      class="dl-btn"
+                      disabled
+                      :title="`${audioEncoderDlState(e)!.downloadedBytes} / ${audioEncoderDlState(e)!.totalBytes} downloaded`"
+                    >
+                      Downloading…
+                    </button>
+                    <button v-else class="dl-btn" @click="downloadAudioEncoder(e)">Download</button>
+                  </template>
+                  <button
+                    class="set-default"
+                    :class="{ active: defaultAudioEncoder === e.name }"
+                    @click="setDefaultAudioEncoder(e.name)"
+                  >
+                    {{ defaultAudioEncoder === e.name ? 'Default' : 'Set default' }}
+                  </button>
+                </div>
+                <DownloadProgress
+                  v-if="audioEncoderDlState(e)"
+                  class="grow"
+                  :downloaded-bytes="audioEncoderDlState(e)!.downloadedBytes"
+                  :total-bytes="audioEncoderDlState(e)!.totalBytes"
+                />
+              </li>
+              <li v-if="!audioEncoderEntries.length" class="muted">No audio encoder entries for this diffusion type.</li>
+            </ul>
+          </section>
+          <section v-if="section === 'audio_vae' && audioVaeEntries.length">
+            <div class="section-head">
+              <h3>Audio VAE</h3>
+              <button :disabled="appStore.catalogScanning" @click="refreshHub()">
+                {{ appStore.catalogScanning ? 'Scanning…' : 'Refresh hub' }}
+              </button>
+            </div>
+            <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p>
+
+            <p class="muted">
+              The audio VAE decodes the generated audio track (LTX 2.5 generates video WITH sound).
+              Only present for diffusion types that declare an audio VAE.
+            </p>
+
+            <label class="muted">Diffusion type</label>
+            <select v-model="audioVaeType">
+              <option v-for="t in diffusionTypes" :key="t" :value="t">{{ t }}</option>
+            </select>
+
+            <h4>Installed</h4>
+            <ul class="file-list">
+              <li v-for="f in audioVaeFiles" :key="rowKey(f)">
+                <span class="mono">{{ f.name }}</span>
+                <span class="faint">{{ fmtBytes(f.size) }}</span>
+                <span v-if="rowContext(f)" class="faint">{{ rowContext(f) }}</span>
+                <button class="icon danger" title="Delete" @click="removeAudioVae(f)">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14" />
+                  </svg>
+                </button>
+              </li>
+              <li v-if="!audioVaeFiles.length" class="muted">No audio VAEs downloaded yet.</li>
+            </ul>
+
+            <h4>Available from hub</h4>
+            <ul class="file-list">
+              <li v-for="e in audioVaeEntries" :key="e.id" class="dl-item">
+                <div class="dl-item-top">
+                  <span class="mono">{{ e.name }}</span>
+                  <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
+                  <template v-if="audioVaeInstalledNames.has(baseName(e.name))">
+                    <span class="ok-tag">installed</span>
+                  </template>
+                  <template v-else>
+                    <button
+                      v-if="audioVaeDlState(e)"
+                      class="dl-btn"
+                      disabled
+                      :title="`${audioVaeDlState(e)!.downloadedBytes} / ${audioVaeDlState(e)!.totalBytes} downloaded`"
+                    >
+                      Downloading…
+                    </button>
+                    <button v-else class="dl-btn" @click="downloadAudioVae(e)">Download</button>
+                  </template>
+                  <button
+                    class="set-default"
+                    :class="{ active: defaultAudioVae === e.name }"
+                    @click="setDefaultAudioVae(e.name)"
+                  >
+                    {{ defaultAudioVae === e.name ? 'Default' : 'Set default' }}
+                  </button>
+                </div>
+                <DownloadProgress
+                  v-if="audioVaeDlState(e)"
+                  class="grow"
+                  :downloaded-bytes="audioVaeDlState(e)!.downloadedBytes"
+                  :total-bytes="audioVaeDlState(e)!.totalBytes"
+                />
+              </li>
+              <li v-if="!audioVaeEntries.length" class="muted">No audio VAE entries for this diffusion type.</li>
+            </ul>
+          </section>
+          <section v-if="section === 'latent_upscaler' && latentUpscalerEntries.length">
+            <div class="section-head">
+              <h3>Latent Upscaler</h3>
+              <button :disabled="appStore.catalogScanning" @click="refreshHub()">
+                {{ appStore.catalogScanning ? 'Scanning…' : 'Refresh hub' }}
+              </button>
+            </div>
+            <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p>
+
+            <p class="muted">
+              The latent upscaler drives the highres fix second pass (LTX 2.5 spatial latent
+              upscale — with Upscale ticked the output is 2× the selected resolution).
+            </p>
+
+            <label class="muted">Diffusion type</label>
+            <select v-model="latentUpscalerType">
+              <option v-for="t in diffusionTypes" :key="t" :value="t">{{ t }}</option>
+            </select>
+
+            <h4>Installed</h4>
+            <ul class="file-list">
+              <li v-for="f in latentUpscalerFiles" :key="rowKey(f)">
+                <span class="mono">{{ f.name }}</span>
+                <span class="faint">{{ fmtBytes(f.size) }}</span>
+                <span v-if="rowContext(f)" class="faint">{{ rowContext(f) }}</span>
+                <button class="icon danger" title="Delete" @click="removeLatentUpscaler(f)">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14" />
+                  </svg>
+                </button>
+              </li>
+              <li v-if="!latentUpscalerFiles.length" class="muted">No latent upscalers downloaded yet.</li>
+            </ul>
+
+            <h4>Available from hub</h4>
+            <ul class="file-list">
+              <li v-for="e in latentUpscalerEntries" :key="e.id" class="dl-item">
+                <div class="dl-item-top">
+                  <span class="mono">{{ e.name }}</span>
+                  <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
+                  <template v-if="latentUpscalerInstalledNames.has(baseName(e.name))">
+                    <span class="ok-tag">installed</span>
+                  </template>
+                  <template v-else>
+                    <button
+                      v-if="latentUpscalerDlState(e)"
+                      class="dl-btn"
+                      disabled
+                      :title="`${latentUpscalerDlState(e)!.downloadedBytes} / ${latentUpscalerDlState(e)!.totalBytes} downloaded`"
+                    >
+                      Downloading…
+                    </button>
+                    <button v-else class="dl-btn" @click="downloadLatentUpscaler(e)">Download</button>
+                  </template>
+                  <button
+                    class="set-default"
+                    :class="{ active: defaultLatentUpscaler === e.name }"
+                    @click="setDefaultLatentUpscaler(e.name)"
+                  >
+                    {{ defaultLatentUpscaler === e.name ? 'Default' : 'Set default' }}
+                  </button>
+                </div>
+                <DownloadProgress
+                  v-if="latentUpscalerDlState(e)"
+                  class="grow"
+                  :downloaded-bytes="latentUpscalerDlState(e)!.downloadedBytes"
+                  :total-bytes="latentUpscalerDlState(e)!.totalBytes"
+                />
+              </li>
+              <li v-if="!latentUpscalerEntries.length" class="muted">No latent upscaler entries for this diffusion type.</li>
             </ul>
           </section>
           <section v-if="section === 'lora'">
@@ -1369,6 +1804,20 @@ onMounted(async () => {
                   <td>Flow shift</td>
                   <td>
                     <input v-model.number="samplingOverride.flow_shift" type="number" step="0.1" placeholder="(default)" style="width: 90px" />
+                  </td>
+                </tr>
+                <tr>
+                  <td>Upscale</td>
+                  <td>
+                    <input v-model="samplingOverride.upscale" type="checkbox" />
+                    <span class="faint">Highres fix: second upscale+refine pass (output is 2× the selected resolution).</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Upscaler steps</td>
+                  <td>
+                    <input v-model.number="samplingOverride.upscaler_steps" type="number" min="0" step="1" placeholder="(default)" style="width: 90px" />
+                    <span class="faint">Second-pass steps; empty or 0 reuses the main steps count.</span>
                   </td>
                 </tr>
                 <tr>
@@ -1426,7 +1875,15 @@ onMounted(async () => {
                       <option value="off">Off</option>
                       <option value="on">On</option>
                       <option value="auto">Auto</option>
+                      <option value="custom">Custom</option>
                     </select>
+                    <input
+                      v-if="perf.flashAttention === 'custom'"
+                      v-model="perf.flashAttentionCustom"
+                      type="text"
+                      placeholder="flash-attn value"
+                      style="width: 160px"
+                    />
                     <span class="faint">Enabling flash attention may reduce memory usage depending on the architecture.</span>
                   </td>
                 </tr>
@@ -1840,9 +2297,9 @@ onMounted(async () => {
   border-radius: var(--radius-sm);
   padding: 0 6px;
 }
-/* Auth marker for entries whose download source needs an API token
-   (CivitAI): same tag shape as .quant-tag but in the accent color so it
-   draws the eye. Hover for where to configure the token. */
+/* Auth/access marker: same tag shape as .quant-tag but in the accent color
+   so it draws the eye. Covers BOTH the CivitAI source badge and the hub.json
+   `access` badge ('Auth' / 'Gated'). Hover for where to configure the token. */
 .auth-tag {
   font-size: 11px;
   color: var(--accent);

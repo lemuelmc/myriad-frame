@@ -44,13 +44,14 @@ import type {
 import {
   loadAllConfigs,
   loadApplicationConfig,
+  loadHubConfig,
   resetHubConfig,
   resetRuntimeConfig,
   saveHubConfig,
   saveRuntimeConfig
 } from './services/config'
 import { DownloadAbortError, headSize } from './services/download'
-import { createHubService } from './services/hub'
+import { catalogEntriesForLocation, catalogHighNoiseCompanion, createHubService } from './services/hub'
 import { getInitState } from './services/init'
 import { authHeadersForUrl, createModelsService, ensureModelDirs } from './services/models'
 import { detectPlatform } from './services/platform'
@@ -58,6 +59,8 @@ import { clearMask, saveMask } from './services/masks'
 import { createRuntimeService } from './services/runtime'
 import { createSessionsService } from './services/sessions'
 import { createSettingsService } from './services/settings'
+import { convertToMp4, ensureFfmpeg } from './services/ffmpeg'
+import { isStreamableVideo, mediaUrlFor } from './services/media'
 import { createSdCliService, newOutputPath } from './services/sdcli'
 import { sourceNames } from './services/sources'
 import { addToken, deleteToken, exportTokens, importTokens, listTokens, updateToken } from './services/tokens'
@@ -73,7 +76,7 @@ import {
   setPaused,
   setRuntimeProgressBroadcaster
 } from './services/downloads'
-import { SCHEDULER_MODEL_DEFAULT, isValidSeed } from '@shared/types'
+import { SCHEDULER_MODEL_DEFAULT, applySamplingOverrides, isValidSeed } from '@shared/types'
 import type { DownloadsListResult } from '@shared/types'
 
 const hub = createHubService()
@@ -203,26 +206,75 @@ async function purgeStalePaint(req: GenerationRequest): Promise<never> {
 }
 
 function effectiveSampling(diffusionType: string, cfg: AllConfigs): SamplingDefaults {
-  const base = cfg.sampling[diffusionType] ?? {
-  diffusion_behavior: 'standalone',
-  allow_reference: false,
-  max_reference: 0,
-  allow_image_input: false,
-  max_image_input: 0,
-  allow_inpainting: false,
-  allow_painting: false,
-    strength: 0.75,
-    steps: 25,
-    cfg: 1.0,
-    sampler: 'euler',
-    scheduler: null,
-    negative: null,
-    flow_shift: null,
-    width: 1024,
-    height: 1024
+  // Descriptor-shaped fallback for a diffusion type missing from
+  // sampling.json (e.g. the wan2_1/wan2_2 placeholder families): every
+  // channel closed, img_gen, sd-cli-default sampling values.
+  const base: SamplingDefaults = cfg.sampling[diffusionType] ?? {
+    mode: 'img_gen',
+    diffusion_behavior: 'standalone',
+    image_reference: { show: false, max: 0, accepts: null },
+    image_input: { show: false, max: 0, accepts: null },
+    end_image_input: { show: false, max: 0, accepts: null },
+    audio_input: { show: false, max: 0, accepts: null },
+    video_input: { show: false, max: 0, accepts: null },
+    frames: { show: false, max: 0, default: 0 },
+    frame_rate: { show: false, max: 0, default: 0 },
+    control_video: { show: false, default: null },
+    strength: { show: true, default: 0.75 },
+    steps: { show: true, default: 25 },
+    high_steps: { show: false, default: null },
+    cfg: { show: true, default: 1.0 },
+    high_cfg: { show: false, default: null },
+    sampler: { show: true, default: 'euler' },
+    high_sampler: { show: false, default: null },
+    scheduler: { show: true, default: null },
+    width: { show: true, default: 1024 },
+    height: { show: true, default: 1024 },
+    negative: { show: true, default: null },
+    flow_shift: { show: true, default: null },
+    allow_inpainting: { show: false },
+    allow_painting: { show: false },
+    use_previous_image: { show: false, default: false },
+    upscale: { show: false, default: false },
+    upscaler_steps: { show: false, default: null }
   }
-  const override = settings.get().sampling?.[diffusionType] ?? {}
-  return { ...base, ...override }
+  // Flat scalar overrides (settings.json per-type) merge into the descriptor
+  // defaults — the same semantics as the renderer's `samplingFor()` (shared
+  // `applySamplingOverrides` helper).
+  return applySamplingOverrides(base, settings.get().sampling?.[diffusionType])
+}
+
+/**
+ * The diffusion family a companion model resolves from — the hub entry's
+ * `requires.<kind>.from` when present, else the session's own diffusionType.
+ * First `repo.diffusion` entry with the requested diffusion_type wins
+ * (`requires` is per hub ENTRY; each wan family maps to exactly one entry).
+ */
+function requiresFamilyFor(
+  diffusionType: string,
+  kind: 'vae' | 'encoder' | 'audio_encoder'
+): string {
+  const entry = loadHubConfig().repo.diffusion.find((d) => d.diffusion_type === diffusionType)
+  const from = entry?.requires?.[kind]?.from
+  return typeof from === 'string' && from !== '' ? from : diffusionType
+}
+
+/**
+ * gen:start's `expectUrl` for one resolution site (model-collision-hardening
+ * plan §3.6): pin the site's catalog entry from the cached catalog — the
+ * entries at the site's exact location `(type, family, provider, basename)`
+ * are the alternates set, and the first is as good as any; an absent
+ * provider matches any-provider entries, mirroring the renderer's legacy
+ * first-name-match fallback. Undefined when the catalog yields nothing
+ * (wiped cache, renamed/deleted file) — pathFor then degrades permissively.
+ */
+function expectUrlFor(
+  type: ModelType,
+  diffusionType: string,
+  provider: string | undefined,
+  name: string
+): string | undefined {
+  return catalogEntriesForLocation(type, diffusionType, provider, name)[0]?.url
 }
 
 /**
@@ -320,6 +372,32 @@ export function registerIpc(): void {
     return res.canceled ? [] : res.filePaths
   })
 
+  // Parameterized media picker — the sampling.json channel `accepts` lists
+  // drive the filters (e.g. `*.wav` for the S2V audio channel). The renderer
+  // controls the filter list, so it is shape-sanitized here: only well-formed
+  // { name, extensions } entries survive, extension values are dot-stripped
+  // and lowercased.
+  ipcMain.handle(
+    'app:pickMedia',
+    async (_e, filters: { name: string; extensions: string[] }[]): Promise<string[]> => {
+      const list = (Array.isArray(filters) ? filters : []).filter(
+        (f) => f && typeof f.name === 'string' && Array.isArray(f.extensions)
+      )
+      const safe = list.map((f) => ({
+        name: f.name.slice(0, 64),
+        extensions: f.extensions
+          .filter((e) => typeof e === 'string' && e.trim() !== '')
+          .map((e) => e.trim().replace(/^\*\./, '').replace(/^\./, '').toLowerCase())
+          .slice(0, 16)
+      }))
+      const res = await dialog.showOpenDialog({
+        properties: ['openFile', 'multiSelections'],
+        filters: safe.length ? safe : [{ name: 'Files', extensions: ['*'] }]
+      })
+      return res.canceled ? [] : res.filePaths
+    }
+  )
+
   // Native directory picker (the LoRA dialog's custom-dir Browse button;
   // generic name so future features can reuse it). Resolves null when
   // canceled — never an error.
@@ -344,20 +422,38 @@ export function registerIpc(): void {
 
   ipcMain.handle('app:imageFromPath', (_e, p: string): string => {
     if (!existsSync(p)) return ''
-    const buf = readFileSync(p)
     const ext = p.toLowerCase().split('.').pop() ?? 'png'
+    // Streamable video containers (mp4/webm/mov) return an opaque media:// URL
+    // instead of a data URL: Chromium's media stack cannot stream or seek from
+    // a data URL (the player chrome renders but the controls stay dead), while
+    // the privileged media:// protocol serves the bytes off disk with Range
+    // support. Images and Motion-JPEG .avi keep the data-URL path — the .avi
+    // poster extraction needs the raw bytes in the renderer.
+    if (isStreamableVideo(p)) return mediaUrlFor(p)
+    const buf = readFileSync(p)
     const mime =
-      ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png'
+      ext === 'jpg' || ext === 'jpeg'
+        ? 'image/jpeg'
+        : ext === 'webp'
+          ? 'image/webp'
+          : ext === 'avi'
+            ? 'video/x-msvideo'
+            : 'image/png'
     return `data:${mime};base64,${buf.toString('base64')}`
   })
 
   ipcMain.handle('app:saveImage', async (_e, imagePath: string): Promise<string | null> => {
     if (!existsSync(imagePath)) return null
     const win = BrowserWindow.getFocusedWindow?.() ?? BrowserWindow.getAllWindows()[0]
+    // vid_gen outputs are Motion-JPEG .avi containers — the save filter
+    // follows the file (the other containers cover other runtime builds).
+    const isVideo = /\.(mp4|avi|webm|mov)$/i.test(imagePath)
     const res = await dialog.showSaveDialog(win, {
-      title: 'Save Image',
+      title: isVideo ? 'Save Video' : 'Save Image',
       defaultPath: basename(imagePath),
-      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }],
+      filters: isVideo
+        ? [{ name: 'Videos', extensions: ['mp4', 'avi', 'webm', 'mov'] }]
+        : [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }],
       buttonLabel: 'Save'
     })
     if (res.canceled || res.filePath === '') return null
@@ -371,6 +467,20 @@ export function registerIpc(): void {
   ipcMain.handle('app:showInFolder', (_e, p: string): boolean => {
     if (!existsSync(p)) return false
     shell.showItemInFolder(p)
+    return true
+  })
+
+  // Open a file with the OS default application — the Motion-JPEG .avi
+  // vid_gen outputs ride this (Chromium cannot demux AVI, so playback hands
+  // off to the system player). Resolves false when the file is gone or no
+  // application claimed it (the error detail lands in the log).
+  ipcMain.handle('app:openPath', async (_e, p: string): Promise<boolean> => {
+    if (!existsSync(p)) return false
+    const err = await shell.openPath(p)
+    if (err) {
+      log.warn(`[app] openPath failed for ${p}: ${err}`)
+      return false
+    }
     return true
   })
 
@@ -414,8 +524,8 @@ export function registerIpc(): void {
     // Backs up the previous override (timestamped .bak) and writes atomically.
     saveRuntimeConfig(remote)
 
-    const remoteKeys = new Set(Object.keys(remote))
-    const currentKeys = new Set(Object.keys(current))
+    const remoteKeys = new Set(Object.keys(remote.releases))
+    const currentKeys = new Set(Object.keys(current.releases))
     const sortDesc = (a: string, b: string): number => Number(b) - Number(a)
     console.log(
       `[runtime:checkUpdates] Success: runtime config updated â€” new: ${[...remoteKeys]
@@ -517,14 +627,26 @@ export function registerIpc(): void {
     }
   )
 
-  ipcMain.handle('models:remove', (_e, type: ModelType, name: string): void => {
-    models.remove(type, name)
-  })
+  ipcMain.handle(
+    'models:remove',
+    (_e, type: ModelType, name: string, provider?: string, diffusionType?: string, url?: string): void => {
+      // Context-scoped delete (model-collision-hardening plan §3.3): the
+      // renderer threads the row's provider/diffusionType (list rows) or the
+      // catalog entry's fields + url (catalog-entry sites) so exactly ONE
+      // path is deleted — never every provider subdir matching the basename.
+      models.remove(type, name, provider, diffusionType, url)
+    }
+  )
 
   /**
    * Verify an installed model file's size against the server's content-length.
    * `expected` is 0 when the HEAD request fails (offline); in that case the
    * file is assumed fine (`ok: true`).
+   *
+   * `provider` / `diffusionType` are the catalog entry's fields, threaded by
+   * the renderer; `url` doubles as pathFor's `expectUrl` (it IS the entry's
+   * URL — no extra plumbing), so the resolution uses the precise
+   * family/provider slot instead of a basename-global guess.
    */
   ipcMain.handle(
     'models:verify',
@@ -532,9 +654,11 @@ export function registerIpc(): void {
       _e,
       type: ModelType,
       name: string,
-      url: string
+      url: string,
+      provider?: string,
+      diffusionType?: string
     ): Promise<{ ok: boolean; actual: number; expected: number }> => {
-      const p = models.pathFor(type, name)
+      const p = models.pathFor(type, name, provider, diffusionType, url)
       const actual = existsSync(p) ? statSync(p).size : 0
       // Authenticated probe: the models:verify HEAD runs OUTSIDE the download
       // manager, so the manager's two header threads never reach it. Without
@@ -633,11 +757,18 @@ export function registerIpc(): void {
   // ---------- generation ----------
   ipcMain.handle('gen:start', async (_e, req: GenerationRequest): Promise<string> => {
     const cfg = loadAllConfigs()
-    const sampling = effectiveSampling(req.diffusionType, cfg)
+    let sampling = effectiveSampling(req.diffusionType, cfg)
     // How the diffusion weights are passed: 'all_in_one' types ship a full
     // checkpoint (conditioners + VAE inside the file) and go out via `--model`;
     // 'standalone' types (default) go out via `--diffusion-model`.
     const modelBehavior = sampling.diffusion_behavior
+    // Companion-model families: the hub entry's `requires` blocks route the
+    // VAE / encoder / audio-encoder resolution to a DIFFERENT diffusion
+    // family (e.g. wan2_2_t2v uses the wan2_1 VAE + encoder). Absent → the
+    // session's own diffusionType.
+    const vaeFamily = requiresFamilyFor(req.diffusionType, 'vae')
+    const encoderFamily = requiresFamilyFor(req.diffusionType, 'encoder')
+    const audioEncoderFamily = requiresFamilyFor(req.diffusionType, 'audio_encoder')
 
     const st = settings.get()
     const version = st.runtimeVersion ?? Object.keys(cfg.runtime).sort((a, b) => Number(b) - Number(a))[0]
@@ -646,31 +777,164 @@ export function registerIpc(): void {
       throw new Error(`Runtime ${version} is not installed. Download it in Settings â†’ Runtime.`)
     }
 
-    const modelPath = models.pathFor('diffusion', req.model)
+    // Every resolution site passes the request's diffusionType as the FAMILY
+    // plus its own provider field, and pins its catalog entry's URL as
+    // `expectUrl` (model-collision-hardening plan §3.6): pathFor's
+    // cross-family/cross-provider fallback steps only serve a candidate whose
+    // exact location carries an entry with that URL — a wrong-family
+    // same-basename file from a DIFFERENT URL can no longer be loaded
+    // silently (findings F1/F2). When the catalog yields nothing (wiped
+    // cache, renamed/deleted file) expectUrl is undefined and the chain
+    // degrades permissively.
+    const modelPath = models.pathFor(
+      'diffusion',
+      req.model,
+      req.modelProvider,
+      req.diffusionType,
+      expectUrlFor('diffusion', req.diffusionType, req.modelProvider, req.model)
+    )
     if (!existsSync(modelPath)) throw new Error(`Diffusion model not found: ${req.model}`)
-    const vaePath = req.vae ? models.pathFor('vae', req.vae, req.vaeProvider) : undefined
+    const vaePath = req.vae
+      ? models.pathFor(
+          'vae',
+          req.vae,
+          req.vaeProvider,
+          vaeFamily,
+          expectUrlFor('vae', vaeFamily, req.vaeProvider, req.vae)
+        )
+      : undefined
     if (req.vae && vaePath && !existsSync(vaePath)) throw new Error(`VAE not found: ${req.vae}`)
-    const encoderPath = req.encoder ? models.pathFor('encoder', req.encoder, req.encoderProvider) : undefined
+    const encoderPath = req.encoder
+      ? models.pathFor(
+          'encoder',
+          req.encoder,
+          req.encoderProvider,
+          encoderFamily,
+          expectUrlFor('encoder', encoderFamily, req.encoderProvider, req.encoder)
+        )
+      : undefined
     if (req.encoder && encoderPath && !existsSync(encoderPath)) {
       throw new Error(`Encoder not found: ${req.encoder}`)
     }
-    // Encoder bundle (SD3.5-style multi-encoder): resolve every file. The
-    // bundle and the single-file encoder are mutually exclusive by
-    // construction; the guard below makes a malformed request unable to emit
-    // both `--llm` and bundle flags (mirrored inside buildArgs()).
+    // Encoder bundle (SD3.5-style multi-encoder): resolve every file WITH its
+    // own provider (previously dropped here — with SD3.5's and Flux's
+    // clip_l.safetensors both installed, both families resolved to whichever
+    // provider dir sorted first → the wrong file loaded silently) and the
+    // request's diffusionType as the family (F1). The bundle and the
+    // single-file encoder are mutually exclusive by construction; the guard
+    // below makes a malformed request unable to emit both `--llm` and bundle
+    // flags (mirrored inside buildArgs()).
     const encoderRefs: { path: string; useAs: string }[] = []
     if (req.encoders && req.encoders.length > 0) {
       for (const enc of req.encoders) {
-        const p = models.pathFor('encoder', enc.name)
+        const p = models.pathFor(
+          'encoder',
+          enc.name,
+          enc.provider,
+          encoderFamily,
+          expectUrlFor('encoder', encoderFamily, enc.provider, enc.name)
+        )
         if (!existsSync(p)) throw new Error(`Encoder not found: ${enc.name}`)
         encoderRefs.push({ path: p, useAs: enc.useAs })
       }
     }
-    const visionPath = req.vision ? models.pathFor('vision', req.vision) : undefined
+    // Audio encoder (Wan2.2 S2V's wav2vec2) — resolved from the family the
+    // hub entry's `requires.audio_encoder.from` names (else the session's own
+    // diffusionType).
+    const audioEncoderPath = req.audioEncoder
+      ? models.pathFor(
+          'audio_encoder',
+          req.audioEncoder,
+          undefined,
+          audioEncoderFamily,
+          expectUrlFor('audio_encoder', audioEncoderFamily, undefined, req.audioEncoder)
+        )
+      : undefined
+    if (req.audioEncoder && audioEncoderPath && !existsSync(audioEncoderPath)) {
+      throw new Error(`Audio encoder not found: ${req.audioEncoder}`)
+    }
+    // Audio VAE (LTX 2.5's audio track) — resolved from the session's own
+    // diffusionType (no `requires` indirection). Resolves UNCONDITIONALLY when
+    // the family declares one (LTX needs `--audio-vae` on every run) and does
+    // NOT depend on the upscale gate, so this early site is safe. Stale-cache
+    // backstop: when the request omits the name (a legacy catalog cache has no
+    // audio_vae rows), derive the default basename from the FRESH hub config —
+    // expectUrlFor degrades permissively on a stale cache, so the file still
+    // resolves by family/provider/name. An empty derived name (the family
+    // declares nothing) resolves nothing and emits nothing.
+    const hubRepo = loadHubConfig().repo
+    const audioVaeName = req.audioVae
+      ?? basename(hubRepo.audio_vae?.[req.diffusionType]?.default ?? '')
+    const audioVaePath = audioVaeName
+      ? models.pathFor(
+          'audio_vae',
+          audioVaeName,
+          req.audioVaeProvider,
+          req.diffusionType,
+          expectUrlFor('audio_vae', req.diffusionType, req.audioVaeProvider, audioVaeName)
+        )
+      : undefined
+    if (audioVaeName && audioVaePath && !existsSync(audioVaePath)) {
+      throw new Error(`Audio VAE not found: ${audioVaeName} — download it in Settings → Audio VAE`)
+    }
+    // High-noise expert (WAN MoE pairs): the low-noise file the user selected
+    // carries a `groupId`; the high-noise companion is the catalog entry with
+    // the same group whose `useAs` is `high_noise_diffusion_model`. A MoE
+    // pair is not optional — a missing companion fails the generation with a
+    // rescan hint (a stale catalog cache has no groupId rows).
+    let highNoisePath: string | undefined
+    {
+      const entry = catalogEntriesForLocation(
+        'diffusion',
+        req.diffusionType,
+        req.modelProvider,
+        req.model
+      )[0]
+      if (entry?.groupId) {
+        const companion = catalogHighNoiseCompanion(
+          'diffusion',
+          req.diffusionType,
+          req.modelProvider,
+          entry.groupId
+        )
+        if (companion) {
+          const p = models.pathFor(
+            'diffusion',
+            companion.name,
+            req.modelProvider ?? companion.provider,
+            req.diffusionType,
+            companion.url
+          )
+          if (existsSync(p)) highNoisePath = p
+          else throw new Error(`High-noise model not found: ${companion.name} (download the full MoE pair)`)
+        } else {
+          throw new Error(
+            `High-noise model entry missing for ${req.model} — Refresh the hub in Settings → Models`
+          )
+        }
+      }
+    }
+    const visionPath = req.vision
+      ? models.pathFor(
+          'vision',
+          req.vision,
+          undefined,
+          req.diffusionType,
+          expectUrlFor('vision', req.diffusionType, undefined, req.vision)
+        )
+      : undefined
     if (req.vision && visionPath && !existsSync(visionPath)) {
       throw new Error(`Vision model not found: ${req.vision}`)
     }
-    const tokenizerPath = req.tokenizer ? models.pathFor('tokenizer', req.tokenizer) : undefined
+    const tokenizerPath = req.tokenizer
+      ? models.pathFor(
+          'tokenizer',
+          req.tokenizer,
+          undefined,
+          req.diffusionType,
+          expectUrlFor('tokenizer', req.diffusionType, undefined, req.tokenizer)
+        )
+      : undefined
     if (req.tokenizer && tokenizerPath && !existsSync(tokenizerPath)) {
       throw new Error(`Tokenizer not found: ${req.tokenizer}`)
     }
@@ -678,38 +942,67 @@ export function registerIpc(): void {
     // ---------- two-channel routing ----------
     // Reference channel (--ref-image): user-picked references plus the
     // previous image when chained "As Reference". Defense-in-depth: a
-    // request's referencePaths are dropped for a type that forbids them.
+    // request's referencePaths are dropped for a type that forbids them, and
+    // previous-image chaining is dropped when `use_previous_image.show` is
+    // false (the renderer hides the checkbox; this is the main-side backstop).
     const prevExists = !!req.previousImagePath && existsSync(req.previousImagePath)
-    const refs: string[] = sampling.allow_reference === true ? [...req.referencePaths] : []
+    const refs: string[] = sampling.image_reference.show === true ? [...req.referencePaths] : []
     if (
       req.usePrevious &&
       req.previousImageMode === 'reference' &&
-      sampling.allow_reference === true &&
+      sampling.image_reference.show === true &&
+      sampling.use_previous_image.show === true &&
       prevExists
     ) {
       if (!refs.includes(req.previousImagePath!)) refs.push(req.previousImagePath!)
     }
-    if (refs.length > sampling.max_reference) refs.length = sampling.max_reference
+    if (refs.length > sampling.image_reference.max) refs.length = sampling.image_reference.max
 
     // Input channel (--init-img): user-picked input images plus the previous
     // image when chained "As input". --init-img is single-valued, so only the
     // first valid path survives; the previous image takes the slot ahead of
     // any user-picked inputs (first valid wins). Defense-in-depth: the
-    // channel is dropped entirely for a type that forbids it.
+    // channel is dropped entirely for a type that forbids it, and
+    // previous-image chaining is dropped when `use_previous_image.show` is
+    // false (the renderer hides the checkbox; this is the main-side backstop).
     const inputImages: string[] =
-      sampling.allow_image_input === true ? [...(req.inputImagePaths ?? [])] : []
+      sampling.image_input.show === true ? [...(req.inputImagePaths ?? [])] : []
     if (
       req.usePrevious &&
       req.previousImageMode === 'input' &&
-      sampling.allow_image_input === true &&
+      sampling.image_input.show === true &&
+      sampling.use_previous_image.show === true &&
       prevExists
     ) {
       inputImages.unshift(req.previousImagePath!)
     }
-    if (inputImages.length > sampling.max_image_input) {
-      inputImages.length = sampling.max_image_input
+    if (inputImages.length > sampling.image_input.max) {
+      inputImages.length = sampling.image_input.max
     }
     const existingInputs = inputImages.filter((r) => existsSync(r)).slice(0, 1)
+
+    // Video-era channels (descriptor-gated; each flag is single-valued, so a
+    // stale or forbidden path is dropped entirely — defense-in-depth):
+    // --audio (Wan2.2 S2V), --control-video (VACE, a frames DIRECTORY),
+    // --end-img (FLF2V).
+    const audioPath =
+      sampling.audio_input.show === true &&
+      req.audioPath &&
+      existsSync(req.audioPath)
+        ? req.audioPath
+        : undefined
+    const controlVideoPath =
+      sampling.video_input.show === true &&
+      req.controlVideoPath &&
+      existsSync(req.controlVideoPath)
+        ? req.controlVideoPath
+        : undefined
+    const endImagePath =
+      sampling.end_image_input.show === true &&
+      req.endImagePath &&
+      existsSync(req.endImagePath)
+        ? req.endImagePath
+        : undefined
 
     const existingRefs = refs.filter((r) => existsSync(r))
     let initImage: string | undefined
@@ -723,7 +1016,7 @@ export function registerIpc(): void {
     // same style as the channel guards): a stale request can never emit mask
     // flags for a type that forbids them.
     if (req.maskPath && req.initImagePath) {
-      if (sampling.allow_inpainting === true) {
+      if (sampling.allow_inpainting.show === true) {
         // Stale reference (data/tmp/masks is wiped on launch): purge the saved
         // files, drop the renderer's sticky mask state, inform the user, and
         // reject the generation — the mask must be re-applied.
@@ -742,7 +1035,7 @@ export function registerIpc(): void {
     // off, the fields are dropped entirely (defense-in-depth, same style as
     // the mask/channel guards) — a stale request can never route a painted
     // image for a type that forbids the tool.
-    if (req.paintImagePath && sampling.allow_painting !== true) {
+    if (req.paintImagePath && sampling.allow_painting.show !== true) {
       req.paintImagePath = undefined
       req.paintTarget = undefined
     }
@@ -763,7 +1056,7 @@ export function registerIpc(): void {
     if (req.paintImagePath && paintTarget && !(maskPath && initImage)) {
       if (!existsSync(req.paintImagePath)) await purgeStalePaint(req)
       if (paintTarget === 'init') {
-        if (sampling.allow_image_input === true) {
+        if (sampling.image_input.show === true) {
           initImage = req.paintImagePath
           const k = existingInputs.indexOf(req.paintImagePath)
           if (k >= 0) existingInputs.splice(k, 1)
@@ -774,14 +1067,14 @@ export function registerIpc(): void {
           req.paintTarget = undefined
         }
       } else {
-        if (sampling.allow_reference === true) {
+        if (sampling.image_reference.show === true) {
           // Remove any duplicate occurrence first, then take slot 0 — or
           // become the only ref when the channel is empty (guarded against a
-          // degenerate allow_reference + max_reference 0 config).
+          // degenerate show + max 0 config).
           const dup = existingRefs.indexOf(req.paintImagePath)
           if (dup >= 0) existingRefs.splice(dup, 1)
           if (existingRefs.length > 0) existingRefs[0] = req.paintImagePath
-          else if (sampling.max_reference > 0) existingRefs.push(req.paintImagePath)
+          else if (sampling.image_reference.max > 0) existingRefs.push(req.paintImagePath)
         } else {
           req.paintImagePath = undefined
           req.paintTarget = undefined
@@ -802,46 +1095,35 @@ export function registerIpc(): void {
     const session = sessions.get(req.sessionId)
     if (!session) throw new Error(`Session ${req.sessionId} not found`)
 
-    // Session-level sampling override (6 whitelisted fields) wins over the
-    // global effective sampling. Main consumes from `sampling` only
-    // diffusion_behavior / allow_reference / max_reference / allow_image_input
-    // â€” none session-overridable. steps/cfg/strength/sampler already arrive
-    // merged in
-    // `req` from the renderer, so this is defense-in-depth; what main actually
-    // needs is the scheduler/negative fallbacks resolved below. Width/height
-    // are no longer session-overridable â€” the resolution selected in the chat
-    // panel always wins.
+    // Session-level sampling override (flat scalars) merges into the
+    // descriptor defaults — the channels (image_reference / image_input /
+    // ...) are NOT session-overridable and stay as loaded. steps/cfg/strength
+    // already arrive merged in `req` from the renderer, so this is
+    // defense-in-depth; what main actually needs is the fallback reads below
+    // (negative / scheduler / flow_shift / frames / high-noise values).
+    // Width/height are not session-overridable — the resolution selected in
+    // the chat panel always wins.
     const sessSampling = session.inputs?.sampling
-    if (sessSampling) {
-      if (sessSampling.steps !== undefined) sampling.steps = sessSampling.steps
-      if (sessSampling.cfg !== undefined) sampling.cfg = sessSampling.cfg
-      if (sessSampling.strength !== undefined) sampling.strength = sessSampling.strength
-      if (sessSampling.sampler !== undefined) sampling.sampler = sessSampling.sampler
-      if (sessSampling.scheduler !== undefined) sampling.scheduler = sessSampling.scheduler
-      if (sessSampling.flow_shift !== undefined) sampling.flow_shift = sessSampling.flow_shift
-      // `!== undefined` (not a truthiness check): an explicit null must
-      // overwrite a previously saved fixed seed.
-      if (sessSampling.seed !== undefined) sampling.seed = sessSampling.seed
-    }
+    if (sessSampling) sampling = applySamplingOverrides(sampling, sessSampling)
     // Negative prompt: request value (sent by renderer) wins; else the session
     // file's saved value (defense-in-depth); else the global per-type default.
     const negative =
       (req.negativePrompt ?? session.inputs?.negativePrompt ?? '').trim() ||
-      (sampling.negative ?? '').trim()
+      (sampling.negative.default ?? '').trim()
     if (negative) req.negativePrompt = negative
     // Scheduler: `req.scheduler` carries the RAW renderer value (a concrete
     // string, the 'model-specific' sentinel, or undefined). Resolve the
     // sentinel and the global fallback here in one place. A concrete value
     // survives; a sentinel vanishes WITHOUT triggering the global fallback;
     // only an absent value falls back to the global default.
-    const raw = req.scheduler ?? sampling.scheduler
+    const raw = req.scheduler ?? sampling.scheduler.default
     req.scheduler = raw && raw !== SCHEDULER_MODEL_DEFAULT && String(raw).trim() ? String(raw).trim() : undefined
     // Flow shift: `req.flowShift` carries the RAW renderer value (a finite
     // number, '', null, or undefined). Request value wins; else the global
     // effective default. A finite number (incl 0) or a numeric string
     // survives; '' / null / undefined / non-numeric => undefined => buildArgs
     // emits no --flow-shift flag (sd-cli default: auto).
-    const rawFlow = req.flowShift ?? sampling.flow_shift
+    const rawFlow = req.flowShift ?? sampling.flow_shift.default
     req.flowShift =
       typeof rawFlow === 'number' && Number.isFinite(rawFlow)
         ? rawFlow
@@ -850,11 +1132,65 @@ export function registerIpc(): void {
           : undefined
     // Seed: `req.seed` carries the RAW merged value (a finite integer in
     // [0, SEED_MAX], null, or undefined). Request value wins; else the
-    // session-saved override (defense-in-depth). A valid integer survives as
-    // a fixed seed; anything else => undefined => buildArgs generates a fresh
-    // random seed per run.
-    const rawSeed = req.seed ?? sampling.seed
+    // session-saved override, else the settings per-type override (seed is
+    // NOT a sampling.json field). A valid integer survives as a fixed seed;
+    // anything else => undefined => buildArgs generates a fresh random seed
+    // per run.
+    const rawSeed = req.seed ?? sessSampling?.seed ?? settings.get().sampling?.[req.diffusionType]?.seed
     req.seed = isValidSeed(rawSeed) ? Math.floor(rawSeed) : undefined
+    // Video-era values (descriptors resolved post-merge): gen mode, video
+    // frames / frame rate and the MoE high-noise sampling values. Positive
+    // numbers only for frames/fps/high-steps (0 or null ⇒ the flag is omitted
+    // and sd-cli's own default applies); `highCfg` keeps 0 as a legal value.
+    // Optional chaining on the MoE-only descriptors (high_cfg / high_sampler):
+    // most sampling.json types omit them entirely — only VACE defines them.
+    const posNum = (v: number | null | undefined): number | undefined =>
+      typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined
+    if (sampling.mode === 'vid_gen') req.genMode = 'vid_gen'
+    req.frames = posNum(sampling.frames?.default)
+    req.frameRate = posNum(sampling.frame_rate?.default)
+    req.highSteps = posNum(sampling.high_steps?.default)
+    req.highCfg =
+      typeof sampling.high_cfg?.default === 'number' && Number.isFinite(sampling.high_cfg.default)
+        ? sampling.high_cfg.default
+        : undefined
+    req.highSampler =
+      typeof sampling.high_sampler?.default === 'string' && sampling.high_sampler.default.trim()
+        ? sampling.high_sampler.default.trim()
+        : undefined
+    // Highres fix (LTX spatial-latent upscale): the two new descriptors are
+    // main-resolved like frames/highSteps — the renderer sends nothing.
+    // `upscale` is a definite boolean (checkbox semantics); `upscalerSteps`
+    // keeps a positive value (0/null ⇒ --hires-steps omitted ⇒ sd-cli
+    // default 0 = reuse --steps).
+    req.upscale = sampling.upscale?.default === true
+    req.upscalerSteps = posNum(sampling.upscaler_steps?.default)
+    // Latent upscaler (LTX 2.5 hires fix) — resolved from the session's own
+    // diffusionType (no `requires` indirection). GATED on `req.upscale`, which
+    // only exists once the merged descriptor has been read above — placing
+    // this at the audio-encoder site would read `req.upscale` before it is
+    // assigned, the path would never resolve, and buildArgs would silently
+    // drop the two upscaler flags. Same stale-cache backstop as the audio
+    // VAE: the name derives from the fresh hub config when the request omits
+    // it. A family that DECLARES an upscaler but whose file is missing fails
+    // the generation (a required companion, like the MoE high-noise expert —
+    // never a silent quality downgrade); a family that declares NOTHING
+    // resolves nothing and buildArgs falls back to sd-cli's built-in upscaler.
+    const latentUpscalerName = req.latentUpscaler
+      ?? basename(hubRepo.latent_upscaler?.[req.diffusionType]?.default ?? '')
+    const latentUpscalerPath =
+      req.upscale && latentUpscalerName
+        ? models.pathFor(
+            'latent_upscaler',
+            latentUpscalerName,
+            req.latentUpscalerProvider,
+            req.diffusionType,
+            expectUrlFor('latent_upscaler', req.diffusionType, req.latentUpscalerProvider, latentUpscalerName)
+          )
+        : undefined
+    if (req.upscale && latentUpscalerName && latentUpscalerPath && !existsSync(latentUpscalerPath)) {
+      throw new Error(`Latent upscaler not found: ${latentUpscalerName} — download it in Settings → Latent Upscaler`)
+    }
 
     // LoRA: the per-session config lives in session.inputs.lora (the renderer
     // never sends it on the request — main is the source of truth at spawn
@@ -882,6 +1218,10 @@ export function registerIpc(): void {
       text: req.prompt,
       // display-only: both channels land in the persisted user message
       refs: [...refs, ...inputImages],
+      // display-only: the video-era channels ride the persisted user message
+      ...(audioPath ? { audioPath } : {}),
+      ...(controlVideoPath ? { controlVideoPath } : {}),
+      ...(endImagePath ? { endImagePath } : {}),
       createdAt: Date.now()
     }
     sessions.addMessage(req.sessionId, userMsg)
@@ -894,16 +1234,30 @@ export function registerIpc(): void {
     }
     sessions.addMessage(req.sessionId, assistantMsg)
 
-    const output = newOutputPath(req.sessionId, assistantMsg.id)
+    // vid_gen runs produce a Motion-JPEG .avi — the bundled runtime has no
+    // ffmpeg muxer and man.txt lists ".avi, .webm, and animated .webp" as the
+    // single-file video outputs. Requesting .mp4 makes sd-cli APPEND .avi to
+    // the path (name.mp4.avi) while the app probes the missing .mp4 file.
+    const output = newOutputPath(req.sessionId, assistantMsg.id, req.genMode === 'vid_gen' ? 'avi' : 'png')
     const paths = {
       model: modelPath,
       modelBehavior,
+      // WAN MoE companion — emitted as --high-noise-diffusion-model (its
+      // presence also gates the three --high-noise-* sampling flags).
+      highNoiseModel: highNoisePath,
       vae: vaePath,
       // Bundle wins: when `encoders` resolved non-empty, `encoder` is ignored.
       encoder: encoderRefs.length ? undefined : encoderPath,
       encoders: encoderRefs.length ? encoderRefs : undefined,
       vision: visionPath,
       tokenizer: tokenizerPath,
+      // Wan2.2 S2V audio encoder (--audio-encoder)
+      audioEncoder: audioEncoderPath,
+      // LTX 2.5 audio VAE (--audio-vae)
+      audioVae: audioVaePath,
+      // LTX 2.5 latent upscaler — buildArgs derives --hires-upscalers-dir +
+      // --hires-upscaler from the absolute path (only when upscale is on)
+      latentUpscaler: latentUpscalerPath,
       // Per-session LoRA flags; undefined when the session's mode is 'off'
       // (or unset) — buildArgs emits neither flag then.
       lora: loraSpawn,
@@ -912,6 +1266,10 @@ export function registerIpc(): void {
       // never emits --mask without --init-img)
       mask: maskPath,
       references: existingRefs,
+      // Video-era channels (undefined for types that forbid them)
+      audioPath,
+      controlVideoPath,
+      endImagePath,
       output
     }
 
@@ -926,14 +1284,52 @@ export function registerIpc(): void {
         sendProgress(req.sessionId, assistantMsg.id, { status: 'running', step, totalSteps }),
       onDone: (imagePath) => {
         activeGens.delete(req.sessionId)
-        sessions.updateMessage(req.sessionId, assistantMsg.id, {
-          image: { path: imagePath, name: basename(imagePath) },
-          status: 'ok'
-        })
-        sendProgress(req.sessionId, assistantMsg.id, {
-          status: 'done',
-          image: { path: imagePath, name: basename(imagePath) }
-        })
+        // vid_gen outputs are Motion-JPEG .avi (the bundled runtime has no
+        // ffmpeg muxer) — Chromium cannot play MJPEG inline, so every .avi
+        // is re-encoded to H.264 .mp4 via the bundled ffmpeg before being
+        // reported. The original .avi is deleted on success (only .mp4 stays
+        // on disk); on failure the .avi is kept and reported as-is — the
+        // legacy poster-frame path in ImageFromPath.vue still renders it.
+        // Non-.avi outputs (images, .webm) are untouched.
+        const finish = async (): Promise<void> => {
+          let finalPath = imagePath
+          if (imagePath.toLowerCase().endsWith('.avi')) {
+            sendProgress(req.sessionId, assistantMsg.id, { status: 'converting' })
+            try {
+              // Lazy fallback: when the init-pipeline download failed
+              // (offline / mirror down), the first conversion retries it —
+              // download progress rides the same 'converting' event.
+              await ensureFfmpeg((downloadedBytes, totalBytes) => {
+                sendProgress(req.sessionId, assistantMsg.id, {
+                  status: 'converting',
+                  step: Math.round((downloadedBytes / Math.max(totalBytes, 1)) * 100)
+                })
+              })
+              const mp4Path = await convertToMp4(imagePath)
+              // Debug aid: set MYRIAD_KEEP_AVI (any value) to retain the raw
+              // Motion-JPEG .avi next to the .mp4 so it can be inspected — the
+              // raw stream is what the re-encoded .mp4 is derived from, so it
+              // is the first thing to check when a video comes out wrong.
+              if (!process.env.MYRIAD_KEEP_AVI) {
+                rmSync(imagePath, { force: true })
+              }
+              finalPath = mp4Path
+            } catch (e) {
+              // Keep the .avi on disk and report it as done — the poster
+              // fallback keeps it viewable. Full detail lands in the log.
+              log.error(`[gen] avi→mp4 conversion failed (session ${req.sessionId}): ${(e as Error).message}`)
+            }
+          }
+          sessions.updateMessage(req.sessionId, assistantMsg.id, {
+            image: { path: finalPath, name: basename(finalPath) },
+            status: 'ok'
+          })
+          sendProgress(req.sessionId, assistantMsg.id, {
+            status: 'done',
+            image: { path: finalPath, name: basename(finalPath) }
+          })
+        }
+        void finish()
       },
       onError: (message) => {
         // Errors live in the log (full detail) and as a toast (short line via
@@ -1043,23 +1439,29 @@ export function initDataDirs(): void {
     'models/diffusion',
     'models/encoder',
     'models/vae',
+    'models/audio_encoder',
     'models/lora',
     'output',
     'sessions',
     'cache',
     'runtime',
+    // bundled ffmpeg binary (downloaded once per machine by the init pipeline;
+    // lives outside data/tmp so it survives the per-launch wipe + app updates)
+    'bin/ffmpeg',
     'logs'
   ]) {
     mkdirSync(join(root, d), { recursive: true })
   }
-  // `data/tmp` holds staged downloads (models + runtime zips) before they are
-  // moved to their live destination. Wiped as a full clean slate on every launch
-  // so an interrupted download never leaves a partial file behind â€” a fresh full
-  // re-download is always performed. The wipe happens before startAllPending()
-  // (fired from index.ts after registerIpc()) so background retries start clean.
+  // `data/tmp` holds staged downloads (models + runtime zips + the ffmpeg
+  // archive) before they are moved to their live destination. Wiped as a full
+  // clean slate on every launch so an interrupted download never leaves a
+  // partial file behind — a fresh full re-download is always performed. The
+  // wipe happens before startAllPending() (fired from index.ts after
+  // registerIpc()) so background retries start clean.
   mkdirSync(join(root, 'tmp'), { recursive: true })
   rmSync(join(root, 'tmp'), { recursive: true, force: true })
   mkdirSync(join(root, 'tmp'), { recursive: true })
+  mkdirSync(join(root, 'tmp', 'ffmpeg'), { recursive: true })
   ensureModelDirs()
 }
 

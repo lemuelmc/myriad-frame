@@ -9,9 +9,12 @@ import { app, BrowserWindow, Menu, shell } from 'electron'
 import { join } from 'node:path'
 import { initDataDirs, registerIpc } from './ipc'
 import { loadApplicationConfig, loadRuntimeConfig } from './services/config'
+import { ensureFfmpeg } from './services/ffmpeg'
 import { createHubService } from './services/hub'
 import { setInitState } from './services/init'
 import { initLogging } from './services/logging'
+import { registerMediaProtocol } from './services/media'
+import { migrateModelLayout } from './services/models'
 import { detectPlatform } from './services/platform'
 import { createRuntimeService } from './services/runtime'
 import { createSettingsService } from './services/settings'
@@ -100,7 +103,7 @@ async function runInitPipeline(win: BrowserWindow): Promise<void> {
   const selected = settings.get().runtimeVersion ?? latest
   const info = versions.find((v) => v.version === selected)
   if (info && !info.installed && !info.downloading && latest) {
-    const url = loadRuntimeConfig()[selected]?.[platform.runtimeKey]
+    const url = loadRuntimeConfig().releases[selected]?.[platform.runtimeKey]
     if (url) {
       status({ stage: 'runtime', message: `Downloading runtime ${selected} (${platform.runtimeKey})…` })
       try {
@@ -134,7 +137,31 @@ async function runInitPipeline(win: BrowserWindow): Promise<void> {
     }
   }
 
-  // 2. ensure the hub catalog cache exists (scan only when missing)
+  // 2. ensure the bundled ffmpeg binary is installed (vid_gen .avi → .mp4
+  //    conversion). Downloaded once per machine into data/bin/ffmpeg/ — a
+  //    no-op (one existsSync) once present. Non-fatal: the conversion path's
+  //    lazy ensureFfmpeg() retries on first use. Placed after the runtime
+  //    step (so the largest first-launch transfer is not competing) and
+  //    before app:ready (so the first video conversion never stalls on a
+  //    download).
+  status({ stage: 'ffmpeg', message: 'Downloading ffmpeg…' })
+  try {
+    await ensureFfmpeg((downloadedBytes, totalBytes) => {
+      status({
+        stage: 'ffmpeg',
+        message: `Downloading ffmpeg… ${Math.round((downloadedBytes / Math.max(totalBytes, 1)) * 100)}%`,
+        downloadedBytes,
+        totalBytes,
+        phase: 'downloading'
+      })
+    })
+    status({ stage: 'ffmpeg', message: 'ffmpeg ready' })
+  } catch (e) {
+    // non-fatal: the first video conversion retries the download lazily
+    status({ stage: 'ffmpeg', message: `ffmpeg download failed: ${(e as Error).message}` })
+  }
+
+  // 3. ensure the hub catalog cache exists (scan only when missing)
   if (!hub.get()) {
     status({ stage: 'catalog', message: 'Scanning model hub…' })
     try {
@@ -179,12 +206,24 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.whenReady().then(async () => {
+    // Privileged media:// scheme registration must happen before app ready;
+    // the handler installs here (before any window loads) and streams
+    // generated videos from data/output with Range support (seekable <video>).
+    registerMediaProtocol()
     initDataDirs()
     // Configure electron-log + main console capture before anything else logs.
     // Runs after initDataDirs() so data/logs/ exists, before registerIpc() so
     // the logs:forward bridge logs through the configured logger.
     initLogging()
     registerIpc()
+    // One-time-per-launch migration of legacy-depth model files into the
+    // family-scoped layout (model-collision-hardening plan §5) — pure
+    // renameSync moves, a natural no-op without a catalog cache. Runs AFTER
+    // initLogging()/registerIpc() and BEFORE startAllPending()/createWindow():
+    // background retries start before the init pipeline, so a migration
+    // inside the pipeline would race them, and here no window exists yet (no
+    // renderer IPC races) and no retry can recreate a just-moved legacy file.
+    migrateModelLayout()
     // Fire background model retries immediately after IPC is wired (the manager's
     // progress broadcasters are installed by registerIpc above, so retries emit
     // progress live). This runs *before* the init pipeline.

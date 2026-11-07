@@ -42,7 +42,7 @@
       <img class="logo" src="assets/logo-wide-small.png" alt="Myriad Frame" />
       <span class="eyebrow">Electron + Vue 3 · Open Source</span>
       <h1>Myriad Frame</h1>
-      <p class="lead">A free, open-source desktop front-end for <a href="https://github.com/leejet/stable-diffusion.cpp" rel="noopener" target="_blank">stable-diffusion.cpp</a>. Manage chat sessions, download and select models, and drive image generation through a bundled <code>sd-cli</code> runtime — all in one place.</p>
+      <p class="lead">A free, open-source desktop front-end for <a href="https://github.com/leejet/stable-diffusion.cpp" rel="noopener" target="_blank">stable-diffusion.cpp</a>. Manage chat sessions, download and select models, and drive image/video generation through a bundled <code>sd-cli</code> runtime — all in one place.</p>
       <div class="ctas">
         <a class="btn primary" href="https://github.com/lemuelmc/myriad-frame/releases" rel="noopener" target="_blank">Download Release</a>
         <a class="btn" href="https://github.com/lemuelmc/myriad-frame" rel="noopener" target="_blank">View on GitHub</a>
@@ -174,9 +174,11 @@
         <figure class="reveal"><img src="assets/improved_sampling_settings.png" alt="Improved sampling settings" loading="lazy" /><figcaption>Improved sampling settings</figcaption></figure>
         <figure class="reveal"><img src="assets/negative_override.png" alt="Negative prompt override" loading="lazy" /><figcaption>Negative prompt override</figcaption></figure>
         <figure class="reveal"><img src="assets/appearance_settings.png" alt="Appearance settings" loading="lazy" /><figcaption>Appearance settings</figcaption></figure>
+        <figure class="reveal"><img src="assets/unified_resolution_selector.png" alt="Unified resolution selector" loading="lazy" /><figcaption>Resolution selector</figcaption></figure>
         <figure class="reveal"><img src="assets/qwen_image_2_1_gen.png" alt="Qwen Image 2.1 generation" loading="lazy" /><figcaption>Qwen Image 2.1 — generation</figcaption></figure>
         <figure class="reveal"><img src="assets/qwen_image_2_1_edit.png" alt="Qwen Image 2.1 editing" loading="lazy" /><figcaption>Qwen Image 2.1 — editing</figcaption></figure>
-      </div>
+        <figure class="reveal"><img src="assets/krea_2.png" alt="Krea 2 Turbo generation" loading="lazy" /><figcaption>Krea 2 — generation</figcaption></figure>
+       </div>
     </div>
   </section>
 
@@ -187,10 +189,63 @@
         <span class="eyebrow">Runtime & model providers</span>
         <h2>Built on open, powerful tools</h2>
       </div>
-      <div class="providers" style="justify-content:center;">
-        <a class="chip" href="https://github.com/leejet/stable-diffusion.cpp" rel="noopener" target="_blank">Runtime: stable-diffusion.cpp</a>
-        <a class="chip" href="https://huggingface.co/unsloth" rel="noopener" target="_blank">unsloth</a>
-        <a class="chip" href="https://huggingface.co/abenzerps" rel="noopener" target="_blank">abenzerps</a>
+      <div class="providers">
+        <a class="chip runtime" href="https://github.com/leejet/stable-diffusion.cpp" rel="noopener" target="_blank">Runtime: stable-diffusion.cpp</a>
+      </div>
+      <div class="provider-groups">
+        <details class="provider-group open" open>
+          <summary>
+            <span class="provider-group-title">Hugging Face</span>
+            <span class="provider-group-count">20</span>
+          </summary>
+          <div class="chips">
+            <a class="chip" href="https://huggingface.co/unsloth" rel="noopener" target="_blank">Unsloth</a>
+            <a class="chip" href="https://huggingface.co/abenzerps" rel="noopener" target="_blank">Abenzerps</a>
+            <a class="chip" href="https://huggingface.co/black-forest-labs" rel="noopener" target="_blank">Black Forest Labs</a>
+            <a class="chip" href="https://huggingface.co/Qwen" rel="noopener" target="_blank">Qwen</a>
+            <a class="chip" href="https://huggingface.co/city96" rel="noopener" target="_blank">City 96</a>
+            <a class="chip" href="https://huggingface.co/huaweilin" rel="noopener" target="_blank">huaweilin</a>
+            <a class="chip" href="https://huggingface.co/Comfy-Org" rel="noopener" target="_blank">Comfy-Org</a>
+            <a class="chip" href="https://huggingface.co/realrebelai" rel="noopener" target="_blank">Rebel AI</a>
+            <a class="chip" href="https://huggingface.co/stabilityai" rel="noopener" target="_blank">Stability AI</a>
+            <a class="chip" href="https://huggingface.co/circlestone-labs" rel="noopener" target="_blank">CircleStone Labs</a>
+            <a class="chip" href="https://huggingface.co/RunDiffusion" rel="noopener" target="_blank">RunDiffusion</a>
+            <a class="chip" href="https://huggingface.co/krea" rel="noopener" target="_blank">Krea</a>
+            <a class="chip" href="https://huggingface.co/UntMods" rel="noopener" target="_blank">Unmods</a>
+            <a class="chip" href="https://huggingface.co/diffusers" rel="noopener" target="_blank">Diffusers</a>
+            <a class="chip" href="https://huggingface.co/leejet" rel="noopener" target="_blank">leejet</a>
+            <a class="chip" href="https://huggingface.co/comfyanonymous" rel="noopener" target="_blank">comfyanonymous</a>
+            <a class="chip" href="https://huggingface.co/QuantStack" rel="noopener" target="_blank">QuantStack</a>
+            <a class="chip" href="https://huggingface.co/OpenMOSS-Team" rel="noopener" target="_blank">OpenMOSS-Team</a>
+            <a class="chip" href="https://huggingface.co/vantagewithai" rel="noopener" target="_blank">Vantage with AI</a>
+            <a class="chip" href="https://huggingface.co/Lightricks" rel="noopener" target="_blank">Lightricks</a>
+          </div>
+        </details>
+        <details class="provider-group">
+          <summary>
+            <span class="provider-group-title">CivitAI</span>
+            <span class="provider-group-count">17</span>
+          </summary>
+          <div class="chips">
+            <a class="chip" href="https://civitai.com/user/euge_" rel="noopener" target="_blank">Euge_</a>
+            <a class="chip" href="https://civitai.com/user/lykon_" rel="noopener" target="_blank">Lykon</a>
+            <a class="chip" href="https://civitai.com/user/jrd_2212" rel="noopener" target="_blank">JRD_2212</a>
+            <a class="chip" href="https://civitai.com/user/kranos94" rel="noopener" target="_blank">Kranos94</a>
+            <a class="chip" href="https://civitai.com/user/captain_daddy" rel="noopener" target="_blank">captain_daddy</a>
+            <a class="chip" href="https://civitai.com/user/angelomaiota" rel="noopener" target="_blank">angelomaiota</a>
+            <a class="chip" href="https://civitai.com/user/wackiii" rel="noopener" target="_blank">Wackiii</a>
+            <a class="chip" href="https://civitai.com/user/annguyentruongandrew142" rel="noopener" target="_blank">annguyentruongandrew142</a>
+            <a class="chip" href="https://civitai.com/user/darkessence" rel="noopener" target="_blank">Darkessence</a>
+            <a class="chip" href="https://civitai.com/user/arrssenne" rel="noopener" target="_blank">arrssenne</a>
+            <a class="chip" href="https://civitai.com/user/valpat1988108" rel="noopener" target="_blank">valpat1988108</a>
+            <a class="chip" href="https://civitai.com/user/theevildarkmage126" rel="noopener" target="_blank">theevildarkmage126</a>
+            <a class="chip" href="https://civitai.com/user/cyberthron" rel="noopener" target="_blank">cyberthron</a>
+            <a class="chip" href="https://civitai.com/user/tigerart" rel="noopener" target="_blank">tigerart</a>
+            <a class="chip" href="https://civitai.com/user/maxed_out" rel="noopener" target="_blank">Maxed_Out</a>
+            <a class="chip" href="https://civitai.com/user/were_catf" rel="noopener" target="_blank">WereCatf</a>
+            <a class="chip" href="https://civitai.com/user/cagliostro_lab" rel="noopener" target="_blank">CagliostroLab</a>
+          </div>
+        </details>
       </div>
     </div>
   </section>

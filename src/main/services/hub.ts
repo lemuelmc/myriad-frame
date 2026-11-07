@@ -22,6 +22,26 @@ function catalogPath(): string {
   return join(dataRoot(), 'cache', 'hub-catalog.json')
 }
 
+/**
+ * Extract the resolved `requires` from-family names off a hub diffusion
+ * entry (defensively shape-checked — the bundled config is loaded without
+ * validation). Undefined when the entry carries no usable requires block.
+ */
+function requiresFrom(d: {
+  requires?: Partial<Record<'vae' | 'encoder' | 'audio_encoder', { from: string }>>
+}): CatalogEntry['requires'] {
+  const r = d.requires
+  const out: NonNullable<CatalogEntry['requires']> = {}
+  if (r && typeof r === 'object') {
+    if (typeof r.vae?.from === 'string' && r.vae.from !== '') out.vae = r.vae.from
+    if (typeof r.encoder?.from === 'string' && r.encoder.from !== '') out.encoder = r.encoder.from
+    if (typeof r.audio_encoder?.from === 'string' && r.audio_encoder.from !== '') {
+      out.audio_encoder = r.audio_encoder.from
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
 function quantFromName(name: string): string | undefined {
   const m = name.match(/(Q\d+[_A-Z0-9]*|FP8|FP16|BF16|F16|Q8_0|Q4_0|Q5_0|Q5_1|Q6_K|Q8_K|Q4_K_M|Q4_K_S|Q5_K_M|Q5_K_S|Q6_K|Q8_K|F16|BF16|FP16)/i)
   return m ? m[1] : undefined
@@ -39,8 +59,14 @@ function quantFromName(name: string): string | undefined {
  * - vision: repo tree (.gguf files) + the configured default file
  * - tokenizer: ONLY the configured default file (no repo tree scan — tokenizer
  *   repos are full weights repos; a tokenizer is a single small file)
+ * - audio_encoder: ONLY the configured default file (wav2vec2 for Wan2.2 S2V;
+ *   same default-file-only shape as tokenizer)
+ * - audio_vae: ONLY the configured default file (LTX 2.5 audio track; same
+ *   default-file-only shape as tokenizer)
+ * - latent_upscaler: ONLY the configured default file (LTX 2.5 hires fix;
+ *   same default-file-only shape as tokenizer)
  *
- * The six loops own the catalog SHAPE (entry fields, name/label policy,
+ * The nine loops own the catalog SHAPE (entry fields, name/label policy,
  * default synthesis); the model SOURCE owns the TRANSPORT (repo listing API,
  * URL grammar — see `sources/`). Dispatch happens before each loop's scan
  * try/catch: an unknown source is a dispatch miss → warn + skip (uniformly
@@ -115,6 +141,49 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
     // the bundled two-segment HF repo URLs — so CatalogEntry.repo (and the
     // future auth token key) can never diverge from the download-time slug.
     const repo = source.repoFromUrl(d.url)
+    const requires = requiresFrom(d)
+    // Static multi-file catalog (WAN MoE pairs): when the hub entry carries a
+    // `catalog[]`, the repo scan is skipped entirely and one catalog row per
+    // item file is emitted — each stamped with its `use_as` CLI slot and the
+    // item's `name` as the shared `groupId` (the picker groups by it and
+    // gen:start derives the high-noise companion from it). No headSize: the
+    // per-file sizes would cost one HEAD per row for display sugar only.
+    const catalogItems = Array.isArray(d.catalog) ? d.catalog : []
+    if (catalogItems.length > 0) {
+      for (const item of catalogItems) {
+        if (item === null || typeof item !== 'object') continue
+        const items = Array.isArray(item.items) ? item.items : []
+        for (const f of items) {
+          if (f === null || typeof f !== 'object' || typeof f.file !== 'string' || f.file === '') {
+            continue
+          }
+          const path = source.normalizeFilePath?.(f.file) ?? f.file
+          const name = path.split('/').pop() ?? path
+          // Defensive: the validator enforces the closed set, but the bundled
+          // config is loaded without it — anything unknown degrades to the
+          // primary slot.
+          const useAs = f.use_as === 'high_noise_diffusion_model' ? 'high_noise_diffusion_model' : 'diffusion-model'
+          entries.push({
+            id: `diffusion:${d.diffusion_type}:${name}`,
+            type: 'diffusion' as ModelType,
+            diffusionType: d.diffusion_type,
+            name,
+            label: item.label ? `${item.label} (${useAs === 'high_noise_diffusion_model' ? 'high noise' : 'low noise'})` : name,
+            url: source.resolveUrl(repo, path),
+            quant: quantFromName(name),
+            repo,
+            provider: d.provider,
+            source: source.name,
+            useAs,
+            groupId: item.name,
+            ...(requires ? { requires } : {}),
+            ...(d.description ? { description: d.description } : {})
+          })
+          dispatchedEntries++
+        }
+      }
+      continue
+    }
     // A missing folder (typo, renamed/removed upstream) can answer HTTP 404;
     // an unhandled rejection here would fail the whole catalog scan. Catch,
     // warn, and contribute no rows — consistent with the zero-result policy.
@@ -168,6 +237,8 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
           provider: d.provider,
           // download-time routing key + provenance (see CatalogEntry.source)
           source: source.name,
+          // requires from-families (WAN VAE/encoder/audio-encoder routing)
+          ...(requires ? { requires } : {}),
           // Optional per-repo description from hub.json — conditional spread,
           // the same pattern the encoder / vision / vae loops use for their
           // optional fields.
@@ -220,6 +291,12 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
       typeof enc.default === 'string' && enc.default !== ''
         ? (source.normalizeFilePath?.(enc.default) ?? enc.default)
         : undefined
+    // Entry-level `use_as` — the CLI flag for the SINGLE-file shape (e.g.
+    // `t5xxl` for the wan umt5-xxl encoder); stamped on the default entry in
+    // both branches below so gen:start emits `--<use_as> <path>` instead of
+    // the legacy `--llm`.
+    const entryUseAs =
+      typeof enc.use_as === 'string' && enc.use_as.trim() !== '' ? enc.use_as.trim() : undefined
     const files = await source.listFiles(repo)
     const seen = new Set<string>()
     for (const f of files) {
@@ -240,7 +317,7 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
         // the configured default file(s) may already be in the repo tree —
         // flag them so consumers can resolve them without a separate entry.
         // Bundle files additionally carry the `use_as` CLI flag name.
-        ...(f.path === defaultPath ? { isDefault: true } : {}),
+        ...(f.path === defaultPath ? { isDefault: true, ...(entryUseAs ? { useAs: entryUseAs } : {}) } : {}),
         ...(bundleUseAs !== undefined ? { isDefault: true, useAs: bundleUseAs } : {}),
         ...(enc.provider ? { provider: enc.provider } : {})
       })
@@ -263,6 +340,7 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
         source: source.name,
         // provider selects the per-provider download subdirectory
         ...(enc.provider ? { provider: enc.provider } : {}),
+        ...(entryUseAs ? { useAs: entryUseAs } : {}),
         isDefault: true
       })
       dispatchedEntries++
@@ -384,6 +462,105 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
       source: source.name,
       // provider selects the per-provider download subdirectory
       ...(tok.provider ? { provider: tok.provider } : {}),
+      isDefault: true
+    })
+    dispatchedEntries++
+  }
+
+  // audio_encoder (optional map; Wan2.2 S2V's wav2vec2) — the same
+  // default-file-only shape as the tokenizer loop (audio-encoder repos are
+  // full weights repos; a scan would flood the catalog).
+  for (const [diffusionType, aud] of Object.entries(hub.repo.audio_encoder ?? {})) {
+    onProgress?.(`Scanning ${aud.url}`)
+    eligibleEntries++
+    const source = getSourceForEntry(aud.url, aud.source ?? aud.domain)
+    if (!source) {
+      console.warn(`[hub] audio_encoder entry "${diffusionType}" (${aud.url}): no model source for this URL's host — skipping`)
+      continue
+    }
+    const repo = source.repoFromUrl(aud.url)
+    const defaultPath = source.normalizeFilePath?.(aud.default) ?? aud.default
+    const defaultName = defaultPath.split('/').pop() ?? defaultPath
+    const defaultUrl = source.resolveUrl(repo, defaultPath)
+    const size = await headSize(defaultUrl)
+    entries.push({
+      id: `audio_encoder:${diffusionType}:${defaultName}`,
+      type: 'audio_encoder' as ModelType,
+      diffusionType,
+      name: defaultName,
+      label: aud.label ?? defaultName,
+      url: defaultUrl,
+      size,
+      quant: quantFromName(defaultName),
+      source: source.name,
+      // provider selects the per-provider download subdirectory
+      ...(aud.provider ? { provider: aud.provider } : {}),
+      isDefault: true
+    })
+    dispatchedEntries++
+  }
+
+  // audio_vae (optional map; LTX 2.5's audio-track VAE) — the same
+  // default-file-only shape as the tokenizer loop (audio-VAE repos are
+  // full weights repos; a scan would flood the catalog).
+  for (const [diffusionType, av] of Object.entries(hub.repo.audio_vae ?? {})) {
+    onProgress?.(`Scanning ${av.url}`)
+    eligibleEntries++
+    const source = getSourceForEntry(av.url, av.source ?? av.domain)
+    if (!source) {
+      console.warn(`[hub] audio_vae entry "${diffusionType}" (${av.url}): no model source for this URL's host — skipping`)
+      continue
+    }
+    const repo = source.repoFromUrl(av.url)
+    const defaultPath = source.normalizeFilePath?.(av.default) ?? av.default
+    const defaultName = defaultPath.split('/').pop() ?? defaultPath
+    const defaultUrl = source.resolveUrl(repo, defaultPath)
+    const size = await headSize(defaultUrl)
+    entries.push({
+      id: `audio_vae:${diffusionType}:${defaultName}`,
+      type: 'audio_vae' as ModelType,
+      diffusionType,
+      name: defaultName,
+      label: defaultName,
+      url: defaultUrl,
+      size,
+      quant: quantFromName(defaultName),
+      source: source.name,
+      // provider selects the per-provider download subdirectory
+      ...(av.provider ? { provider: av.provider } : {}),
+      isDefault: true
+    })
+    dispatchedEntries++
+  }
+
+  // latent_upscaler (optional map; LTX 2.5's spatial latent upscaler for the
+  // hires fix) — the same default-file-only shape as the tokenizer loop
+  // (upscaler repos are full weights repos; a scan would flood the catalog).
+  for (const [diffusionType, lu] of Object.entries(hub.repo.latent_upscaler ?? {})) {
+    onProgress?.(`Scanning ${lu.url}`)
+    eligibleEntries++
+    const source = getSourceForEntry(lu.url, lu.source ?? lu.domain)
+    if (!source) {
+      console.warn(`[hub] latent_upscaler entry "${diffusionType}" (${lu.url}): no model source for this URL's host — skipping`)
+      continue
+    }
+    const repo = source.repoFromUrl(lu.url)
+    const defaultPath = source.normalizeFilePath?.(lu.default) ?? lu.default
+    const defaultName = defaultPath.split('/').pop() ?? defaultPath
+    const defaultUrl = source.resolveUrl(repo, defaultPath)
+    const size = await headSize(defaultUrl)
+    entries.push({
+      id: `latent_upscaler:${diffusionType}:${defaultName}`,
+      type: 'latent_upscaler' as ModelType,
+      diffusionType,
+      name: defaultName,
+      label: defaultName,
+      url: defaultUrl,
+      size,
+      quant: quantFromName(defaultName),
+      source: source.name,
+      // provider selects the per-provider download subdirectory
+      ...(lu.provider ? { provider: lu.provider } : {}),
       isDefault: true
     })
     dispatchedEntries++
@@ -611,6 +788,134 @@ function catalogEntryForUrl(url: string): CatalogEntry | undefined {
  */
 export function catalogNameForUrl(url: string): string | undefined {
   return catalogEntryForUrl(url)?.name
+}
+
+/**
+ * The combined cached-catalog metadata for a download URL — `source` (the
+ * download-time routing hint), `name` (the stored-filename override) and
+ * `diffusionType` (the family-scoped destination key) in ONE lookup.
+ * Replaces the two single-field accessors at the download chokepoint so a
+ * download resolves source + filename + family from a single catalog parse
+ * and the three can never disagree about WHICH entry a URL belongs to. Same
+ * exact-URL-match semantics (and stale-cache degradation) as the two
+ * accessors; undefined on a missing/corrupt cache or a URL miss.
+ */
+export interface CatalogMeta {
+  source?: string
+  name?: string
+  diffusionType?: string
+}
+
+export function catalogMetaForUrl(url: string): CatalogMeta | undefined {
+  const e = catalogEntryForUrl(url)
+  if (!e) return undefined
+  return { source: e.source, name: e.name, diffusionType: e.diffusionType }
+}
+
+/**
+ * The cached catalog entries at a fully-keyed location —
+ * `(type, family, provider, basename)`. Consumers:
+ * - `pathFor`'s URL gate (models.ts): a candidate whose location is not the
+ *   requester's own slot is accepted only when an entry at the candidate's
+ *   exact location carries the expected URL — the gate that keeps a
+ *   cross-family fallback from silently serving a different URL's file.
+ * - gen:start (ipc.ts): pins each resolution site's `expectUrl` from the
+ *   entries at the site's location (the alternates set — the first is as
+ *   good as any).
+ *
+ * Matching: `family` against `entry.diffusionType` exactly; `name`
+ * basename-matched (a slashed catalog name matches its on-disk basename
+ * after downloads.ts's basename-normalized storage); `provider` normalized
+ * `?? 'default'` on BOTH sides (entries without a configured provider are
+ * downloaded under the `default` provider dir) — an ABSENT provider argument
+ * matches entries at any provider (the caller then wants the whole
+ * location-ambiguous set; the first entry is as good as any). Reads the
+ * cached catalog directly (the existing per-call parse pattern); an empty
+ * array on a missing/corrupt cache.
+ */
+export function catalogEntriesForLocation(
+  type: ModelType,
+  family: string,
+  provider: string | undefined,
+  name: string
+): CatalogEntry[] {
+  const p = catalogPath()
+  if (!existsSync(p)) return []
+  let catalog: HubCatalog
+  try {
+    catalog = JSON.parse(readFileSync(p, 'utf-8')) as HubCatalog
+  } catch {
+    return []
+  }
+  const base = name.split('/').pop() ?? name
+  const wantProv = provider && provider.trim() !== '' ? provider : 'default'
+  return (catalog.entries ?? []).filter((e) => {
+    if (e.type !== type || e.diffusionType !== family) return false
+    if ((e.name.split('/').pop() ?? e.name) !== base) return false
+    if (provider === undefined) return true
+    return (e.provider ?? 'default') === wantProv
+  })
+}
+
+/**
+ * The high-noise companion for a MoE (groupId) catalog entry — the cached
+ * catalog entry with the same type/family/groupId whose `useAs` is
+ * `high_noise_diffusion_model`, preferring the same provider. Undefined when
+ * the entry carries no groupId (a plain single-file model) or the catalog is
+ * stale (no groupId rows — the "Refresh the hub in Settings → Models" case;
+ * gen:start surfaces a rescan hint for it).
+ */
+export function catalogHighNoiseCompanion(
+  type: ModelType,
+  family: string,
+  provider: string | undefined,
+  groupId: string
+): CatalogEntry | undefined {
+  const p = catalogPath()
+  if (!existsSync(p)) return undefined
+  let catalog: HubCatalog
+  try {
+    catalog = JSON.parse(readFileSync(p, 'utf-8')) as HubCatalog
+  } catch {
+    return undefined
+  }
+  const wantProv = provider && provider.trim() !== '' ? provider : 'default'
+  const members = (catalog.entries ?? []).filter(
+    (e) => e.type === type && e.diffusionType === family && e.groupId === groupId
+  )
+  return (
+    members.find(
+      (e) => e.useAs === 'high_noise_diffusion_model' && (e.provider ?? 'default') === wantProv
+    ) ?? members.find((e) => e.useAs === 'high_noise_diffusion_model')
+  )
+}
+
+/**
+ * The bundle members for a download URL — the cached catalog entries sharing
+ * the clicked entry's `groupId` (same type + family), the clicked entry
+ * included. One member (the clicked entry itself) when it carries no
+ * `groupId` (a plain single-file model); an empty array on a missing/corrupt
+ * cache or a URL miss. Consumed by `downloadViaSource` in models.ts to fan a
+ * MoE bundle click out to every member (WAN low/high-noise pairs).
+ */
+export function catalogBundleForUrl(url: string): CatalogEntry[] {
+  const p = catalogPath()
+  if (!existsSync(p)) return []
+  let catalog: HubCatalog
+  try {
+    catalog = JSON.parse(readFileSync(p, 'utf-8')) as HubCatalog
+  } catch {
+    return []
+  }
+  const clicked = catalog.entries?.find((e) => e.url === url)
+  if (!clicked) return []
+  if (!clicked.groupId) return [clicked]
+  return (catalog.entries ?? []).filter(
+    (x) =>
+      x.type === clicked.type &&
+      x.diffusionType === clicked.diffusionType &&
+      x.groupId === clicked.groupId
+  )
 }
 
 export interface HubService {

@@ -17,10 +17,11 @@ import type { DownloadParams } from './model-source'
  * touches the download pipeline.
  *
  * Deliberate adaptation contract:
- * - `headers` and `filename` are the only params forwarded — the things a
- *   source threads into the transport / storage (auth / custom headers, and
- *   the stored-filename override for sources whose download URLs carry no
- *   filename in the path — see DownloadParams.filename).
+ * - `headers`, `filename` and `diffusionType` are the only params forwarded —
+ *   the things a source threads into the transport / storage (auth / custom
+ *   headers, the stored-filename override for sources whose download URLs
+ *   carry no filename in the path — see DownloadParams.filename — and the
+ *   family-scoped destination key, see DownloadParams.diffusionType).
  * - `onProgress` is NOT forwarded: the manager already broadcasts model
  *   progress via its single `notifyModelProgress` broadcaster; forwarding
  *   would double-broadcast the renderer.
@@ -37,6 +38,7 @@ import type { DownloadParams } from './model-source'
 export async function delegateDownload(params: DownloadParams): Promise<string> {
   return downloadModel(params.type, params.url, params.provider, params.force ?? false, {
     headers: params.headers,
-    filename: params.filename
+    filename: params.filename,
+    diffusionType: params.diffusionType
   })
 }

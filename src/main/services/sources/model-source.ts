@@ -89,6 +89,18 @@ export interface DownloadParams {
    * `startAllPending()` background retries resolve it identically.
    */
   filename?: string
+ /**
+  * Optional diffusionType (family) of the catalog entry this download
+  * belongs to — threaded by `downloadViaSource` from the cached catalog
+  * (`catalogMetaForUrl`) so the download manager can place the file in the
+  * family-scoped destination `models/<type>/<diffusionType>/<provider>/`
+  * (model-collision-hardening plan §2.3/§3.1). Absent on a catalog miss →
+  * the manager degrades to the legacy provider-level destination. The
+  * dedicated sources pass it through untouched (the `{ ...params, headers }`
+  * spread carries it); `delegateDownload` forwards it beside
+  * `headers`/`filename`.
+  */
+ diffusionType?: string
 }
 
 /**

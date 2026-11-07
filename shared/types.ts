@@ -7,7 +7,16 @@
 
 // Shared types used by main, preload and renderer.
 
-export type ModelType = 'diffusion' | 'encoder' | 'vae' | 'vision' | 'lora' | 'tokenizer'
+export type ModelType =
+  | 'diffusion'
+  | 'encoder'
+  | 'vae'
+  | 'vision'
+  | 'lora'
+  | 'tokenizer'
+  | 'audio_encoder'
+  | 'audio_vae'
+  | 'latent_upscaler'
 
 /**
  * Renderer theme key. Kept open-ended (`string`) so new themes can be added in
@@ -27,11 +36,30 @@ export type ThemeKey =
 export interface HubDiffusionModel {
   name: string
   label: string
-  /** 'image' or other inference modalities */
+  /** inference type (e.g. 'text_to_image', 'video', 'image_to_video') */
   type: string
-  /** 'image' or 'image_unified' — controls UI behavior */
-  mode: string
+  /** legacy optional mode field — the shipped hub.json no longer carries it */
+  mode?: string
+  /**
+   * Upstream access requirement for the family's repos: 'auth' = downloads
+   * require an API token, 'gated' = a token PLUS accepting the terms/license
+   * on the model page. Absent/null = freely downloadable. Surfaced as an
+   * accent badge in the model picker and Settings → Models, read from the
+   * FRESH hub config (`accessForFamily()` in renderer deps.ts) so a newly
+   * configured family badges without a catalog rescan.
+   */
+  access?: 'auth' | 'gated' | null
 }
+
+/**
+ * hub.json `diffusion_inference_types` — per-inference-type composer metadata
+ * (e.g. `text_to_video: { text_input: true, accepts: null }`). Informational:
+ * the sampling.json per-type channels are the operative gates.
+ */
+export type HubInferenceTypes = Record<
+  string,
+  { text_input: boolean; accepts: string[] | null }
+>
 
 /** A model provider from hub.json — a flat `{ name, label }` entry. */
 export interface HubProvider {
@@ -88,7 +116,34 @@ export interface HubDiffusionEntry {
   source?: string
   /** Optional domain override (see `source`); `source` wins when both are set. */
   domain?: string
+  /**
+   * `requires` block: the diffusion family each companion model resolves
+   * from, instead of the session's own diffusionType (e.g. a
+   * `wan2_2_t2v` entry requires the `wan2_1` VAE + encoder). Absent keys
+   * resolve from the entry's own diffusion_type.
+   */
+  requires?: Partial<Record<'vae' | 'encoder' | 'audio_encoder', { from: string }>>
+  /**
+   * Static multi-file catalog (WAN MoE pairs): one item = one selectable
+   * quant = the LOW-NOISE expert plus (optionally) its HIGH-NOISE partner.
+   * When present the hub scan is skipped entirely and one catalog row is
+   * emitted per item file (stamped `useAs` + `groupId`).
+   */
+  catalog?: HubDiffusionCatalogItem[]
 }
+
+/** One selectable quant of a diffusion `catalog[]` entry (MoE pair). */
+export interface HubDiffusionCatalogItem {
+  /** group id — shared by every file of the same quant (e.g. `..._q4_k_m`) */
+  name: string
+  /** human-readable label (e.g. "QuantStack/Wan2.2-T2V-A14B Q4_K_M") */
+  label: string
+  /** the files of this quant and the CLI slot each is passed under */
+  items: { file: string; use_as: string }[]
+}
+
+/** The closed set of diffusion `catalog[].items[].use_as` values (hub.json). */
+export const DIFFUSION_USE_AS = ['diffusion-model', 'high_noise_diffusion_model'] as const
 
 /** One file of an encoder bundle (sd3.5-style). */
 export interface HubEncoderDefault {
@@ -113,6 +168,13 @@ export interface HubEncoderEntry {
   default?: string
   /** array of `{ file, use_as }` pairs — the multi-file encoder bundle */
   defaults?: HubEncoderDefault[]
+  /**
+   * Entry-level flag name for the SINGLE-file (`default`) shape (e.g.
+   * `t5xxl` for the wan umt5-xxl encoder) — when set, the default encoder is
+   * emitted as `--<use_as> <path>` instead of `--llm`. Ignored on bundle
+   * entries (each `defaults[]` item carries its own `use_as`).
+   */
+  use_as?: string
   /**
    * Optional model-source override: a source name (`huggingface`) or a domain
    * (`huggingface.co`) that forces source selection regardless of the URL
@@ -209,6 +271,20 @@ export interface HubLoraEntry {
   domain?: string
 }
 
+/** Audio-encoder entry from hub.json repo.audio_encoder (e.g. wav2vec2 for Wan2.2 S2V). */
+export interface HubAudioEncoderEntry {
+  /** provider key (e.g. 'comfy_org') — selects the download subdirectory */
+  provider?: string
+  label?: string
+  url: string
+  /** repo-relative file path (or full URL) of the audio encoder */
+  default: string
+  /** Optional model-source override (same semantics as the other repo sections). */
+  source?: string
+  /** Optional domain override (see `source`); `source` wins when both are set. */
+  domain?: string
+}
+
 export interface HubConfig {
   /** "last updated" marker carried by the file (and the override) as-is */
   updatedOn: string
@@ -216,6 +292,8 @@ export interface HubConfig {
   diffusion_models: HubDiffusionModel[]
   /** available model providers */
   providers: HubProvider[]
+  /** per-inference-type composer metadata; optional (older overrides lack it) */
+  diffusion_inference_types?: HubInferenceTypes
   repo: {
     /** diffusionType -> VAE repo + default file; the legacy plain-URL form is still accepted at runtime */
     vae: Record<string, HubVaeEntry | string>
@@ -225,6 +303,12 @@ export interface HubConfig {
     vision?: Record<string, HubVisionEntry>
     /** diffusionType -> tokenizer repo + default file, when the diffusion_type needs a tokenizer; absent when none does */
     tokenizer?: Record<string, HubTokenizerEntry>
+    /** diffusionType -> audio encoder (wav2vec2) repo + default file (Wan2.2 S2V); absent when none does */
+    audio_encoder?: Record<string, HubAudioEncoderEntry>
+    /** diffusionType -> audio VAE repo + default file (LTX 2.5 audio track); absent when none does */
+    audio_vae?: Record<string, HubVaeEntry>
+    /** diffusionType -> latent upscaler repo + default file (LTX 2.5 hires fix); absent when none does */
+    latent_upscaler?: Record<string, HubVaeEntry>
     /** list of downloadable diffusion model quantizations */
     diffusion: HubDiffusionEntry[]
     /** downloadable LoRA adapters; optional so older hub.json overrides without it stay valid */
@@ -233,58 +317,174 @@ export interface HubConfig {
 }
 
 // ---------- configurations/sampling.json ----------
+
+/**
+ * A sampling.json value descriptor: `show` gates the per-session override row
+ * (NEVER the default emission) and `default` is the effective value when no
+ * override is set.
+ */
+export interface SamplingField<T> {
+  show: boolean
+  default: T
+}
+
+/**
+ * A sampling.json input-channel descriptor: `show` gates the composer button,
+ * `max` caps the channel and `accepts` (glob list or null) feeds the file
+ * picker filters.
+ */
+export interface SamplingChannel {
+  show: boolean
+  max: number
+  accepts: string[] | null
+}
+
+/** One sampling.json per-diffusion_type entry (descriptor shape). */
 export interface SamplingDefaults {
+  /** generation mode: 'img_gen' (default, no -M flag) or 'vid_gen' (-M vid_gen) */
+  mode: 'img_gen' | 'vid_gen'
   /** how the model file is passed to sd-cli: 'standalone' (default) passes
    *  weights-only files via `--diffusion-model`, with conditioners/VAE as
    *  separate files; 'all_in_one' passes a full checkpoint (conditioners +
    *  VAE inside the file) via `--model` */
   diffusion_behavior: 'all_in_one' | 'standalone'
-  /** whether this diffusion type accepts reference images at all;
-   *  gates the 'Add reference images' button and --ref-image chaining */
-  allow_reference: boolean
-  max_reference: number
-  /** whether this diffusion type accepts explicit input images at all
-   *  (img2img-style); gates the 'Add input images' button */
-  allow_image_input: boolean
-  /** max number of input images (single --init-img path, so >1 is a
-   *  picker-dialog cap only; sd-cli takes one init image) */
-  max_image_input: number
-  /** inpainting / outpainting support: when true the composer's Inpaint and
-   *  Outpaint buttons are enabled and a saved mask is emitted as `--mask`
-   *  alongside `--init-img` at spawn */
-  allow_inpainting: boolean
-  /** paint-tool support: when true the composer's Paint button is shown and a
-   *  saved painted image is routed into --init-img or the first --ref-image
-   *  at spawn; absent/false hides the button and main drops any paint fields
-   *  (defense-in-depth). Optional — older sampling.json entries may omit it. */
-  allow_painting?: boolean
+  /** reference images — repeatable `--ref-image` */
+  image_reference: SamplingChannel
+  /** explicit input images — single `--init-img` (+ `--strength`) */
+  image_input: SamplingChannel
+  /** end image — `--end-img` (FLF2V); dormant while every entry has show:false */
+  end_image_input: SamplingChannel
+  /** driving audio — `--audio` (Wan2.2 S2V) */
+  audio_input: SamplingChannel
+  /** control video — `--control-video` (VACE; a frames DIRECTORY, not a file) */
+  video_input: SamplingChannel
+  /** video frame count — `--video-frames` (vid_gen only; sd-cli default 1) */
+  frames: SamplingField<number | null> & { max: number }
+  /** video frame rate — `--fps` (vid_gen only; sd-cli default 24) */
+  frame_rate: SamplingField<number | null> & { max: number }
+  /** VACE control-frames directory override (informational; the composer picks the dir) */
+  control_video: SamplingField<string | null>
   /** denoise strength for img2img runs — emitted as `--strength` only
    *  alongside the init image (sd-cli default 0.75) */
-  strength: number
-  steps: number
-  cfg: number
-  sampler: string
-  scheduler?: string | null
-  /**
-   * Flow-model timestep shift (--flow-shift). `null` / `''` / absent means the
-   * flag is NOT emitted (sd-cli default: auto); any finite number - including
-   * 0 - is emitted as `--flow-shift <n>`.
-   */
-  flow_shift?: number | '' | null
-  /**
-   * Per-run RNG seed. A finite integer in [0, SEED_MAX] is emitted as a fixed
-   * `--seed <n>` on every generation; null / absent (also the shipped
-   * sampling.json shape — the field is never set there) means a fresh random
-   * seed per run. `''` is a transient v-model artifact (dialog input), never
-   * persisted.
-   */
-  seed?: number | '' | null
-  negative?: string | null
-  width: number
-  height: number
+  strength: SamplingField<number>
+  /** sample steps; `null` default ⇒ no `--steps` flag (sd-cli default 20) */
+  steps: SamplingField<number | null>
+  /** high-noise expert steps — `--high-noise-steps` (MoE pairs only) */
+  high_steps: SamplingField<number | null>
+  cfg: SamplingField<number>
+  /** high-noise expert CFG — `--high-noise-cfg-scale` (MoE pairs only) */
+  high_cfg: SamplingField<number | null>
+  sampler: SamplingField<string>
+  /** high-noise expert sampler — `--high-noise-sampling-method` (MoE pairs only) */
+  high_sampler: SamplingField<string | null>
+  scheduler: SamplingField<string | null>
+  width: SamplingField<number>
+  height: SamplingField<number>
+  negative: SamplingField<string | null>
+  /** flow-model shift; `null` default ⇒ no `--flow-shift` flag (sd-cli auto) */
+  flow_shift: SamplingField<number | null>
+  /** inpainting / outpainting support (composer Inpaint/Outpaint buttons) */
+  allow_inpainting: { show: boolean }
+  /** paint-tool support (composer Paint button) */
+  allow_painting: { show: boolean }
+  /** previous-image chaining (composer 'Use previous image' checkbox):
+   *  `show` gates the checkbox + its As input/As Reference dropdown and
+   *  `default` is the checkbox's initial checked state */
+  use_previous_image: SamplingField<boolean>
+  /** LTX spatial-latent upscale master switch — `--hires` (hires fix) */
+  upscale: SamplingField<boolean>
+  /** highres-fix second-pass steps — `--hires-steps`; `null` ⇒ omit the flag
+   *  (sd-cli default 0 = reuse `--steps`) */
+  upscaler_steps: SamplingField<number | null>
 }
 
 export type SamplingConfig = Record<string, SamplingDefaults>
+
+/**
+ * Flat scalar override shape — what `settings.json` (per-type sampling
+ * overrides) and the session file (`session.inputs.sampling`) store. Values
+ * merge into the matching descriptor's `default`; absent keys keep the
+ * sampling.json config. The same merge lives in main's `effectiveSampling()`
+ * and the renderer's `samplingFor()` — both must stay descriptor-aware.
+ */
+export interface SamplingOverrideValues {
+  steps?: number | null
+  high_steps?: number | null
+  /** null ⇒ the whitelist DELETES the key = inherit (a null descriptor
+   *  default ⇒ the flag is omitted at spawn) */
+  cfg?: number | null
+  high_cfg?: number | null
+  strength?: number | null
+  sampler?: string | null
+  high_sampler?: string | null
+  scheduler?: string
+  /** finite number (incl 0) ⇒ `--flow-shift`; ''/null ⇒ no flag */
+  flow_shift?: number | '' | null
+  frames?: number | null
+  frame_rate?: number | null
+  /** per-type negative prompt override ('' = inherit) */
+  negative?: string | null
+  width?: number
+  height?: number
+  /** finite integer in [0, SEED_MAX] ⇒ fixed `--seed`; null/absent ⇒ random per run */
+  seed?: number | '' | null
+  /** LTX spatial-latent upscale master switch (checkbox; blank ⇒ false) */
+  upscale?: boolean
+  /** highres-fix second-pass steps; finite ≥ 0 stores as-is (0 ≡ reuse `--steps`);
+   *  null/'' ⇒ `--hires-steps` omitted */
+  upscaler_steps?: number | null
+}
+
+/** Merge flat scalar overrides into a descriptor record (shared semantics). */
+export function applySamplingOverrides(
+  base: SamplingDefaults,
+  overrides: SamplingOverrideValues | null | undefined
+): SamplingDefaults {
+  const out: SamplingDefaults = { ...base }
+  const o = overrides ?? {}
+  const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
+  if (o.steps !== undefined) out.steps = { ...out.steps, default: o.steps }
+  if (o.high_steps !== undefined) out.high_steps = { ...out.high_steps, default: o.high_steps }
+  if (num(o.cfg) !== undefined) out.cfg = { ...out.cfg, default: o.cfg as number }
+  if (o.high_cfg !== undefined) out.high_cfg = { ...out.high_cfg, default: o.high_cfg }
+  if (num(o.strength) !== undefined) out.strength = { ...out.strength, default: o.strength as number }
+  if (typeof o.sampler === 'string' && o.sampler.trim()) out.sampler = { ...out.sampler, default: o.sampler }
+  if (o.high_sampler !== undefined) out.high_sampler = { ...out.high_sampler, default: o.high_sampler }
+  if (typeof o.scheduler === 'string' && o.scheduler.trim()) out.scheduler = { ...out.scheduler, default: o.scheduler }
+  if (o.flow_shift !== undefined) out.flow_shift = { ...out.flow_shift, default: o.flow_shift as number | null }
+  if (o.frames !== undefined) out.frames = { ...out.frames, default: o.frames }
+  if (o.frame_rate !== undefined) out.frame_rate = { ...out.frame_rate, default: o.frame_rate }
+  if (typeof o.negative === 'string') out.negative = { ...out.negative, default: o.negative }
+  else if (o.negative === null) out.negative = { ...out.negative, default: null }
+  if (num(o.width) !== undefined) out.width = { ...out.width, default: o.width as number }
+  if (num(o.height) !== undefined) out.height = { ...out.height, default: o.height as number }
+  // upscale: checkbox semantics — the payload crosses IPC as untyped JSON, so
+  // read the raw value as unknown before comparing. A PRESENT value always
+  // normalizes to a definite boolean ('checked'/'true' → true, everything
+  // else → false); absent ⇒ no override, descriptor default stands.
+  const rawUpscale = (o as { upscale?: unknown }).upscale
+  if (rawUpscale !== undefined) {
+    out.upscale = {
+      ...out.upscale,
+      default: rawUpscale === true || rawUpscale === 'checked' || rawUpscale === 'true'
+    }
+  }
+  // upscaler_steps: a finite number ≥ 0 stores as-is (0 ≡ "reuse --steps",
+  // same effect as omitting the flag); null / '' (empty string ≡ null for
+  // safety) / any other non-number ⇒ null (⇒ --hires-steps omitted); absent
+  // ⇒ no override.
+  const rawUpscalerSteps = (o as { upscaler_steps?: unknown }).upscaler_steps
+  if (rawUpscalerSteps !== undefined) {
+    out.upscaler_steps = {
+      ...out.upscaler_steps,
+      default:
+        typeof rawUpscalerSteps === 'number' && Number.isFinite(rawUpscalerSteps) && rawUpscalerSteps >= 0
+          ? rawUpscalerSteps
+          : null
+    }
+  }
+  return out
+}
 
 /** Canonical list of sd-cli sampling methods (from `--sampling-method` help). */
 export const SAMPLER_METHODS = [
@@ -334,6 +534,12 @@ export interface ResolutionEntry {
   name: string
   width: number
   height: number
+  /** authoring metadata — display label from resolution.json (`name` mirrors it at runtime) */
+  label?: string
+  /** authoring metadata — aspect string such as "16:9" */
+  aspect?: string
+  /** authoring metadata — "landscape" | "portrait" | "none" (square) */
+  orientation?: 'landscape' | 'portrait' | 'none'
 }
 
 export type ResolutionConfig = Record<string, ResolutionEntry[]>
@@ -351,8 +557,45 @@ export type RuntimeKey =
   | 'linux_vulkan'
   | 'linux_cpu'
 
-/** version (e.g. "987") -> runtime key -> download url */
-export type RuntimeConfig = Record<string, Partial<Record<RuntimeKey, string>>>
+/** version (e.g. "1053") -> runtime key -> download url */
+export type RuntimeReleases = Record<string, Partial<Record<RuntimeKey, string>>>
+
+/**
+ * Shape of `configurations/runtime.json` (and the `data/runtime.json`
+ * override): an `updatedOn` marker plus the `releases` map of version ->
+ * runtime key -> download url. Legacy flat overrides (version keys at the
+ * top level, written before the `releases` wrapper) are accepted by
+ * `validateRuntimeConfig` and wrapped into this shape by
+ * `normalizeRuntimeConfig` at load time.
+ */
+export interface RuntimeConfig {
+  /** "last updated" marker carried by the file (and the override) as-is */
+  updatedOn: string
+  /** version (e.g. "1053") -> runtime key -> download url */
+  releases: RuntimeReleases
+}
+
+// ---------- configurations/ffmpeg.json ----------
+/**
+ * One per-platform ffmpeg download entry. `archive` selects the extraction
+ * strategy: `zip` (Windows/macOS) or `tar.xz` (Linux — Node has no built-in
+ * xz support, so extraction shells out to `tar -xf`).
+ */
+export interface FfmpegPlatformEntry {
+  /** static ffmpeg build URL; empty string = no build for this key */
+  url: string
+  archive: 'zip' | 'tar.xz'
+}
+
+/**
+ * Shape of `configurations/ffmpeg.json`: per-platform download URLs for
+ * static ffmpeg builds. Key resolution order is `<platform>_<arch>` first
+ * (e.g. `macos_arm64`), then the generic platform key (`macos`).
+ */
+export interface FfmpegConfig {
+  updatedOn: string
+  platforms: Record<string, FfmpegPlatformEntry>
+}
 
 /** Result of `runtime:checkUpdates` (Settings → Runtime → Check). */
 export interface RuntimeCheckResult {
@@ -427,6 +670,19 @@ export interface CatalogEntry {
   /** for an encoder bundle file, the CLI flag name it is passed as (e.g. 'clip_g', 't5xxl') */
   useAs?: string
   /**
+   * MoE group id (diffusion `catalog[]` entries only) — shared by every file
+   * of one quant (the low-noise primary + its high-noise companion). The
+   * picker groups rows by it and gen:start derives the high-noise companion
+   * from it.
+   */
+  groupId?: string
+  /**
+   * Resolved `requires` from-family names (diffusion entries only) — the
+   * family each companion model resolves from instead of the entry's own
+   * diffusion_type. Absent keys resolve from the entry's diffusionType.
+   */
+  requires?: { vae?: string; encoder?: string; audio_encoder?: string }
+  /**
    * Model source provenance + download-time routing key (e.g. 'huggingface') —
    * the post-override resolved source NAME stamped by buildCatalog on every
    * source-dispatched entry. NOT the same as `HubCatalog.source` (the app
@@ -455,10 +711,16 @@ export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
   text: string
-  /** generated image (assistant) */
+  /** generated image or video (assistant; Motion-JPEG .avi for vid_gen runs) */
   image?: ChatImage
   /** reference image paths (user) */
   refs?: string[]
+  /** driving audio path (S2V) — display-only */
+  audioPath?: string
+  /** control-frames directory path (VACE) — display-only */
+  controlVideoPath?: string
+  /** end image path (FLF2V) — display-only */
+  endImagePath?: string
   status?: 'ok' | 'stopped' | 'error'
   /** legacy only — raw error text is no longer persisted or rendered; errors live in the log + toasts */
   error?: string
@@ -466,13 +728,17 @@ export interface ChatMessage {
 }
 
 /** Composer inputs a session remembers. Optional — legacy session files lack it. */
-/** The sampling rows a session may override (everything from the Sampling
- *  settings except the Negative textarea, which has its own field, and the
- *  width/height rows, which are no longer overridable per session — the
- *  resolution selected in the chat panel always wins). */
-export type SessionSamplingOverride = Partial<
-  Pick<SamplingDefaults, 'steps' | 'cfg' | 'strength' | 'sampler' | 'scheduler' | 'flow_shift' | 'seed'>
->
+/** The sampling values a session may override (flat scalars merged into the
+ *  descriptor defaults — see `SamplingOverrideValues`; the width/height rows
+ *  are not overridable per session — the resolution selected in the chat
+ *  panel always wins). */
+/**
+ * Per-session sampling override — the flat scalar values a session may
+ * override (see `SamplingOverrideValues`). Main merges them into the
+ * descriptor defaults at gen:start; the whitelist in sessions.setInputs is
+ * strict (an invalid value deletes the key).
+ */
+export type SessionSamplingOverride = SamplingOverrideValues
 
 /**
  * Per-session LoRA loading mode — the value passed to sd-cli's
@@ -493,6 +759,15 @@ export interface SessionInputs {
   model?: string
   /** diffusion_type of the saved model — narrows catalog re-resolution */
   diffusionType?: string
+  /**
+   * provider key of the saved diffusion variant — pins the variant across
+   * session reloads (with duplicate basenames within a family — e.g. two
+   * providers shipping the same quant file name — the name+diffusionType
+   * re-resolution could otherwise silently switch variants). Absent for
+   * legacy sessions (saved before the field existed) — restore falls back to
+   * the first name match.
+   */
+  modelProvider?: string
   /** saved resolution entry */
   resolution?: ResolutionEntry
   /** per-session negative prompt; empty string clears */
@@ -525,15 +800,21 @@ export interface Settings {
   defaultVision?: Record<string, string>
   /** diffusionType -> tokenizer file name (default tokenizer) */
   defaultTokenizer?: Record<string, string>
-  /** diffusionType -> sampling overrides */
-  sampling?: Record<string, Partial<SamplingDefaults>>
+  /** diffusionType -> audio encoder file name (default audio encoder) */
+  defaultAudioEncoder?: Record<string, string>
+  /** diffusionType -> audio VAE file name (default audio VAE) */
+  defaultAudioVae?: Record<string, string>
+  /** diffusionType -> latent upscaler file name (default latent upscaler) */
+  defaultLatentUpscaler?: Record<string, string>
+  /** diffusionType -> sampling overrides (flat scalars merged into descriptor defaults) */
+  sampling?: Record<string, SamplingOverrideValues>
   /** global performance / inference flags (applied to every generation) */
   performance?: PerformanceSettings
   /** renderer theme key (see ThemeKey); applied via documentElement data-theme */
   theme?: ThemeKey
 }
 
-export type FlashAttentionMode = 'on' | 'off' | 'auto'
+export type FlashAttentionMode = 'on' | 'off' | 'auto' | 'custom'
 export type ConvDirectMode = 'on' | 'off' | 'auto'
 export type VaeTileSize = 'off' | '256x256' | '512x512'
 export type OffloadMode = 'off' | 'on'
@@ -547,6 +828,8 @@ export interface PerformanceSettings {
    */
   enabled: boolean
   flashAttention: FlashAttentionMode
+  /** free-form value used when flashAttention === 'custom' */
+  flashAttentionCustom: string
   convDirect: ConvDirectMode
   vaeTiling: {
     /** tile size; `off` disables VAE tiling entirely */
@@ -578,6 +861,9 @@ export interface GenerationRequest {
   model: string
   /** diffusion_type of the selected model (from hub.json) */
   diffusionType: string
+  /** provider key of the selected diffusion variant (hub.json) — disambiguates
+   *  a basename collision across provider subdirectories within one family */
+  modelProvider?: string
   /** vae file name (from models dir) */
   vae?: string
   /** vae provider key (hub.json) — disambiguates a basename collision across
@@ -594,12 +880,48 @@ export interface GenerationRequest {
   vision?: string
   /** tokenizer file name (from models dir) */
   tokenizer?: string
+  /** audio encoder file name (from models dir; Wan2.2 S2V) */
+  audioEncoder?: string
+  /** audio VAE file name (from models dir; LTX 2.5 audio track) */
+  audioVae?: string
+  /** audio VAE provider key (hub.json) — disambiguates a basename collision
+   *  across provider subdirectories */
+  audioVaeProvider?: string
+  /** latent upscaler file name (from models dir; LTX 2.5 hires fix) */
+  latentUpscaler?: string
+  /** latent upscaler provider key (hub.json) — disambiguates a basename collision
+   *  across provider subdirectories */
+  latentUpscalerProvider?: string
   resolution: { width: number; height: number }
   /** absolute paths of user reference images (--ref-image channel) */
   referencePaths: string[]
   /** absolute paths of user input images (--init-img channel); distinct
    *  from referencePaths (--ref-image channel) */
   inputImagePaths: string[]
+  /** driving audio path (--audio; Wan2.2 S2V) */
+  audioPath?: string
+  /** control-frames directory path (--control-video; VACE) */
+  controlVideoPath?: string
+  /** end image path (--end-img; FLF2V) */
+  endImagePath?: string
+  /** generation mode: 'vid_gen' ⇒ `-M vid_gen` + the video flags; absent ⇒ img_gen */
+  genMode?: 'vid_gen'
+  /** video frame count (--video-frames); null/absent ⇒ no flag (sd-cli default 1) */
+  frames?: number | null
+  /** video frame rate (--fps); null/absent ⇒ no flag (sd-cli default 24) */
+  frameRate?: number | null
+  /** high-noise expert steps (--high-noise-steps); emitted only when the high-noise model resolved */
+  highSteps?: number | null
+  /** high-noise expert CFG (--high-noise-cfg-scale); emitted only when the high-noise model resolved */
+  highCfg?: number | null
+  /** high-noise expert sampler (--high-noise-sampling-method); emitted only when the high-noise model resolved */
+  highSampler?: string | null
+  /** LTX spatial-latent upscale master switch (--hires); resolved by main from
+   *  the merged sampling descriptor — the renderer sends nothing */
+  upscale?: boolean
+  /** highres-fix second-pass steps (--hires-steps); null/absent ⇒ omit the
+   *  flag (sd-cli default 0 = reuse --steps) */
+  upscalerSteps?: number | null
   usePrevious: boolean
   /** how the previous image is chained this request: 'input' or 'reference'.
    *  Chosen by the user in the composer dropdown; main re-validates. */
@@ -624,9 +946,13 @@ export interface GenerationRequest {
    *  (the original first ref is replaced). Decided at paint-save time from
    *  the background's source; anything else is treated as absent by main. */
   paintTarget?: 'init' | 'reference'
-  steps: number
-  cfg: number
-  sampler: string
+  /** sample steps; null ⇒ no `--steps` flag (sd-cli default 20 applies) */
+  steps: number | null
+  /** guidance scale; null ⇒ no `--cfg-scale` flag (sd-cli default 7.0 applies) */
+  cfg: number | null
+  /** sampling method; null/'' ⇒ no `--sampling-method` flag (sd-cli default:
+   *  euler for Flux/SD3/Wan, euler_a otherwise) */
+  sampler: string | null
   /** sigma scheduler; omitted or 'model-specific' ⇒ no --scheduler flag */
   scheduler?: string
   /** flow-model shift; RAW merged value (finite number incl 0, '', null, or
@@ -640,8 +966,9 @@ export interface GenerationRequest {
   seed?: number | '' | null
   /** negative prompt for this generation; empty/omitted ⇒ no --negative-prompt flag */
   negativePrompt?: string
-  /** denoise strength for img2img runs (sampling.json `strength`) */
-  strength: number
+  /** denoise strength for img2img runs (sampling.json `strength`); null ⇒
+   *  no `--strength` flag (sd-cli default 0.75 applies) */
+  strength: number | null
   /** global performance flags applied to this generation */
   performance?: Partial<PerformanceSettings>
 }
@@ -667,7 +994,12 @@ export interface MaskSaveResult {
 export interface GenProgress {
   sessionId: string
   messageId: string
-  status: 'running' | 'done' | 'stopped' | 'error'
+  /**
+   * `converting` — the vid_gen `.avi` output is being re-encoded to `.mp4`
+   * after sd-cli exited (post-processing, not sampling). The renderer keeps
+   * the busy indicator up and shows a "Converting…" hint; no step update.
+   */
+  status: 'running' | 'done' | 'stopped' | 'error' | 'converting'
   step?: number
   totalSteps?: number
   image?: ChatImage
@@ -701,6 +1033,18 @@ export interface ModelFile {
   name: string
   size: number
   modifiedAt: number
+  /**
+   * provider key of the directory the file was found in (models.list()
+   * classification; e.g. 'unsloth') — undefined for flat / family-root-stray
+   * placements. Lets the renderer delete / label a row by its exact location.
+   */
+  provider?: string
+  /**
+   * diffusionType (family) of the directory the file was found in
+   * (models.list() classification; e.g. 'flux_1') — undefined for legacy
+   * per-provider and flat placements.
+   */
+  diffusionType?: string
 }
 
 export interface DownloadProgress {
@@ -764,7 +1108,7 @@ export interface DownloadsListResult {
 }
 
 // ---------- init pipeline ----------
-export type InitStage = 'platform' | 'runtime' | 'catalog' | 'done'
+export type InitStage = 'platform' | 'runtime' | 'ffmpeg' | 'catalog' | 'done'
 
 export interface InitStatus {
   stage: InitStage

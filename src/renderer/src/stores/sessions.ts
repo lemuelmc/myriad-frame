@@ -22,7 +22,13 @@ export const useSessionsStore = defineStore('sessions', {
       if (!s) return undefined
       for (let i = s.messages.length - 1; i >= 0; i--) {
         const m = s.messages[i]
-        if (m.role === 'assistant' && m.image) return m.image.path
+        if (m.role === 'assistant' && m.image) {
+          // Video outputs (Motion-JPEG .avi from vid_gen) cannot serve as a
+          // chained init/reference image — sd-cli decodes neither — so the
+          // chain stays empty rather than feeding a video path downstream
+          // (the getter also feeds the inpaint/outpaint/paint backgrounds).
+          return /\.(mp4|avi|webm|mov)$/i.test(m.image.path) ? undefined : m.image.path
+        }
       }
       return undefined
     }

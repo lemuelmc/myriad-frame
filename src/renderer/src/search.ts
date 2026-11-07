@@ -53,6 +53,18 @@ export function providerLabel(key: string | undefined, providers: HubProvider[])
  * their human-readable labels for matching (a plain module must not reach into
  * the Pinia store, so callers thread it through explicitly).
  */
+/**
+ * The '/'-only basename of a catalog name — a JS split (no node:path in the
+ * renderer), matching the main process's basename-normalized storage
+ * (model-collision-hardening plan §3.1): a slashed catalog name
+ * (`sub/dir/file.gguf`) compares against its on-disk basename `file.gguf`.
+ * Used by every installed-state check so installed tags survive the
+ * normalization.
+ */
+export function baseName(name: string): string {
+  return name.split('/').pop() ?? name
+}
+
 export function matchesSearch(e: CatalogEntry, q: string, providers: HubProvider[]): boolean {
   const needle = normalizeForSearch(q)
   const haystacks = [e.name, e.label, e.quant, providerLabel(e.provider, providers), e.description, e.diffusionType]

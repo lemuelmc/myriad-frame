@@ -1,18 +1,39 @@
 {
-  "updatedOn": "2026-11-01 00:00:00",
+  "updatedOn": "2026-11-07 00:00:00",
+  "diffusion_inference_types": {
+    "image": {"text_input": true, "accepts": ["*.jpg, *.png"]},
+    "video": {"text_input": true, "accepts": ["*.jpg, *.png"]},
+    "text_to_image": {"text_input": true, "accepts": ["*.jpg, *.png"]},
+    "image_unified": {"text_input": true, "accepts": ["*.jpg, *.png"]},
+    "image_edit": {"text_input": true, "accepts": ["*.jpg, *.png"]},
+    "text_to_video": {"text_input": true, "accepts": null},
+    "image_to_video": {"text_input": true, "accepts": ["*.jpg, *.png"]},
+    "video_to_video": {"text_input": true, "accepts": ["*.mp4, *.mov, *.avi"]},
+    "video_all_in_one": {"text_input": true, "accepts": ["*.mp4, *.mov, *.avi"]},
+    "text_image_to_video": {"text_input": true, "accepts": ["*.mp4, *.mov, *.avi"]},
+    "audio_to_video": {"text_input": true, "accepts": ["*.jpg, *.png, *.mp3, *.ogg, *.wav, *.aiff, *.flac"]}
+  },
   "diffusion_models": [
-    { "name": "qwen_image_2_1", "label": "Qwen Image 2.1", "type": "image", "mode": "image_unified" },
-    { "name": "z_image", "label": "Z-Image Turbo", "type": "image", "mode": "image" },
-    { "name": "sd3_5", "label": "SD3.5", "type": "image", "mode": "image" },
-    { "name": "krea2", "label": "Krea 2", "type": "image", "mode": "image" },
-    { "name": "sdxl", "label": "SDXL-1.0", "type": "image", "mode": "image"},
-    { "name": "anima", "label": "Anima", "type": "image", "mode": "image"},
-    { "name": "qwen_image_edit", "label": "Qwen Image Edit", "type": "image", "mode": "image_edit" },
-    { "name": "flux_1", "label": "Flux 1", "type": "image", "mode": "image"},
-    { "name": "flux_2", "label": "Flux 2", "type": "image", "mode": "image"},
-    { "name": "flux_3", "label": "Flux 3", "type": "image", "mode": "image"},
-    { "name": "flux_1_kontext", "label": "Flux 1 Kontext", "type": "image", "mode": "image_edit"},
-    { "name": "moss_image", "label": "Moss Image", "type": "image", "mode": "image"}
+    { "name": "qwen_image_2_1", "label": "Qwen Image 2.1", "type": "image_unified" },
+    { "name": "z_image", "label": "Z-Image Turbo", "type": "text_to_image" },
+    { "name": "sd3_5", "label": "SD3.5", "type": "text_to_image" },
+    { "name": "krea2", "label": "Krea 2", "type": "text_to_image" },
+    { "name": "sdxl", "label": "SDXL-1.0", "type": "text_to_image"},
+    { "name": "anima", "label": "Anima", "type": "text_to_image"},
+    { "name": "qwen_image_edit", "label": "Qwen Image Edit", "type": "image_edit" },
+    { "name": "flux_1", "label": "Flux 1", "type": "text_to_image"},
+    { "name": "flux_2", "label": "Flux 2", "type": "text_to_image"},
+    { "name": "flux_3", "label": "Flux 3", "type": "text_to_image"},
+    { "name": "flux_1_kontext", "label": "Flux 1 Kontext", "type": "image_edit"},
+    { "name": "moss_image", "label": "Moss Image", "type": "text_to_image"},
+    { "name": "wan2_1", "label": "WAN2.1", "type": "video" },
+    { "name": "wan2_2", "label": "WAN2.2", "type": "video" },
+    { "name": "wan2_2_ti2v", "label": "WAN2.2", "type": "image_to_video" },
+    { "name": "wan2_2_t2v", "label": "WAN2.2", "type": "text_to_video" },
+    { "name": "wan2_2_i2v", "label": "WAN2.2", "type": "image_to_video" },
+    { "name": "wan2_2_vace", "label": "WAN2.2", "type": "video_all_in_one" },
+    { "name": "wan2_2_s2v", "label": "WAN2.2", "type": "audio_to_video" },
+    { "name": "ltx_2_5", "label": "LTX 2.5", "type": "text_image_to_video", "runtime": "<= 1025" }
   ],
   "providers": [
     {"name": "unsloth", "label": "Unsloth"},
@@ -49,7 +70,9 @@
     {"name": "leejet", "label": "leejet"},
     {"name": "comfyanonymous", "label": "comfyanonymous"},
     {"name": "quant_stack", "label": "QuantStack"},
-    {"name": "open_moss_team", "label": "OpenMOSS-Team"}
+    {"name": "open_moss_team", "label": "OpenMOSS-Team"},
+    {"name": "vantagewithai", "label": "Vantage with AI"},
+    {"name": "lightricks", "label": "Lightricks"}
   ],
   "repo": {
     "vae": {
@@ -112,6 +135,28 @@
         "provider": "comfy_org",
         "url": "https://huggingface.co/Comfy-Org/MOSS-Image",
         "default": "vae/flux2-vae.safetensors"
+      },
+      "wan2_1": {
+        "provider": "comfy_org",
+        "url": "https://huggingface.co/Comfy-Org/Wan-2.1",
+        "default": "split_files/vae/wan_2.1_vae.safetensors"
+      },
+      "wan2_2": {
+        "provider": "comfy_org",
+        "url": "https://huggingface.co/Comfy-Org/Wan-2.2",
+        "default": "split_files/vae/wan2.2_vae.safetensors"
+      },
+      "ltx_2_5": {
+        "provider": "unsloth",
+        "url": "https://huggingface.co/unsloth/LTX-2.5-GGUF",
+        "default": "vae/ltx-2.5-video-vae-conv-bf16.safetensors"
+      }
+    },
+    "audio_vae": {
+      "ltx_2_5": {
+        "provider": "unsloth",
+        "url": "https://huggingface.co/unsloth/LTX-2.5-GGUF",
+        "default": "vae/ltx-2.5-audio-vae-bf16.safetensors"
       }
     },
     "encoder": {
@@ -182,13 +227,31 @@
       "flux_3": {
         "provider": "qwen",
         "label": "Qwen3-VL-4B-Instruct-GGUF",
-        "url": "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/tree/main",
+        "url": "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF",
         "default": "Qwen3VL-4B-Instruct-Q4_K_M.gguf"
       },
       "moss_image": {
         "provider": "unsloth",
         "url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF",
         "default": "Qwen3.5-9B-Q4_K_M.gguf"
+      },
+      "wan2_1": {
+        "provider": "city96",
+        "url": "https://huggingface.co/city96/umt5-xxl-encoder-gguf",
+        "default": "umt5-xxl-encoder-Q8_0.gguf",
+        "use_as": "t5xxl"
+      },
+      "ltx_2_5": {
+        "provider": "unsloth",
+        "url": "https://huggingface.co/unsloth/LTX-2.5-GGUF",
+        "default": "text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors"
+      }
+    },
+    "audio_encoder": {
+      "wan2_2": {
+        "provider": "comfy_org",
+        "url": "https://huggingface.co/Comfy-Org/Wan-2.2",
+        "default": "split_files/audio_encoders/wav2vec2_large_english_fp16.safetensors"
       }
     },
     "tokenizer": {
@@ -204,6 +267,13 @@
         "label": "Qwen3 VL 8B Instruct",
         "url": "https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF",
         "default": "mmproj-Qwen3VL-8B-Instruct-F16.gguf"
+      }
+    },
+    "latent_upscaler": {
+      "ltx_2_5": {
+        "provider": "unsloth",
+        "url": "https://huggingface.co/unsloth/LTX-2.5-GGUF",
+        "default": "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
       }
     },
     "lora": [
@@ -470,7 +540,7 @@
         "name": "unsloth_qwen_image_2.1",
         "label": "Unsloth/Qwen Image 2.1",
         "description": "Official Unsloth quantization of Qwen Image 2.1",
-        "inference_type": "image",
+        "inference_type": "image_unified",
         "quant_type": "gguf",
         "diffusion_type": "qwen_image_2_1",
         "url": "https://huggingface.co/unsloth/Qwen-Image-2.1-GGUF"
@@ -480,7 +550,7 @@
         "name": "abenzerps_qwen_image_2.1",
         "label": "Abenzerps/Qwen Image 2.1",
         "description": "Community quantization with uncensored finetune",
-        "inference_type": "image",
+        "inference_type": "image_unified",
         "quant_type": "gguf",
         "diffusion_type": "qwen_image_2_1",
         "url": "https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-Quantized"
@@ -490,7 +560,7 @@
         "name": "unsloth_z_image_turbo",
         "label": "Unsloth/Z-Image Turbo",
         "description": "Distilled Z-Image Turbo for fast generation",
-        "inference_type": "image",
+        "inference_type": "text_to_image",
         "quant_type": "gguf",
         "diffusion_type": "z_image",
         "url": "https://huggingface.co/leejet/Z-Image-Turbo-GGUF"
@@ -500,7 +570,7 @@
         "name": "city96_sd3_5_medium",
         "label": "City 96/SD3.5 Midium",
         "description": "Distilled SD3.5 Midum",
-        "inference_type": "image",
+        "inference_type": "text_to_image",
         "quant_type": "gguf",
         "diffusion_type": "sd3_5",
         "url": "https://huggingface.co/city96/stable-diffusion-3.5-medium-gguf"
@@ -510,7 +580,7 @@
         "name": "city96_sd3_5_large",
         "label": "City 96/SD3.5 Large",
         "description": "Distilled SD3.5 Large",
-        "inference_type": "image",
+        "inference_type": "text_to_image",
         "quant_type": "gguf",
         "diffusion_type": "sd3_5",
         "url": "https://huggingface.co/city96/stable-diffusion-3.5-large-gguf"
@@ -520,7 +590,7 @@
         "name": "realrebelai_krea2_turbo",
         "label": "Rebel AI/Krea 2 Turbo",
         "description": "Distilled Krea 2 for fast generation",
-        "inference_type": "image",
+        "inference_type": "text_to_image",
         "quant_type": "gguf",
         "diffusion_type": "krea2",
         "url": "https://huggingface.co/realrebelai/KREA-2_GGUFs",
@@ -531,7 +601,7 @@
         "name": "stabilityai_sdxl_base",
         "label": "Stability AI/SDXL-1.0 Base",
         "description": "SDXL-1.0 Base model from Stability AI",
-        "inference_type": "image",
+        "inference_type": "text_to_image",
         "quant_type": "safetensor",
         "diffusion_type": "sdxl",
         "url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0",
@@ -542,7 +612,7 @@
         "name": "circlestone_labs_anima",
         "label": "CircleStone Labs/Anima",
         "description": "2B-parameter text-to-image model by CircleStone Labs and Comfy Org. Anime/Illustration.",
-        "inference_type": "image",
+        "inference_type": "text_to_image",
         "quant_type": "safetensor",
         "diffusion_type": "anima",
         "url": "https://huggingface.co/circlestone-labs/Anima",
@@ -553,7 +623,7 @@
         "name": "run_diffusion_juggernaut_xl_v9",
         "label": "RunDiffusion/Juggernaut-XL-V9",
         "description": "SDXL finetuned for: Photorealism",
-        "inference_type": "image",
+        "inference_type": "text_to_image",
         "quant_type": "safetensor",
         "diffusion_type": "sdxl",
         "url": "https://huggingface.co/RunDiffusion/Juggernaut-XL-v9",
@@ -564,7 +634,7 @@
         "name": "run_diffusion_juggernaut_xl_v11",
         "label": "RunDiffusion/Juggernaut-XL-V11",
         "description": "SDXL finetuned for: Photorealism, improved anatomy and prompt adherence.",
-        "inference_type": "image",
+        "inference_type": "text_to_image",
         "quant_type": "safetensor",
         "diffusion_type": "sdxl",
         "url": "https://huggingface.co/RunDiffusion/Juggernaut-XI-v11",
@@ -575,7 +645,7 @@
         "name": "unsloth_qwen_image_edit_2511",
         "label": "Unsloth/Qwen Image Edit 2511",
         "description": "Image editing model by Qwen",
-        "inference_type": "image",
+        "inference_type": "image_edit",
         "quant_type": "gguf",
         "diffusion_type": "qwen_image_edit",
         "url": "https://huggingface.co/unsloth/Qwen-Image-Edit-2511-GGUF",
@@ -586,7 +656,7 @@
         "name": "euge_anime_illust_diffusion_xl",
         "label": "Euge_/Anime Illust Diffusion XL",
         "description": "Stylized anime illustrations.",
-        "inference_type": "image",
+        "inference_type": "text_to_image",
         "quant_type": "safetensor",
         "diffusion_type": "sdxl",
         "url": "https://civitai.com/models/124189/anime-illust-diffusion-xl",
@@ -597,7 +667,7 @@
         "name": "lykon_aam_xl_anime_mix",
         "label": "lykon_/AAM XL Anime Mix",
         "description": "Anime Screencap Style Model",
-        "inference_type": "image",
+        "inference_type": "text_to_image",
         "quant_type": "safetensor",
         "diffusion_type": "sdxl",
         "url": "https://civitai.com/models/269232/aam-xl-anime-mix",
@@ -608,7 +678,7 @@
         "name": "jrd_2212_realismengine_reprise_40_sdxl",
         "label": "JRD_2212/(SDXL) Realism_Engine Reprise 4.0",
         "description": "Photorealism, clean, coherent and natural.",
-        "inference_type": "image",
+        "inference_type": "text_to_image",
         "quant_type": "safetensor",
         "diffusion_type": "sdxl",
         "url": "https://civitai.com/models/2625788/realismengine-reprise-40",
@@ -620,7 +690,7 @@
         "name": "jrd_2212_realismengine_reprise_40_z_image",
         "label": "JRD_2212/(Z-Image) Realism_Engine Reprise 4.0",
         "description": "Photorealism, clean, coherent and natural.",
-        "inference_type": "image",
+        "inference_type": "text_to_image",
         "quant_type": "safetensor",
         "diffusion_type": "z_image",
         "url": "https://civitai.com/models/2625788/realismengine-reprise-40",
@@ -632,7 +702,7 @@
         "name": "kranos94_pikon_realism",
         "label": "Kranos94/Pikon-Realism",
         "description": "Photorealism at CFG 1",
-        "inference_type": "image",
+        "inference_type": "text_to_image",
         "quant_type": "safetensor",
         "diffusion_type": "sdxl",
         "url": "https://civitai.com/models/1855140/pikon-realism",
@@ -643,7 +713,7 @@
         "name": "diffusers_sdxl_inpainting_0_1",
         "label": "SD-XL Inpainting 0.1",
         "description": "SD-XL Inpainting 0.1",
-        "inference_type": "image",
+        "inference_type": "image_to_image",
         "quant_type": "safetensor",
         "diffusion_type": "sdxl",
         "url": "https://huggingface.co/diffusers/stable-diffusion-xl-1.0-inpainting-0.1",
@@ -654,7 +724,7 @@
         "name": "tigerart_haveallsdxl_inpaint_v1_0",
         "label": "HaveallSDXL Inpaint",
         "description": "Inpaint version of HaveallSDXL v1.0 model by Haveall",
-        "inference_type": "image",
+        "inference_type": "image_to_image",
         "quant_type": "safetensor",
         "diffusion_type": "sdxl",
         "url": "https://civitai.com/models/441879/haveallsdxl-inpaint",
@@ -666,7 +736,7 @@
         "name": "maxed_out_myper3d_inapainting_sdxl_pony",
         "label": "Hyper3d Inpainting (SDXL | Pony)",
         "description": "This is a merge of Hyper3D specifically for inpainting",
-        "inference_type": "image",
+        "inference_type": "image_to_image",
         "quant_type": "safetensor",
         "diffusion_type": "sdxl",
         "url": "https://civitai.com/models/1691927/hyper3d-inpainting-sdxl-or-pony",
@@ -678,7 +748,7 @@
         "name": "were_catf_animagine_xl_inpainting",
         "label": "AnimagineXL inpainting",
         "description": "This is an inpainting model of the excellent Animagine XL by @CagliostroLab",
-        "inference_type": "image",
+        "inference_type": "image_to_image",
         "quant_type": "safetensor",
         "diffusion_type": "sdxl",
         "url": "https://civitai.com/models/430948/animaginexl-inpainting",
@@ -690,7 +760,7 @@
         "name": "cagliostro_lab_animagine_xl",
         "label": "Animagine XL",
         "description": "This open-source, anime-themed text-to-image model",
-        "inference_type": "image",
+        "inference_type": "text_to_image",
         "quant_type": "safetensor",
         "diffusion_type": "sdxl",
         "url": "https://civitai.com/models/260267/animagine-xl-v31",
@@ -702,7 +772,7 @@
         "name": "were_catf_juggernaut_xl_inpainting",
         "label": "Juggernaut XL inpainting",
         "description": "This is an inpainting model of the excellent Juggernaut XL ",
-        "inference_type": "image",
+        "inference_type": "image_to_image",
         "quant_type": "safetensor",
         "diffusion_type": "sdxl",
         "url": "https://civitai.com/models/403361/juggernaut-xl-inpainting",
@@ -714,7 +784,7 @@
         "name": "leejet_flux_1_dev_gguf",
         "label": "leejet/Flux 1 Dev GGUF",
         "description": "Flux GGUF quantized files",
-        "inference_type": "image",
+        "inference_type": "text_to_image",
         "quant_type": "gguf",
         "diffusion_type": "flux_1",
         "url": "https://huggingface.co/leejet/FLUX.1-dev-gguf",
@@ -725,7 +795,7 @@
         "name": "leejet_flux_1_schnell_gguf",
         "label": "leejet/Flux 1 Schenll GGUF",
         "description": "Flux GGUF quantized files",
-        "inference_type": "image",
+        "inference_type": "text_to_image",
         "quant_type": "gguf",
         "diffusion_type": "flux_1",
         "url": "https://huggingface.co/leejet/FLUX.1-schnell-gguf",
@@ -736,7 +806,7 @@
         "name": "quant_stack_flux_1_Kontext_dev_GGUF",
         "label": "QuantStack/FLUX.1-Kontext-dev-GGUF",
         "description": "FLUX.1-Kontext-dev-GGUF",
-        "inference_type": "image",
+        "inference_type": "image_edit",
         "quant_type": "gguf",
         "diffusion_type": "flux_1_kontext",
         "url": "https://huggingface.co/QuantStack/FLUX.1-Kontext-dev-GGUF",
@@ -747,7 +817,7 @@
         "name": "city96_flux_2_dev_gguf",
         "label": "City96/FLUX.2-dev-gguf",
         "description": "FLUX.2-dev-GGUF",
-        "inference_type": "image",
+        "inference_type": "text_to_image",
         "quant_type": "gguf",
         "diffusion_type": "flux_2",
         "url": "https://huggingface.co/city96/FLUX.2-dev-gguf",
@@ -758,7 +828,7 @@
         "name": "leejet_flux_3_image_klein_gguf",
         "label": "leejet/flux-3-image-klein GGUF quantized files",
         "description": "Flux-3-image-klein GGUF quantized files",
-        "inference_type": "image",
+        "inference_type": "text_to_image",
         "quant_type": "gguf",
         "diffusion_type": "flux_3",
         "url": "https://huggingface.co/leejet/flux-3-image-klein-GGUF",
@@ -769,11 +839,144 @@
         "name": "leejet_moss_image_sft_gguf",
         "label": "leejet/MOSS-Image-SFT GGUF",
         "description": "MOSS-Image-SFT GGUF quantized files",
-        "inference_type": "image",
+        "inference_type": "text_to_image",
         "quant_type": "gguf",
         "diffusion_type": "moss_image",
         "url": "https://huggingface.co/leejet/MOSS-Image-SFT-GGUF",
         "path": "/"
+      },
+      {
+        "provider": "quant_stack",
+        "name": "quant_stack_wan2_2_ti2v_5b_gguf",
+        "label": "QuantStack/Wan2.2-TI2V-5B-GGUF",
+        "description": "Text/Image to video",
+        "inference_type": "image_to_video",
+        "quant_type": "gguf",
+        "diffusion_type": "wan2_2_ti2v",
+        "url": "https://huggingface.co/QuantStack/Wan2.2-TI2V-5B-GGUF",
+        "path": "/",
+        "requires": {
+          "vae": {"from": "wan2_2"},
+          "encoder": {"from": "wan2_1"}
+        }
+      },
+      {
+        "provider": "quant_stack",
+        "name": "quant_stack_wan2_2_t2v_14b_gguf",
+        "label": "QuantStack/WAN2.2-T2V-14B-GGUF",
+        "description": "Text-to-video (14B)(GGUF)",
+        "inference_type": "text_to_video",
+        "quant_type": "gguf",
+        "diffusion_type": "wan2_2_t2v",
+        "url": "https://huggingface.co/QuantStack/Wan2.2-T2V-A14B-GGUF",
+        "catalog": [
+          {"name": "quant_stack_wan2_2_t2v_a14b_q2_k", "label": "QuantStack/Wan2.2-T2V-A14B Q2_K", "items": [{"file": "LowNoise/Wan2.2-T2V-A14B-LowNoise-Q2_K.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q2_K.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_t2v_a14b_q3_k_m", "label": "QuantStack/Wan2.2-T2V-A14B Q3_K_M", "items": [{"file": "LowNoise/Wan2.2-T2V-A14B-LowNoise-Q3_K_M.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q3_K_M.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_t2v_a14b_q3_k_s", "label": "QuantStack/Wan2.2-T2V-A14B Q3_K_S", "items": [{"file": "LowNoise/Wan2.2-T2V-A14B-LowNoise-Q3_K_S.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q3_K_S.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_t2v_a14b_q4_0", "label": "QuantStack/Wan2.2-T2V-A14B Q4_0", "items": [{"file": "LowNoise/Wan2.2-T2V-A14B-LowNoise-Q4_0.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_0.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_t2v_a14b_q4_1", "label": "QuantStack/Wan2.2-T2V-A14B Q4_1", "items": [{"file": "LowNoise/Wan2.2-T2V-A14B-LowNoise-Q4_1.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_1.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_t2v_a14b_q4_k_s", "label": "QuantStack/Wan2.2-T2V-A14B Q4_K_S", "items": [{"file": "LowNoise/Wan2.2-T2V-A14B-LowNoise-Q4_K_S.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_S.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_t2v_a14b_q4_k_m", "label": "QuantStack/Wan2.2-T2V-A14B Q4_K_M", "items": [{"file": "LowNoise/Wan2.2-T2V-A14B-LowNoise-Q4_K_M.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_t2v_a14b_q5_0", "label": "QuantStack/Wan2.2-T2V-A14B Q5_0", "items": [{"file": "LowNoise/Wan2.2-T2V-A14B-LowNoise-Q5_0.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q5_0.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_t2v_a14b_q5_1", "label": "QuantStack/Wan2.2-T2V-A14B Q5_1", "items": [{"file": "LowNoise/Wan2.2-T2V-A14B-LowNoise-Q5_1.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q5_1.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_t2v_a14b_q5_k_s", "label": "QuantStack/Wan2.2-T2V-A14B Q5_K_S", "items": [{"file": "LowNoise/Wan2.2-T2V-A14B-LowNoise-Q5_K_S.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q5_K_S.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_t2v_a14b_q5_k_m", "label": "QuantStack/Wan2.2-T2V-A14B Q5_K_M", "items": [{"file": "LowNoise/Wan2.2-T2V-A14B-LowNoise-Q5_K_M.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q5_K_M.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_t2v_a14b_q6_k", "label": "QuantStack/Wan2.2-T2V-A14B Q6_K", "items": [{"file": "LowNoise/Wan2.2-T2V-A14B-LowNoise-Q6_K.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q6_K.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_t2v_a14b_q8_0", "label": "QuantStack/Wan2.2-T2V-A14B Q8_0", "items": [{"file": "LowNoise/Wan2.2-T2V-A14B-LowNoise-Q8_0.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q8_0.gguf", "use_as": "high_noise_diffusion_model"}]}
+        ],
+        "requires": {
+          "vae": {"from": "wan2_1"},
+          "encoder": {"from": "wan2_1"}
+        } 
+      },
+      {
+        "provider": "quant_stack",
+        "name": "quant_stack_wan2_2_i2v_14b_gguf",
+        "label": "QuantStack/Wan2.2-I2V-A14B-GGUF",
+        "description": "Image-to-video (14B)(GGUF)",
+        "inference_type": "image_to_video",
+        "quant_type": "gguf",
+        "diffusion_type": "wan2_2_i2v",
+        "url": "https://huggingface.co/QuantStack/Wan2.2-I2V-A14B-GGUF",
+        "catalog":[
+          {"name": "quant_stack_wan2_2_i2v_a14b_q2_k", "label": "QuantStack/Wan2.2-I2V-A14B Q2_K", "items": [{"file": "LowNoise/Wan2.2-I2V-A14B-LowNoise-Q2_K.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-I2V-A14B-HighNoise-Q2_K.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_i2v_a14b_q3_k_s", "label": "QuantStack/Wan2.2-I2V-A14B Q3_K_S", "items": [{"file": "LowNoise/Wan2.2-I2V-A14B-LowNoise-Q3_K_S.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-I2V-A14B-HighNoise-Q3_K_S.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_i2v_a14b_q3_k_m", "label": "QuantStack/Wan2.2-I2V-A14B Q3_K_M", "items": [{"file": "LowNoise/Wan2.2-I2V-A14B-LowNoise-Q3_K_M.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-I2V-A14B-HighNoise-Q3_K_M.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_i2v_a14b_q4_k_s", "label": "QuantStack/Wan2.2-I2V-A14B Q4_K_S", "items": [{"file": "LowNoise/Wan2.2-I2V-A14B-LowNoise-Q4_K_S.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-I2V-A14B-HighNoise-Q4_K_S.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_i2v_a14b_q4_k_m", "label": "QuantStack/Wan2.2-I2V-A14B Q4_K_M", "items": [{"file": "LowNoise/Wan2.2-I2V-A14B-LowNoise-Q4_K_M.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-I2V-A14B-HighNoise-Q4_K_M.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_i2v_a14b_q5_0", "label": "QuantStack/Wan2.2-I2V-A14B Q5_0", "items": [{"file": "LowNoise/Wan2.2-I2V-A14B-LowNoise-Q5_0.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-I2V-A14B-HighNoise-Q5_0.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_i2v_a14b_q5_k_s", "label": "QuantStack/Wan2.2-I2V-A14B Q5_K_S", "items": [{"file": "LowNoise/Wan2.2-I2V-A14B-LowNoise-Q5_K_S.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-I2V-A14B-HighNoise-Q5_K_S.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_i2v_a14b_q5_k_m", "label": "QuantStack/Wan2.2-I2V-A14B Q5_K_M", "items": [{"file": "LowNoise/Wan2.2-I2V-A14B-LowNoise-Q5_K_M.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-I2V-A14B-HighNoise-Q5_K_M.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_i2v_a14b_q6_k", "label": "QuantStack/Wan2.2-I2V-A14B Q6_K", "items": [{"file": "LowNoise/Wan2.2-I2V-A14B-LowNoise-Q6_K.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-I2V-A14B-HighNoise-Q6_K.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_i2v_a14b_q8_0", "label": "QuantStack/Wan2.2-I2V-A14B Q8_0", "items": [{"file": "LowNoise/Wan2.2-I2V-A14B-LowNoise-Q8_0.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-I2V-A14B-HighNoise-Q8_0.gguf", "use_as": "high_noise_diffusion_model"}]}
+        ],
+        "path": "/",
+        "requires": {
+          "vae": {"from": "wan2_1"},
+          "encoder": {"from": "wan2_1"}
+        }
+      },
+      {
+        "provider": "quant_stack",
+        "name": "quant_stack_wan2_2_vace_fun_a14b_gguf",
+        "label": "QuantStack/Wan2.2-VACE-Fun-A14B-GGUF",
+        "description": "Video all in one",
+        "inference_type": "video_all_in_one",
+        "quant_type": "gguf",
+        "diffusion_type": "wan2_2_vace",
+        "url": "https://huggingface.co/QuantStack/Wan2.2-VACE-Fun-A14B-GGUF",
+        "catalog":[
+          {"name": "quant_stack_wan2_2_vace_fun_a14b_q3_k_s", "label": "QuantStack/Wan2.2-VACE-Fun-A14B Q3_K_S", "items": [{"file": "LowNoise/Wan2.2-VACE-Fun-A14B-low-noise-Q3_K_S.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-VACE-Fun-A14B-high-noise-Q3_K_S.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_vace_fun_a14b_q3_k_m", "label": "QuantStack/Wan2.2-VACE-Fun-A14B Q3_K_M", "items": [{"file": "LowNoise/Wan2.2-VACE-Fun-A14B-low-noise-Q3_K_M.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-VACE-Fun-A14B-high-noise-Q3_K_M.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_vace_fun_a14b_q4_0", "label": "QuantStack/Wan2.2-VACE-Fun-A14B Q4_0", "items": [{"file": "LowNoise/Wan2.2-VACE-Fun-A14B-low-noise-Q4_0.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-VACE-Fun-A14B-high-noise-Q4_0.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_vace_fun_a14b_q4_k_s", "label": "QuantStack/Wan2.2-VACE-Fun-A14B Q4_K_S", "items": [{"file": "LowNoise/Wan2.2-VACE-Fun-A14B-low-noise-Q4_K_S.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-VACE-Fun-A14B-high-noise-Q4_K_S.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_vace_fun_a14b_q4_k_m", "label": "QuantStack/Wan2.2-VACE-Fun-A14B Q4_K_M", "items": [{"file": "LowNoise/Wan2.2-VACE-Fun-A14B-low-noise-Q4_K_M.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-VACE-Fun-A14B-high-noise-Q4_K_M.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_vace_fun_a14b_q5_0", "label": "QuantStack/Wan2.2-VACE-Fun-A14B Q5_0", "items": [{"file": "LowNoise/Wan2.2-VACE-Fun-A14B-low-noise-Q5_0.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-VACE-Fun-A14B-high-noise-Q5_0.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_vace_fun_a14b_q5_k_m", "label": "QuantStack/Wan2.2-VACE-Fun-A14B Q5_K_M", "items": [{"file": "LowNoise/Wan2.2-VACE-Fun-A14B-low-noise-Q5_K_M.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-VACE-Fun-A14B-high-noise-Q5_K_M.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_vace_fun_a14b_q6_k", "label": "QuantStack/Wan2.2-VACE-Fun-A14B Q6_K", "items": [{"file": "LowNoise/Wan2.2-VACE-Fun-A14B-low-noise-Q6_K.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-VACE-Fun-A14B-high-noise-Q6_K.gguf", "use_as": "high_noise_diffusion_model"}]},
+          {"name": "quant_stack_wan2_2_vace_fun_a14b_q8_0", "label": "QuantStack/Wan2.2-VACE-Fun-A14B Q8_0", "items": [{"file": "LowNoise/Wan2.2-VACE-Fun-A14B-low-noise-Q8_0.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-VACE-Fun-A14B-high-noise-Q8_0.gguf", "use_as": "high_noise_diffusion_model"}]}
+        ],
+        "path": "/",
+        "requires": {
+          "vae": {"from": "wan2_1"},
+          "encoder": {"from": "wan2_1"}
+        } 
+      },
+      {
+        "provider": "quant_stack",
+        "name": "quant_stack_wan2_2_s2v_a14b_gguf",
+        "label": "QuantStack/Wan2.2-S2V-14B-GGUF",
+        "description": "Speech-to-video",
+        "inference_type": "audio_to_video",
+        "quant_type": "gguf",
+        "diffusion_type": "wan2_2_s2v",
+        "url": "https://huggingface.co/QuantStack/Wan2.2-S2V-14B-GGUF",
+        "path": "/",
+        "requires": {
+          "vae": {"from": "wan2_1"},
+          "encoder": {"from": "wan2_1"},
+          "audio_encoder": {"from": "wan2_2"}
+        } 
+      },
+      {
+        "provider": "vantagewithai",
+        "name": "vantagewithai_ltx_2_5_gguf_dev",
+        "label": "Vantage with AI/LTX-2.5-GGUF (DEV)",
+        "description": "LTX-2.5 Dev video generation model.",
+        "quant_type": "gguf",
+        "diffusion_type": "ltx_2_5",
+        "url": "https://huggingface.co/vantagewithai/LTX-2.5-GGUF",
+        "path": "/dev"
+      },
+      {
+        "provider": "vantagewithai",
+        "name": "vantagewithai_ltx_2_5_gguf_distilled",
+        "label": "Vantage with AI/LTX-2.5-GGUF (DISTILLED)",
+        "description": "LTX-2.5 Distilled generation model for fast infererence",
+        "quant_type": "gguf",
+        "diffusion_type": "ltx_2_5",
+        "url": "https://huggingface.co/vantagewithai/LTX-2.5-GGUF",
+        "path": "/distilled"
       }
     ]
   }

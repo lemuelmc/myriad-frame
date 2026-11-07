@@ -1,0 +1,25 @@
+{
+  "updatedOn": "2026-11-06",
+  "platforms": {
+    "windows": {
+      "url": "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+      "archive": "zip"
+    },
+    "macos": {
+      "url": "https://evermeet.cx/ffmpeg/getrelease/zip",
+      "archive": "zip"
+    },
+    "linux": {
+      "url": "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
+      "archive": "tar.xz"
+    },
+    "macos_arm64": {
+      "url": "",
+      "archive": "zip"
+    },
+    "linux_arm64": {
+      "url": "",
+      "archive": "tar.xz"
+    }
+  }
+}

@@ -19,7 +19,7 @@ import type {
   SamplingDefaults,
   Settings
 } from '@shared/types'
-import { DOWNLOAD_ABORTED_MESSAGE } from '@shared/types'
+import { DOWNLOAD_ABORTED_MESSAGE, applySamplingOverrides } from '@shared/types'
 import type { ThemeKey } from '@shared/types'
 import { applyTheme, assertThemeKey, currentTheme, THEMES } from '../theme'
 import { useAppStore } from './app'
@@ -41,7 +41,9 @@ export interface RuntimeDownloadState {
 
 /** Default performance settings; every generation falls back to these. */
 export const defaultPerformance: PerformanceSettings = {
+  enabled: false,
   flashAttention: 'off',
+  flashAttentionCustom: '',
   convDirect: 'off',
   vaeTiling: {
     tileSize: 'off',
@@ -287,12 +289,26 @@ export const useSettingsStore = defineStore('settings', {
         await this.listModels(type)
       }
     },
-    async removeModel(type: ModelType, name: string) {
-      await window.api.modelsRemove(type, name)
+    /**
+     * Delete ONE installed file. `provider` / `diffusionType` scope the
+     * delete to the row's exact directory (model-collision-hardening plan
+     * §3.3); `url` — catalog-entry delete sites only — enables the gated
+     * chain-resolution fallback that reaches a shared-URL file stored under
+     * another family's dir. List rows pass their ModelFile context; catalog
+     * entries additionally thread e.url.
+     */
+    async removeModel(type: ModelType, name: string, provider?: string, diffusionType?: string, url?: string) {
+      await window.api.modelsRemove(type, name, provider, diffusionType, url)
       await this.listModels(type)
     },
+    /**
+     * Flat scalar overrides (settings.json per-type) merged into the
+     * descriptor defaults — the same semantics as main's
+     * `effectiveSampling()` (shared `applySamplingOverrides` helper), so the
+     * two merge sites can never diverge.
+     */
     samplingFor(diffusionType: string, defaults: SamplingDefaults): SamplingDefaults {
-      return { ...defaults, ...(this.settings.sampling?.[diffusionType] ?? {}) }
+      return applySamplingOverrides(defaults, this.settings.sampling?.[diffusionType])
     }
   }
 })

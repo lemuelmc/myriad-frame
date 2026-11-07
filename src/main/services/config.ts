@@ -19,8 +19,10 @@ import { dirname, join } from 'node:path'
 import type {
   AllConfigs,
   ApplicationConfig,
+  FfmpegConfig,
   HubConfig,
   ResolutionConfig,
+  ResolutionEntry,
   RuntimeConfig,
   SamplingConfig
 } from '@shared/types'
@@ -128,11 +130,27 @@ export function validateHubConfig(cfg: unknown): string | undefined {
       return `diffusion_models[${i}] must be an object`
     }
     const d = dm as Record<string, unknown>
-    for (const key of ['name', 'label', 'type', 'mode'] as const) {
+    for (const key of ['name', 'label', 'type'] as const) {
       const v = d[key]
       if (typeof v !== 'string' || v === '') {
         return `diffusion_models[${i}].${key} must be a non-empty string`
       }
+    }
+    // `mode` is legacy-optional: the shipped hub.json no longer carries it,
+    // but older overrides still may.
+    if (d['mode'] !== undefined && typeof d['mode'] !== 'string') {
+      return `diffusion_models[${i}].mode must be a string when present`
+    }
+    // `access` is optional: 'auth' (token required) or 'gated' (token + ToS
+    // acceptance on the model page); null/absent = freely downloadable.
+    // Anything else is a typo that would silently no-op the badge — reject it.
+    if (
+      d['access'] !== undefined &&
+      d['access'] !== null &&
+      d['access'] !== 'auth' &&
+      d['access'] !== 'gated'
+    ) {
+      return `diffusion_models[${i}].access must be "auth" or "gated" (or null) when present`
     }
   }
 
@@ -150,6 +168,31 @@ export function validateHubConfig(cfg: unknown): string | undefined {
       const v = po[key]
       if (typeof v !== 'string' || v === '') {
         return `providers[${i}].${key} must be a non-empty string`
+      }
+    }
+  }
+
+  // diffusion_inference_types — optional; present-must-be-valid (per-type
+  // { text_input: boolean, accepts: string[] | null }).
+  const inferenceTypes = obj['diffusion_inference_types']
+  if (inferenceTypes !== undefined) {
+    if (inferenceTypes === null || typeof inferenceTypes !== 'object' || Array.isArray(inferenceTypes)) {
+      return 'hub config "diffusion_inference_types" must be an object when present'
+    }
+    for (const [key, v] of Object.entries(inferenceTypes as Record<string, unknown>)) {
+      if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+        return `diffusion_inference_types["${key}"] must be an object`
+      }
+      const io = v as Record<string, unknown>
+      if (typeof io['text_input'] !== 'boolean') {
+        return `diffusion_inference_types["${key}"].text_input must be a boolean`
+      }
+      if (
+        io['accepts'] !== null &&
+        io['accepts'] !== undefined &&
+        !Array.isArray(io['accepts'])
+      ) {
+        return `diffusion_inference_types["${key}"].accepts must be an array or null`
       }
     }
   }
@@ -261,6 +304,13 @@ export function validateHubConfig(cfg: unknown): string | undefined {
     if (eo['label'] !== undefined && typeof eo['label'] !== 'string') {
       return `repo.encoder["${key}"].label must be a string when present`
     }
+    // Entry-level `use_as` — the CLI flag for the SINGLE-file (`default`)
+    // shape (e.g. `t5xxl` for the wan umt5-xxl encoder). Same flag-safe
+    // grammar as `defaults[].use_as`.
+    const ua = eo['use_as']
+    if (ua !== undefined && (typeof ua !== 'string' || ua === '' || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(ua))) {
+      return `repo.encoder["${key}"].use_as must be a non-empty string matching ^[A-Za-z0-9][A-Za-z0-9_-]*$`
+    }
   }
 
   // Optional: absent is valid; present-must-be-valid.
@@ -323,6 +373,113 @@ export function validateHubConfig(cfg: unknown): string | undefined {
     }
   }
 
+  // Optional: absent is valid; present-must-be-valid (wav2vec2 audio encoder
+  // for Wan2.2 S2V — same rules as repo.tokenizer).
+  const audioEncoder = repoObj['audio_encoder']
+  if (audioEncoder !== undefined) {
+    if (audioEncoder === null || typeof audioEncoder !== 'object' || Array.isArray(audioEncoder)) {
+      return 'hub config "repo.audio_encoder" must be an object when present'
+    }
+    for (const [key, v] of Object.entries(audioEncoder as Record<string, unknown>)) {
+      if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+        return `repo.audio_encoder["${key}"] must be an object`
+      }
+      const vo = v as Record<string, unknown>
+      if (
+        typeof vo['url'] !== 'string' ||
+        vo['url'] === '' ||
+        !vo['url'].startsWith('https://')
+      ) {
+        return `repo.audio_encoder["${key}"].url must be a non-empty string starting with https://`
+      }
+      if (typeof vo['default'] !== 'string' || vo['default'] === '') {
+        return `repo.audio_encoder["${key}"].default must be a non-empty string`
+      }
+      if (vo['provider'] !== undefined && typeof vo['provider'] !== 'string') {
+        return `repo.audio_encoder["${key}"].provider must be a string when present`
+      }
+      if (vo['label'] !== undefined && typeof vo['label'] !== 'string') {
+        return `repo.audio_encoder["${key}"].label must be a string when present`
+      }
+    }
+  }
+
+  // Optional: absent is valid; present-must-be-valid (LTX 2.5 audio VAE —
+  // same rules as repo.audio_encoder, plus the optional source/domain
+  // overrides the other repo sections accept).
+  const audioVae = repoObj['audio_vae']
+  if (audioVae !== undefined) {
+    if (audioVae === null || typeof audioVae !== 'object' || Array.isArray(audioVae)) {
+      return 'hub config "repo.audio_vae" must be an object when present'
+    }
+    for (const [key, v] of Object.entries(audioVae as Record<string, unknown>)) {
+      if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+        return `repo.audio_vae["${key}"] must be an object`
+      }
+      const vo = v as Record<string, unknown>
+      if (
+        typeof vo['url'] !== 'string' ||
+        vo['url'] === '' ||
+        !vo['url'].startsWith('https://')
+      ) {
+        return `repo.audio_vae["${key}"].url must be a non-empty string starting with https://`
+      }
+      if (typeof vo['default'] !== 'string' || vo['default'] === '') {
+        return `repo.audio_vae["${key}"].default must be a non-empty string`
+      }
+      if (vo['provider'] !== undefined && typeof vo['provider'] !== 'string') {
+        return `repo.audio_vae["${key}"].provider must be a string when present`
+      }
+      if (vo['label'] !== undefined && typeof vo['label'] !== 'string') {
+        return `repo.audio_vae["${key}"].label must be a string when present`
+      }
+      if (vo['source'] !== undefined && typeof vo['source'] !== 'string') {
+        return `repo.audio_vae["${key}"].source must be a string when present`
+      }
+      if (vo['domain'] !== undefined && typeof vo['domain'] !== 'string') {
+        return `repo.audio_vae["${key}"].domain must be a string when present`
+      }
+    }
+  }
+
+  // Optional: absent is valid; present-must-be-valid (LTX 2.5 spatial latent
+  // upscaler — same rules as repo.audio_encoder, plus the optional
+  // source/domain overrides the other repo sections accept).
+  const latentUpscaler = repoObj['latent_upscaler']
+  if (latentUpscaler !== undefined) {
+    if (latentUpscaler === null || typeof latentUpscaler !== 'object' || Array.isArray(latentUpscaler)) {
+      return 'hub config "repo.latent_upscaler" must be an object when present'
+    }
+    for (const [key, v] of Object.entries(latentUpscaler as Record<string, unknown>)) {
+      if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+        return `repo.latent_upscaler["${key}"] must be an object`
+      }
+      const vo = v as Record<string, unknown>
+      if (
+        typeof vo['url'] !== 'string' ||
+        vo['url'] === '' ||
+        !vo['url'].startsWith('https://')
+      ) {
+        return `repo.latent_upscaler["${key}"].url must be a non-empty string starting with https://`
+      }
+      if (typeof vo['default'] !== 'string' || vo['default'] === '') {
+        return `repo.latent_upscaler["${key}"].default must be a non-empty string`
+      }
+      if (vo['provider'] !== undefined && typeof vo['provider'] !== 'string') {
+        return `repo.latent_upscaler["${key}"].provider must be a string when present`
+      }
+      if (vo['label'] !== undefined && typeof vo['label'] !== 'string') {
+        return `repo.latent_upscaler["${key}"].label must be a string when present`
+      }
+      if (vo['source'] !== undefined && typeof vo['source'] !== 'string') {
+        return `repo.latent_upscaler["${key}"].source must be a string when present`
+      }
+      if (vo['domain'] !== undefined && typeof vo['domain'] !== 'string') {
+        return `repo.latent_upscaler["${key}"].domain must be a string when present`
+      }
+    }
+  }
+
   const diffusion = repoObj['diffusion']
   if (!Array.isArray(diffusion) || diffusion.length === 0) {
     return 'hub config "repo.diffusion" must be a non-empty array'
@@ -379,6 +536,81 @@ export function validateHubConfig(cfg: unknown): string | undefined {
     if (mp !== undefined && mp !== null) {
       if (typeof mp !== 'number' || !Number.isInteger(mp) || mp <= 0) {
         return `repo.diffusion[${i}].max_page must be a positive integer when present`
+      }
+    }
+    // Optional static multi-file catalog (WAN MoE pairs): one item = one
+    // selectable quant = the files of that quant and the CLI slot each is
+    // passed under. `use_as` is validated against the CLOSED set of slots
+    // buildArgs maps to real flags.
+    const cat = dobj['catalog']
+    if (cat !== undefined && cat !== null) {
+      if (!Array.isArray(cat) || cat.length === 0) {
+        return `repo.diffusion[${i}].catalog must be a non-empty array when present`
+      }
+      for (let j = 0; j < cat.length; j++) {
+        const item = cat[j]
+        if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+          return `repo.diffusion[${i}].catalog[${j}] must be an object`
+        }
+        const io = item as Record<string, unknown>
+        for (const key of ['name', 'label'] as const) {
+          const v = io[key]
+          if (typeof v !== 'string' || v === '') {
+            return `repo.diffusion[${i}].catalog[${j}].${key} must be a non-empty string`
+          }
+        }
+        const items = io['items']
+        if (!Array.isArray(items) || items.length === 0) {
+          return `repo.diffusion[${i}].catalog[${j}].items must be a non-empty array`
+        }
+        const seenBase = new Set<string>()
+        for (let k = 0; k < items.length; k++) {
+          const f = items[k]
+          if (f === null || typeof f !== 'object' || Array.isArray(f)) {
+            return `repo.diffusion[${i}].catalog[${j}].items[${k}] must be an object`
+          }
+          const fo = f as Record<string, unknown>
+          if (typeof fo['file'] !== 'string' || fo['file'] === '') {
+            return `repo.diffusion[${i}].catalog[${j}].items[${k}].file must be a non-empty string`
+          }
+          const ua = fo['use_as']
+          if (
+            typeof ua !== 'string' ||
+            !(['diffusion-model', 'high_noise_diffusion_model'] as string[]).includes(ua)
+          ) {
+            return `repo.diffusion[${i}].catalog[${j}].items[${k}].use_as must be "diffusion-model" or "high_noise_diffusion_model"`
+          }
+          // Duplicate basenames within one item would collide on disk
+          // (case-insensitive: Windows FS is case-folded).
+          const base = (fo['file'] as string).split('/').pop() ?? ''
+          if (base !== '') {
+            const low = base.toLowerCase()
+            if (seenBase.has(low)) {
+              return `repo.diffusion[${i}].catalog[${j}].items[${k}] duplicates basename "${base}"`
+            }
+            seenBase.add(low)
+          }
+        }
+      }
+    }
+    // Optional requires block: the diffusion family each companion model
+    // resolves from (e.g. wan2_2_t2v requires the wan2_1 VAE + encoder).
+    const req = dobj['requires']
+    if (req !== undefined && req !== null) {
+      if (req === null || typeof req !== 'object' || Array.isArray(req)) {
+        return `repo.diffusion[${i}].requires must be an object when present`
+      }
+      for (const [kind, v] of Object.entries(req as Record<string, unknown>)) {
+        if (!['vae', 'encoder', 'audio_encoder'].includes(kind)) {
+          return `repo.diffusion[${i}].requires.${kind} is not a known companion kind`
+        }
+        if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+          return `repo.diffusion[${i}].requires.${kind} must be an object`
+        }
+        const ro = v as Record<string, unknown>
+        if (typeof ro['from'] !== 'string' || ro['from'] === '') {
+          return `repo.diffusion[${i}].requires.${kind}.from must be a non-empty string`
+        }
       }
     }
   }
@@ -560,42 +792,69 @@ export function loadSamplingConfig(): SamplingConfig {
   return readJson<SamplingConfig>(join(getAppRoot(), 'sampling.json'))
 }
 
+/**
+ * Resolution presets per diffusion family. The authoring schema wraps the
+ * families under a top-level `presets` object and describes each entry with
+ * rich metadata (`label` / `aspect` / `orientation`); the runtime shape stays
+ * the flat family → entries record the renderer has always consumed, with
+ * `name` derived from `label` when absent so preset matching, the selector
+ * dialog, and session persistence keep working unchanged.
+ */
 export function loadResolutionConfig(): ResolutionConfig {
-  return readJson<ResolutionConfig>(join(getAppRoot(), 'resolution.json'))
+  const raw = readJson<Record<string, unknown>>(join(getAppRoot(), 'resolution.json'))
+  const presets = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw['presets'] : undefined
+  const families =
+    presets && typeof presets === 'object' && !Array.isArray(presets)
+      ? (presets as Record<string, unknown>)
+      : raw
+  const out: ResolutionConfig = {}
+  for (const [family, value] of Object.entries(families)) {
+    if (!Array.isArray(value)) continue
+    const entries: ResolutionEntry[] = []
+    for (const item of value) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+      const rec = item as Record<string, unknown>
+      const width = Number(rec.width)
+      const height = Number(rec.height)
+      if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) continue
+      const label = typeof rec.label === 'string' && rec.label.trim() ? rec.label : undefined
+      const name =
+        typeof rec.name === 'string' && rec.name.trim() ? rec.name : (label ?? `${width}×${height}`)
+      entries.push({
+        name,
+        width,
+        height,
+        ...(label !== undefined ? { label } : {}),
+        ...(typeof rec.aspect === 'string' && rec.aspect ? { aspect: rec.aspect } : {}),
+        ...(rec.orientation === 'landscape' || rec.orientation === 'portrait' || rec.orientation === 'none'
+          ? { orientation: rec.orientation }
+          : {})
+      })
+    }
+    out[family] = entries
+  }
+  return out
 }
 
 // ---------- runtime.json override (data/runtime.json) ----------
 
 /**
- * Validate a parsed runtime config's shape. Returns the first problem found,
- * or `undefined` when the config is valid. Rules:
- * - non-null, **non-array** object (explicit `Array.isArray` check —
- *   `typeof [] === 'object'` and `Object.keys([])` yields numeric strings,
- *   so a top-level array would otherwise pass every other rule and surface
- *   in the versions list as `v0`, `v1`, …)
+ * Validate one `releases` version map (version key -> runtime key -> url).
+ * Rules:
  * - **non-empty** (an empty `{}` would break `gen:start`'s
  *   `Object.keys(...)[0]` fallback)
- * - every top-level key is a numeric string (`runtime.ts` sorts versions
- *   with `Number(b) - Number(a)`, so a non-numeric key would poison the sort)
+ * - every key is a numeric string (`runtime.ts` sorts versions with
+ *   `Number(b) - Number(a)`, so a non-numeric key would poison the sort)
  * - every value is a non-empty, non-array object of string → string (url)
- * - every url starts with `https://` (the bundled config is all-https and
- *   this config drives *binary* download URLs — a plain `http://` url is a
- *   downgrade vector)
- *
- * Deliberately lenient on per-version keys: unknown keys are safe to ignore
- * (`requiredUrls()` filters against the known `RuntimeKey` list), so a typo'd
- * key in an upstream config is simply never used.
+ * - every url starts with `https://` (this config drives *binary* download
+ *   URLs — a plain `http://` url is a downgrade vector)
  */
-export function validateRuntimeConfig(cfg: unknown): string | undefined {
-  if (cfg === null || typeof cfg !== 'object' || Array.isArray(cfg)) {
-    return 'runtime config must be a JSON object'
-  }
-  const obj = cfg as Record<string, unknown>
-  const versions = Object.keys(obj)
+function validateRuntimeReleases(releases: Record<string, unknown>): string | undefined {
+  const versions = Object.keys(releases)
   if (versions.length === 0) return 'runtime config must not be empty'
   for (const version of versions) {
     if (!/^\d+$/.test(version)) return `version key "${version}" is not numeric`
-    const entry = obj[version]
+    const entry = releases[version]
     if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
       return `version ${version} must be an object`
     }
@@ -615,6 +874,61 @@ export function validateRuntimeConfig(cfg: unknown): string | undefined {
   return undefined
 }
 
+/**
+ * Validate a parsed runtime config's shape. Returns the first problem found,
+ * or `undefined` when the config is valid. Two shapes are accepted:
+ *
+ * - the authoring shape `{ updatedOn, releases }` — a non-null, **non-array**
+ *   object whose `updatedOn` is a non-empty string and whose `releases` is a
+ *   valid version map (the bundled `configurations/runtime.json` and every
+ *   freshly written override)
+ * - the LEGACY flat version map (version keys at the top level) — overrides
+ *   written by older builds keep working; `normalizeRuntimeConfig()` wraps
+ *   them into the authoring shape at load time
+ *
+ * Shape detection: presence of either marker key (`updatedOn` / `releases`)
+ * selects the authoring shape — a legacy version map can never carry them,
+ * because its keys are numeric strings.
+ *
+ * Deliberately lenient on per-version keys: unknown keys are safe to ignore
+ * (`requiredUrls()` filters against the known `RuntimeKey` list), so a typo'd
+ * key in an upstream config is simply never used.
+ */
+export function validateRuntimeConfig(cfg: unknown): string | undefined {
+  if (cfg === null || typeof cfg !== 'object' || Array.isArray(cfg)) {
+    return 'runtime config must be a JSON object'
+  }
+  const obj = cfg as Record<string, unknown>
+  if (obj['updatedOn'] !== undefined || obj['releases'] !== undefined) {
+    if (typeof obj['updatedOn'] !== 'string' || obj['updatedOn'] === '') {
+      return 'runtime config "updatedOn" must be a non-empty string'
+    }
+    const releases = obj['releases']
+    if (releases === null || typeof releases !== 'object' || Array.isArray(releases)) {
+      return 'runtime config "releases" must be an object'
+    }
+    return validateRuntimeReleases(releases as Record<string, unknown>)
+  }
+  // Legacy flat shape: the top level IS the version map.
+  return validateRuntimeReleases(obj)
+}
+
+/**
+ * Normalize a parsed runtime config into the authoring shape
+ * (`{ updatedOn, releases }`): a legacy flat version map is wrapped under
+ * `releases` with an empty `updatedOn` marker (unknown for legacy files —
+ * the next Check rewrites the override in the full authoring shape). Call
+ * AFTER `validateRuntimeConfig()`: the normalized legacy shape would not
+ * re-validate (its `updatedOn` is empty by design).
+ */
+export function normalizeRuntimeConfig(parsed: unknown): RuntimeConfig {
+  const obj = (parsed ?? {}) as Record<string, unknown>
+  if (obj['updatedOn'] !== undefined || obj['releases'] !== undefined) {
+    return parsed as RuntimeConfig
+  }
+  return { updatedOn: '', releases: obj as RuntimeConfig['releases'] }
+}
+
 /** Absolute path of the writable runtime config override. */
 function overridePath(): string {
   return join(dataRoot(), 'runtime.json')
@@ -630,7 +944,8 @@ export type RuntimeOverrideRead =
  * `loadRuntimeConfig()` and the update-check handler can never diverge:
  * - no file → `absent`
  * - parse or shape failure → `corrupt` (with the reason)
- * - otherwise → `ok`
+ * - otherwise → `ok`, normalized into the authoring shape (a legacy flat
+ *   override is wrapped under `releases`)
  */
 export function readRuntimeOverride(): RuntimeOverrideRead {
   const p = overridePath()
@@ -643,7 +958,7 @@ export function readRuntimeOverride(): RuntimeOverrideRead {
   }
   const problem = validateRuntimeConfig(parsed)
   if (problem) return { status: 'corrupt', reason: problem }
-  return { status: 'ok', cfg: parsed as RuntimeConfig }
+  return { status: 'ok', cfg: normalizeRuntimeConfig(parsed) }
 }
 
 /**
@@ -653,7 +968,9 @@ export function readRuntimeOverride(): RuntimeOverrideRead {
  * shape) is non-fatal: it logs a warning and falls back to the bundled
  * config, so `runtime:versions`, `downloads:list`, `gen:start`, and the
  * init pipeline all keep working. The warning fires on every call while the
- * corrupt file sits on disk — expected, not a bug.
+ * corrupt file sits on disk — expected, not a bug. The returned config is
+ * always the authoring shape (`{ updatedOn, releases }`): a legacy flat
+ * source (old override or old bundled file) is normalized on the way out.
  */
 export function loadRuntimeConfig(): RuntimeConfig {
   const read = readRuntimeOverride()
@@ -663,7 +980,7 @@ export function loadRuntimeConfig(): RuntimeConfig {
       `[config] runtime.json override corrupted (${read.reason}); using the bundled config`
     )
   }
-  return readJson<RuntimeConfig>(join(getAppRoot(), 'runtime.json'))
+  return normalizeRuntimeConfig(readJson<unknown>(join(getAppRoot(), 'runtime.json')))
 }
 
 /**
@@ -711,6 +1028,18 @@ export function saveRuntimeConfig(cfg: RuntimeConfig): void {
 export function resetRuntimeConfig(): void {
   const p = overridePath()
   if (existsSync(p)) rmSync(p, { force: true })
+}
+
+/**
+ * The bundled `configurations/ffmpeg.json`: per-platform download URLs for
+ * static ffmpeg builds. Bundled file only — no override / Check / Reset UI
+ * for v1 (the runtime/hub override machinery can be added later if the
+ * third-party mirror URLs drift). Throws when missing — same loud-failure
+ * contract as `loadApplicationConfig()` for a file that must always exist
+ * in the bundle.
+ */
+export function loadFfmpegConfig(): FfmpegConfig {
+  return readJson<FfmpegConfig>(join(getAppRoot(), 'ffmpeg.json'))
 }
 
 export function loadAllConfigs(): AllConfigs {

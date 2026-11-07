@@ -39,6 +39,10 @@ import { dataRoot } from './data'
 import { DownloadAbortError, downloadFile, headSize } from './download'
 import { createSettingsService } from './settings'
 import { loadRuntimeConfig } from './config'
+// Name-hygiene helpers live in a neutral leaf module (NOT in models.ts —
+// models.ts already imports this module, and a back-edge would create a
+// module cycle whose safety depends on import order; see modelname.ts).
+import { baseNameOf, safeModelName } from './modelname'
 
 const MAX_MODEL_CONCURRENT = 2
 
@@ -172,12 +176,43 @@ function modelTmpPath(type: ModelType, provider: string, url: string): string {
   const h = createHash('sha1').update(url).digest('hex').slice(0, 12)
   return join(modelTmpDir(type, provider), `${entryName(url)}.${h}.part`)
 }
-function modelDestDir(type: ModelType, provider: string): string {
+function modelDestDir(type: ModelType, provider: string, diffusionType?: string): string {
+  // Family-scoped destination (model-collision-hardening plan §2.1):
+  // models/<type>/<diffusionType>/<provider> — so two catalog entries that
+  // share a provider + basename but belong to different diffusion families
+  // (SD3.5 vs Flux clip_l, SDXL vs Z-Image jrd_2212) can never share or
+  // overwrite one on-disk file. `lora` is exempt IN CODE, not just in prose
+  // (§2.2): one LoRA URL serves several diffusion types (the catalog expands
+  // one entry per `diffustion_types` member), so nesting per family would
+  // fork the join-by-URL into re-download loops — LoRA keeps
+  // lora/<provider>/<name>. An unknown family (catalog miss) degrades to the
+  // legacy provider-level dest; the resolution chain keeps such files
+  // reachable and the next catalog rebuild + re-download heals placement.
+  if (diffusionType !== undefined && diffusionType.trim() !== '' && type !== 'lora') {
+    return join(dataRoot(), 'models', type, diffusionType, provider)
+  }
   return join(dataRoot(), 'models', type, provider)
+}
+
+/**
+ * The final destination for a model download — the ONE place the dest is
+ * computed, used by BOTH the installed short-circuit (downloadModel) and
+ * runModelDownload, so the two can never disagree about where a URL's file
+ * lives (a disagreeing pair would make the short-circuit miss a file the
+ * manager just placed — or accept one it placed elsewhere).
+ */
+function modelDestPath(
+  type: ModelType,
+  provider: string,
+  url: string,
+  filename?: string,
+  diffusionType?: string
+): string {
+  return join(modelDestDir(type, provider, diffusionType), entryName(url, filename))
 }
 function latestVersion(): string | undefined {
   const cfg = loadRuntimeConfig()
-  const versions = Object.keys(cfg).sort((a, b) => Number(b) - Number(a))
+  const versions = Object.keys(cfg.releases).sort((a, b) => Number(b) - Number(a))
   return versions[0]
 }
 
@@ -393,7 +428,16 @@ function notifyRuntimeProgress(version: string, p: { downloadedBytes: number; to
  * there.
  */
 function entryName(url: string, filename?: string): string {
-  return filename ?? basename(new URL(url).pathname)
+  // Basename-normalized storage (model-collision-hardening plan §3.1, F7's
+  // primary fix): the source-supplied `filename` override is normalized
+  // through the SAME '/'-only split as the URL fallback — a slashed catalog
+  // name (`sub/dir/file.gguf`, CivitAI's `<versionId>/<filename>`) stores as
+  // `file.gguf`, so no layout level ever nests below <provider> and the
+  // nested-destination rename failure becomes structurally impossible. The
+  // split is '/'-only (baseNameOf — never node:path.basename on the override,
+  // which would launder a backslash); a surviving backslash is hostile input
+  // and fails fast via safeModelName in downloadModel.
+  return baseNameOf(filename ?? basename(new URL(url).pathname))
 }
 
 function upsertEntry(
@@ -495,22 +539,40 @@ export async function downloadModel(
   force = false,
   /**
    * Optional params threaded to the transport: `headers` — the source
-   * layer's auth/custom headers — and `filename` — the stored-filename
+   * layer's auth/custom headers — `filename` — the stored-filename
    * override for sources whose download URLs carry no filename in the path
-   * (see entryName). `onProgress`/`signal` are deliberately NOT here: the
-   * manager is the sole progress broadcaster and owns the in-flight
-   * AbortController (forwarding either would double-broadcast / double-abort).
+   * (see entryName) — and `diffusionType` — the family-scoped destination
+   * key (model-collision-hardening plan §2.3/§3.1), resolved by
+   * downloadViaSource from the cached catalog. `onProgress`/`signal` are
+   * deliberately NOT here: the manager is the sole progress broadcaster and
+   * owns the in-flight AbortController (forwarding either would
+   * double-broadcast / double-abort).
    */
-  opts?: { headers?: Record<string, string>; filename?: string }
+  opts?: {
+    headers?: Record<string, string>
+    filename?: string
+    diffusionType?: string
+  }
 ): Promise<string> {
   const prov = provider || 'default'
+  // Path-safety gate (plan §3.4): the derived storage name must be a single
+  // clean segment. A hostile name (`..`, a surviving separator, a drive
+  // prefix, a reserved device name, control characters) fails the download
+  // FAST — never silently rewritten to a different file.
+  const storageName = entryName(url, opts?.filename)
+  if (safeModelName(storageName) === undefined) {
+    console.warn(
+      `[downloads] refusing to download — derived storage name is not a safe single segment: ${JSON.stringify(storageName)} (url: ${url})`
+    )
+    throw new Error(`Unsafe model file name: ${storageName}`)
+  }
   // (1) Installed short-circuit — runs before any registry write and before the
   // paused check. When !force and the destination exists and its size matches
   // (or the server is offline / headSize === 0), trust the file and clear any
   // stale registry entry. A genuine size mismatch falls through to a fresh
   // download, replacing a legacy truncated file.
   if (!force) {
-    const dest = join(modelDestDir(type, prov), entryName(url, opts?.filename))
+    const dest = modelDestPath(type, prov, url, opts?.filename, opts?.diffusionType)
     if (existsSync(dest)) {
       // Authenticated short-circuit probe: without headers a private repo's
       // HEAD answers 401 → headSize resolves 0 → the size check below
@@ -538,7 +600,7 @@ export async function downloadModel(
   }
 
   // (3) Enqueue (joins an existing in-flight/queued download of the same URL).
-  return startModelDownload(type, url, prov, force, opts?.headers, opts?.filename)
+  return startModelDownload(type, url, prov, force, opts?.headers, opts?.filename, opts?.diffusionType)
 }
 
 function startModelDownload(
@@ -547,12 +609,28 @@ function startModelDownload(
   provider: string,
   force: boolean,
   headers?: Record<string, string>,
-  filename?: string
+  filename?: string,
+  diffusionType?: string
 ): Promise<string> {
   // A second request for a URL already queued/in-flight joins the existing
-  // promise — no re-enqueue, no double download.
+  // promise — no re-enqueue, no double download. The join is UNCONDITIONAL
+  // (model-collision-hardening plan F6): the map is URL-keyed, so two
+  // non-joined same-URL entries would overwrite each other's map slot (the
+  // first becomes uncancelable; the first finisher deletes the second's map
+  // entry mid-flight) — a join-guard would corrupt cancel/pause bookkeeping.
+  // But a URL requested under a DIFFERENT type is a hub-shape smell: warn
+  // naming both. Documented assumption: a URL belongs to exactly one type —
+  // true for every current hub.json shape.
   const existing = state.modelMap.get(url)
-  if (existing) return existing.promise
+  if (existing) {
+    const joinedType = state.registry.get(url)?.type
+    if (joinedType !== undefined && joinedType !== type) {
+      console.warn(
+        `[downloads] URL ${url} requested as both '${joinedType}' (in flight) and '${type}' — joining the '${joinedType}' download; a URL is assumed to belong to exactly one model type`
+      )
+    }
+    return existing.promise
+  }
 
   // Mark pending + enqueue. The registry write happens here (not in downloadModel)
   // so a fresh download always has an entry to retry from.
@@ -571,7 +649,10 @@ function startModelDownload(
     abortController,
     resolve: resolveFn,
     reject: rejectFn,
-    work: () => runModelDownload(type, url, provider, force, entry, headers, filename)
+    // `diffusionType` is captured by the work closure alongside
+    // headers/filename, so a join's dest and a fresh download's dest derive
+    // identically (plan §3.1).
+    work: () => runModelDownload(type, url, provider, force, entry, headers, filename, diffusionType)
   }
   state.modelMap.set(url, entry)
   enqueue(entry)
@@ -590,7 +671,8 @@ async function runModelDownload(
   force: boolean,
   entry: ModelInflight,
   headers?: Record<string, string>,
-  filename?: string
+  filename?: string,
+  diffusionType?: string
 ): Promise<void> {
   const name = entryName(url, filename)
   // Promoted from the wait-list to an active slot: emit the initial 0-byte
@@ -598,8 +680,31 @@ async function runModelDownload(
   notifyModelProgress(type, url, 0, 0)
   const tmp = modelTmpPath(type, provider, url)
   try {
-    const finalDest = join(modelDestDir(type, provider), name)
-    await downloadToTemp(type, url, provider, entry.abortController.signal, headers)
+    // Same dest derivation as the installed short-circuit (modelDestPath) so
+    // a joined download's dest and a fresh download's dest can never disagree
+    // (model-collision-hardening plan §3.1).
+    const finalDest = modelDestPath(type, provider, url, filename, diffusionType)
+    const expected = await downloadToTemp(type, url, provider, entry.abortController.signal, headers)
+    // Overwrite warning (plan §3.5, F5): a destination that exists with a
+    // DIFFERENT size is the same-(family, provider, basename)-different-URL
+    // signature — last download would silently win. No behavior change beyond
+    // the warning (a genuine force-redownload of the same file has a matching
+    // size and stays silent). When expected === 0 (offline / failed HEAD) the
+    // size compare cannot run and the overwrite below happens silently — same
+    // as before this warning existed.
+    if (existsSync(finalDest) && expected > 0) {
+      let existingSize = -1
+      try {
+        existingSize = statSync(finalDest).size
+      } catch {
+        existingSize = -1
+      }
+      if (existingSize >= 0 && existingSize !== expected) {
+        console.warn(
+          `[downloads] overwriting "${finalDest}" (${existingSize} bytes on disk) with a ${expected}-byte download — same destination slot, different source URL (potential model collision)`
+        )
+      }
+    }
     // Move into place. Windows `renameSync` does not overwrite, so delete any
     // existing destination first (also clears legacy truncated files). A locked
     // destination (active generation holds it open) throws EPERM → "file in use".
@@ -621,12 +726,15 @@ async function runModelDownload(
         `Staged download for ${name} vanished (data/tmp was wiped by another app instance or a restart) — retry to re-download`
       )
     }
-    // The destination's provider subdirectory is created lazily here:
+    // The destination directory is created lazily here:
     // initDataDirs()/ensureModelDirs() only create the top-level
-    // data/models/<type>/ dirs, and nothing else ever created
-    // data/models/<type>/<provider>/ — without this mkdir the final rename
-    // fails with ENOENT *on the destination* (the staged file itself was fine).
-    mkdirSync(modelDestDir(type, provider), { recursive: true })
+    // data/models/<type>/ dirs, and nothing else ever created the nested
+    // destination dirs — without this mkdir the final rename fails with
+    // ENOENT *on the destination* (the staged file itself was fine). Creating
+    // dirname(finalDest) recursively (not the bare provider dir) also covers
+    // the family-scoped depth models/<type>/<diffusionType>/<provider>/ and
+    // any future layout depth (plan §3.1's defense-in-depth for F7).
+    mkdirSync(dirname(finalDest), { recursive: true })
     renameSync(tmp, finalDest)
     removeEntry(url)
     // Emit the final progress event *before* the onChange transition so the
@@ -673,7 +781,7 @@ async function downloadToTemp(
   provider: string,
   signal?: AbortSignal,
   headers?: Record<string, string>
-): Promise<void> {
+): Promise<number> {
   const tmp = modelTmpPath(type, provider, url)
   rmSync(tmp, { force: true })
   // Authenticated size verification (auth plan §4 — the second in-manager
@@ -696,6 +804,10 @@ async function downloadToTemp(
     rmSync(tmp, { force: true })
     throw new Error(`Download incomplete: expected ${expected} bytes, got ${actual}`)
   }
+  // The verified size is consumed by runModelDownload's overwrite warning
+  // (plan §3.5): a destination whose on-disk size differs is the
+  // different-URL collision signature.
+  return expected
 }
 
 // ---------- runtime in-flight state (moved out of runtime.ts) ----------

@@ -10,6 +10,7 @@ import { fetchText } from './download'
 import {
   loadHubConfig,
   loadRuntimeConfig,
+  normalizeRuntimeConfig,
   readHubOverride,
   readRuntimeOverride,
   validateHubConfig,
@@ -91,6 +92,10 @@ export async function checkRuntimeConfig(): Promise<RemoteConfigCheck<RuntimeCon
     console.error('[updates] Remote runtime config is invalid:', problem)
     throw new Error(`Remote runtime config is invalid: ${problem}`)
   }
+  // Normalize before comparing: a legacy flat remote (no `releases` wrapper)
+  // must be shaped like `current` for the key-order-stable compare to be
+  // apples-to-apples, and the apply step must save the full authoring shape.
+  remote = normalizeRuntimeConfig(remote)
 
   // The existing override was already validated by readRuntimeOverride()
   // above, so loadRuntimeConfig() *is* the effective config here (valid

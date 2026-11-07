@@ -134,6 +134,13 @@ export function createSessionsService(): SessionsService {
     if (typeof patch.model === 'string' && patch.model !== '') merged.model = patch.model
     if (typeof patch.diffusionType === 'string' && patch.diffusionType !== '')
       merged.diffusionType = patch.diffusionType
+    // modelProvider: pins the diffusion VARIANT across session reloads
+    // (model-collision-hardening plan §4/§6) — with duplicate basenames
+    // within a family, name+diffusionType alone could silently switch
+    // variants. Absent (legacy sessions) → restore falls back to the first
+    // name match.
+    if (typeof patch.modelProvider === 'string' && patch.modelProvider !== '')
+      merged.modelProvider = patch.modelProvider
     if (
       patch.resolution !== null &&
       typeof patch.resolution === 'object' &&
@@ -163,14 +170,24 @@ export function createSessionsService(): SessionsService {
       const dst = { ...(merged.sampling ?? {}) }
       const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
       const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined)
+      // Materialized-snapshot semantics: the dialog saves the FULL effective
+      // set (sampling.json defaults ⊕ settings overrides ⊕ user edits), so a
+      // PRESENT key always stores — a valid value as-is, null / '' / invalid
+      // as null ("auto": the CLI honors only non-empty, non-null settings
+      // and omits the flag). An ABSENT key keeps the previous value so
+      // partial patches (e.g. the mask-save strength bump) still merge.
       const n = num(patch.sampling.steps)
-      if (n !== undefined) dst.steps = n
+      if (n !== undefined && n > 0) dst.steps = n
+      else if (patch.sampling.steps !== undefined) dst.steps = null
       const c = num(patch.sampling.cfg)
       if (c !== undefined) dst.cfg = c
+      else if (patch.sampling.cfg !== undefined) dst.cfg = null
       const s = num(patch.sampling.strength)
       if (s !== undefined) dst.strength = s
+      else if (patch.sampling.strength !== undefined) dst.strength = null
       const sm = str(patch.sampling.sampler)
       if (sm) dst.sampler = sm
+      else if (patch.sampling.sampler !== undefined) dst.sampler = null
       const sc = patch.sampling.scheduler
       // Normalize "no scheduler" to the sentinel — stored value is always a
       // string, so downstream checks never need a null branch.
@@ -186,6 +203,23 @@ export function createSessionsService(): SessionsService {
       if (fs === null || (typeof fs === 'string' && !fs.trim())) dst.flow_shift = ''
       else if (typeof fs === 'number' && Number.isFinite(fs)) dst.flow_shift = fs
       else if (typeof fs === 'string' && Number.isFinite(Number(fs.trim()))) dst.flow_shift = Number(fs.trim())
+      // Video-era / high-noise fields: the same materialized semantics — a
+      // present key stores a valid value or null ("auto"); absent keeps.
+      const hs = num(patch.sampling.high_steps)
+      if (hs !== undefined && hs > 0) dst.high_steps = hs
+      else if (patch.sampling.high_steps !== undefined) dst.high_steps = null
+      const hc = num(patch.sampling.high_cfg)
+      if (hc !== undefined && hc >= 0) dst.high_cfg = hc
+      else if (patch.sampling.high_cfg !== undefined) dst.high_cfg = null
+      const hsam = str(patch.sampling.high_sampler)
+      if (hsam) dst.high_sampler = hsam
+      else if (patch.sampling.high_sampler !== undefined) dst.high_sampler = null
+      const fr = num(patch.sampling.frames)
+      if (fr !== undefined && fr > 0) dst.frames = fr
+      else if (patch.sampling.frames !== undefined) dst.frames = null
+      const fps = num(patch.sampling.frame_rate)
+      if (fps !== undefined && fps > 0) dst.frame_rate = fps
+      else if (patch.sampling.frame_rate !== undefined) dst.frame_rate = null
       const sd = patch.sampling.seed
       // Seed: a finite integer in [0, SEED_MAX] stores as a fixed seed
       // (floored); null / undefined / anything else drops the key — absent =
@@ -193,6 +227,23 @@ export function createSessionsService(): SessionsService {
       // (the dialog-side clamp is UX friendliness only).
       if (isValidSeed(sd)) dst.seed = Math.floor(sd)
       else delete dst.seed
+      // Checkbox normalization (defensive — the payload crosses IPC as
+      // untyped JSON): a PRESENT value always stores a definite boolean
+      // ('checked'/'true' → true, everything else → false); absent deletes
+      // the key (inherit).
+      const up = patch.sampling.upscale as unknown
+      if (up === undefined) delete dst.upscale
+      else dst.upscale = up === true || up === 'checked' || up === 'true'
+      // Number-or-null semantics: a finite number ≥ 0 stores as-is (0 ≡
+      // "reuse --steps"); null / '' (empty string ≡ null) / any other
+      // non-number stores null (⇒ --hires-steps omitted); absent deletes the
+      // key (inherit). The dialog sends the full draft on every save, so a
+      // saved session pins the draft's values (clear the input ⇒ null ⇒ no
+      // --hires-steps; Reset clears the whole override).
+      const usRaw = patch.sampling.upscaler_steps as unknown
+      if (usRaw === undefined) delete dst.upscaler_steps
+      else if (typeof usRaw === 'number' && Number.isFinite(usRaw) && usRaw >= 0) dst.upscaler_steps = usRaw
+      else dst.upscaler_steps = null
       if (Object.keys(dst).length) merged.sampling = dst
     }
     // lora: null CLEARS the saved config (the dialog Reset button's explicit

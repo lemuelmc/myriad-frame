@@ -7,12 +7,14 @@
 
 import { toast } from './toast'
 
-/** Save As dialog via main; on success toast with an "Open folder" action. */
+/** Save As dialog via main; on success toast with an "Open folder" action.
+ *  The label follows the file type — vid_gen outputs are Motion-JPEG .avi. */
 export async function saveImageAs(path: string): Promise<void> {
   try {
     const saved = await window.api.saveImage(path)
     if (saved) {
-      toast('Image saved', 'ok', 5000, {
+      const isVideo = /\.(mp4|avi|webm|mov)$/i.test(path)
+      toast(isVideo ? 'Video saved' : 'Image saved', 'ok', 5000, {
         label: 'Open folder',
         run: () => {
           // A stale main/preload (app not restarted since the API was added)

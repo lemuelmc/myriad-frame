@@ -21,11 +21,11 @@ License: Apache License 2.0 — permissive; allows use, modification, and distri
  * state here.
  */
 import { computed, onMounted, ref, watch } from 'vue'
-import type { CatalogEntry } from '@shared/types'
+import type { CatalogEntry, ModelFile } from '@shared/types'
 import { DOWNLOAD_ABORTED_MESSAGE } from '@shared/types'
 import { useAppStore } from '../stores/app'
 import { useSettingsStore } from '../stores/settings'
-import { matchesSearch, providerLabel } from '../search'
+import { baseName, matchesSearch, providerLabel } from '../search'
 import { confirm } from '../confirm'
 import { toast } from '../toast'
 import DownloadProgress from './DownloadProgress.vue'
@@ -86,7 +86,10 @@ const installedFiles = computed(() => settingsStore.modelLists.lora ?? [])
 const installedNames = computed(() => new Set(installedFiles.value.map((f) => f.name)))
 
 function isInstalled(e: CatalogEntry): boolean {
-  return installedNames.value.has(e.name)
+  // Permissive basename compare (model-collision-hardening plan §6) — LoRA
+  // names are already basenames, but the normalization keeps the check
+  // aligned with every other installed-state site.
+  return installedNames.value.has(baseName(e.name))
 }
 function dlState(e: CatalogEntry) {
   return settingsStore.modelDownloads[`lora:${e.url}`]
@@ -106,10 +109,11 @@ async function downloadEntry(e: CatalogEntry, force = false): Promise<void> {
   }
 }
 
-async function removeLora(name: string): Promise<void> {
-  const ok = await confirm(`Delete ${name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
+/** Context-scoped delete (one path — the row's provider dir). */
+async function removeLora(f: ModelFile): Promise<void> {
+  const ok = await confirm(`Delete ${f.name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
   if (!ok) return
-  await settingsStore.removeModel('lora', name)
+  await settingsStore.removeModel('lora', f.name, f.provider, f.diffusionType)
 }
 
 async function refreshHub(): Promise<void> {
@@ -224,8 +228,9 @@ onMounted(async () => {
 
     <h4>Installed</h4>
     <ul class="file-list">
-      <li v-for="f in installedFiles" :key="f.name">
+      <li v-for="f in installedFiles" :key="`${f.diffusionType ?? ''}/${f.provider ?? ''}/${f.name}`">
         <span class="mono" :title="f.name">{{ f.name }}</span>
+        <span v-if="f.provider" class="faint">{{ f.provider }}</span>
         <span class="faint">{{ fmtBytes(f.size) }}</span>
         <button class="icon" title="Copy prompt tag" @click="copyTag(f.name)">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -233,7 +238,7 @@ onMounted(async () => {
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
           </svg>
         </button>
-        <button class="dl-btn danger" @click="removeLora(f.name)">Delete</button>
+        <button class="dl-btn danger" @click="removeLora(f)">Delete</button>
       </li>
       <li v-if="!installedFiles.length" class="muted">No LoRAs installed yet.</li>
     </ul>

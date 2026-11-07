@@ -8,6 +8,42 @@
 import type { CatalogEntry } from '@shared/types'
 import { useAppStore } from './stores/app'
 
+/**
+ * The diffusion family a companion model (VAE / text encoder / audio
+ * encoder) resolves from for a diffusion type — the hub entry's
+ * `requires.<kind>.from` when present, else the diffusion type itself.
+ * Read from the FRESH hub config (`app:configs`) the same way
+ * `resolveEncoderBundle` reads `defaults[]`; `requires` is per hub ENTRY,
+ * so the FIRST `repo.diffusion` entry with the requested diffusion_type
+ * wins (each wan family maps to exactly one entry today; the catalog stamp
+ * on the selected entry is the per-entry truth where one exists).
+ */
+export function requiredFamilyFor(
+  diffusionType: string,
+  kind: 'vae' | 'encoder' | 'audio_encoder'
+): string {
+  const appStore = useAppStore()
+  const entries = appStore.configs?.hub.repo.diffusion ?? []
+  const entry = entries.find((d) => d.diffusion_type === diffusionType)
+  const from = entry?.requires?.[kind]?.from
+  return typeof from === 'string' && from !== '' ? from : diffusionType
+}
+
+/**
+ * The access requirement stamped on a diffusion family in hub.json
+ * (`diffusion_models[].access`): 'auth' = downloads require an API token,
+ * 'gated' = a token PLUS accepting the terms/license on the model page.
+ * Read from the FRESH hub config (`app:configs`) — the same stale-cache
+ * immunity as `requiredFamilyFor` — so a newly configured family badges
+ * immediately, without a catalog rescan. `undefined` = freely downloadable.
+ */
+export function accessForFamily(diffusionType: string): 'auth' | 'gated' | undefined {
+  const appStore = useAppStore()
+  const models = appStore.configs?.hub.diffusion_models ?? []
+  const access = models.find((m) => m.name === diffusionType)?.access
+  return access === 'auth' || access === 'gated' ? access : undefined
+}
+
 /** A bundle descriptor: a full catalog entry plus the guaranteed `useAs` flag name. */
 export type EncoderBundleEntry = CatalogEntry & { useAs: string }
 
@@ -46,7 +82,15 @@ export function resolveEncoderBundle(dt: string): EncoderBundleEntry[] {
       .replace(/^https?:\/\/[^/]+\/[^/]+\/resolve\/main\//, '')
       .replace(/^\//, '')
     const name = path.split('/').pop() ?? path
-    const url = `${enc.url.replace(/\/+$/, '')}/resolve/main/${path}`
+    // Strip a trailing `/tree/<ref>` (or `/blob/<ref>`) UI suffix from the
+    // configured repo URL first — composing `.../tree/main/resolve/main/...`
+    // yields a broken download URL (F9; the hub.json root fix landed with the
+    // collision-hardening change, this stays as defense-in-depth for a future
+    // URL carrying the suffix).
+    const repoUrl = enc.url
+      .replace(/\/(tree|blob)\/[^/]+\/?$/, '')
+      .replace(/\/+$/, '')
+    const url = `${repoUrl}/resolve/main/${path}`
     const hit =
       catalog.find((e) => e.type === 'encoder' && e.diffusionType === dt && e.url === url) ??
       catalog.find((e) => e.type === 'encoder' && e.diffusionType === dt && e.name === name)

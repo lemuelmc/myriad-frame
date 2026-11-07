@@ -15,17 +15,20 @@ import type {
   SessionLora,
   SessionSamplingOverride
 } from '@shared/types'
-import { DOWNLOAD_ABORTED_MESSAGE, DEFAULT_SAMPLER } from '@shared/types'
+import { DOWNLOAD_ABORTED_MESSAGE, applySamplingOverrides, isValidSeed } from '@shared/types'
 import { useAppStore } from '../stores/app'
 import { useSessionsStore } from '../stores/sessions'
 import { useSettingsStore, type ModelDownloadState } from '../stores/settings'
-import { resolveEncoderBundle, type EncoderBundleEntry } from '../deps'
+import { requiredFamilyFor, resolveEncoderBundle, type EncoderBundleEntry } from '../deps'
+import { baseName } from '../search'
 import { toast } from '../toast'
 import { confirm } from '../confirm'
 import { saveImageAs } from '../saveImage'
 import ImageFromPath from './ImageFromPath.vue'
 import DownloadProgress from './DownloadProgress.vue'
 import ModelPickerDialog from './ModelPickerDialog.vue'
+import ResolutionSelectorDialog from './ResolutionSelectorDialog.vue'
+import { matchesPresetDimensions } from './resolutionMath'
 import NegativePromptDialog from './NegativePromptDialog.vue'
 import SessionSamplingDialog from './SessionSamplingDialog.vue'
 import LoraDialog from './LoraDialog.vue'
@@ -48,14 +51,30 @@ const encoderEntry = ref<CatalogEntry | null>(null)
 const encoderBundle = ref<EncoderBundleEntry[]>([])
 const visionEntry = ref<CatalogEntry | null>(null)
 const tokenizerEntry = ref<CatalogEntry | null>(null)
+// Audio encoder (wav2vec2 — Wan2.2 S2V); resolved from the required family.
+const audioEncoderEntry = ref<CatalogEntry | null>(null)
+// LTX 2.5 companions (audio VAE + latent upscaler); resolved from the
+// diffusion type itself (no `requires` indirection).
+const audioVaeEntry = ref<CatalogEntry | null>(null)
+const latentUpscalerEntry = ref<CatalogEntry | null>(null)
 const resolution = ref<ResolutionEntry | null>(null)
+// Unified resolution selector state (plans/unified-resolution-selector.md):
+// `resOpen` mounts the dialog; `isCustomResolution` marks the current value
+// as an intentional unlisted custom size so the `watch(resolutions)` guard
+// never snaps it to the first preset. Maintained on EVERY `resolution.value`
+// assignment path (dialog select, model watcher default + restore, same-type
+// restore).
+const resOpen = ref(false)
+const isCustomResolution = ref(false)
 const refImages = ref<string[]>([])
 const inputImages = ref<string[]>([])
-const usePrevious = ref(true)
 const busy = ref(false)
 // True while a drag is hovering over the textarea, for the drop highlight.
 const dragActive = ref(false)
 const progress = ref<{ step: number; total: number } | null>(null)
+// True while the post-generation .avi → .mp4 conversion runs (gen:progress
+// status 'converting') — keeps the busy indicator up with a different label.
+const converting = ref(false)
 // Optimistic prompt shown locally the instant Send is clicked, before the main
 // process persists the messages and streams the first progress event.
 const pendingPrompt = ref<string | null>(null)
@@ -108,6 +127,7 @@ function persistInputs(sessionId: string | null, patch: SessionInputs): void {
   const merged: SessionInputs = { ...(pendingInputs.get(sessionId) ?? {}) }
   if (patch.model !== undefined) merged.model = patch.model
   if (patch.diffusionType !== undefined) merged.diffusionType = patch.diffusionType
+  if (patch.modelProvider !== undefined) merged.modelProvider = patch.modelProvider
   if (patch.resolution) {
     // Copy into a plain object: `resolution` holds entries straight from the
     // Pinia-reactive configs (Vue Proxies), and structured clone — what
@@ -163,6 +183,17 @@ const diffusionType = computed(() => modelEntry.value?.diffusionType ?? '')
 const resolutions = computed<ResolutionEntry[]>(() =>
   appStore.resolutionsFor(diffusionType.value)
 )
+// The chip button's label: the selected dimensions (the button shows the
+// dimension, not the preset name).
+const resolutionLabel = computed(() =>
+  resolution.value ? `${resolution.value.width}×${resolution.value.height}` : 'Resolution'
+)
+
+function onResolutionSelect(entry: ResolutionEntry): void {
+  resolution.value = entry
+  isCustomResolution.value = !matchesPresetDimensions(entry, resolutions.value)
+  resOpen.value = false
+}
 const sampling = computed(() => {
   const base = appStore.configs?.sampling[diffusionType.value]
   if (!base) return null
@@ -170,35 +201,93 @@ const sampling = computed(() => {
 })
 // Per-session negative prompt (empty ⇒ inherit the global default).
 const sessionNegative = computed(() => sessionsStore.active?.inputs?.negativePrompt ?? '')
-// Sampling for this session: session override wins over the global default.
-// Because `sampling` is the source for both the request fields and the
-// summary, session overrides flow everywhere automatically.
+// Sampling for this session: the flat session override merges into the
+// descriptor defaults (shared `applySamplingOverrides`). Because
+// `sessionSampling` is the source for the request fields and the summary,
+// session overrides flow everywhere automatically.
 const sessionSampling = computed(() => {
   const base = appStore.configs?.sampling[diffusionType.value]
   if (!base) return null
-  const global = settingsStore.samplingFor(diffusionType.value, base)
-  const so = sessionsStore.active?.inputs?.sampling
-  return so ? { ...global, ...so } : global
+  return applySamplingOverrides(settingsStore.samplingFor(diffusionType.value, base), sessionsStore.active?.inputs?.sampling)
 })
-const maxRef = computed(() => sampling.value?.max_reference ?? 0)
-const maxInput = computed(() => sampling.value?.max_image_input ?? 0)
+// Rows for the composer's sampling-info hover popover: the configured
+// sampling for the CURRENT session (descriptor defaults ← settings overrides
+// ← session override — exactly what `sessionSampling` carries and what
+// gen:start sends). Each row is gated by its descriptor's `show` flag, the
+// same gating the Session Sampling dialog uses for its fields, so rows the
+// config hides never appear. Seed is session-only (never a sampling.json
+// field) and the negative prompt resolves session-override-first, mirroring
+// the request build.
+const samplingRows = computed(() => {
+  const s = sessionSampling.value
+  if (!s) return []
+  const rows: { label: string; value: string; title?: string }[] = []
+  if (s.steps.show) rows.push({ label: 'Steps', value: s.steps.default == null ? 'auto' : String(s.steps.default) })
+  if (s.high_steps?.show) rows.push({ label: 'High-noise steps', value: s.high_steps.default == null ? 'auto' : String(s.high_steps.default) })
+  if (s.cfg.show) rows.push({ label: 'CFG scale', value: s.cfg.default == null ? 'auto' : String(s.cfg.default) })
+  if (s.high_cfg?.show) rows.push({ label: 'High-noise CFG', value: s.high_cfg.default == null ? 'auto' : String(s.high_cfg.default) })
+  if (s.strength.show) rows.push({ label: 'Strength', value: s.strength.default == null ? 'auto' : String(s.strength.default) })
+  if (s.sampler.show) rows.push({ label: 'Sampler', value: s.sampler.default || '(model default)' })
+  if (s.high_sampler?.show) rows.push({ label: 'High-noise sampler', value: s.high_sampler.default || '(model default)' })
+  if (s.scheduler.show) rows.push({ label: 'Scheduler', value: s.scheduler.default || 'model-specific' })
+  if (s.flow_shift.show) rows.push({ label: 'Flow shift', value: typeof s.flow_shift.default === 'number' ? String(s.flow_shift.default) : '(none)' })
+  if (s.frames?.show) rows.push({ label: 'Video frames', value: String(s.frames.default ?? 0) })
+  if (s.frame_rate?.show) rows.push({ label: 'Frame rate', value: `${s.frame_rate.default ?? 0} fps` })
+  const seed = sessionsStore.active?.inputs?.sampling?.seed
+  rows.push({ label: 'Seed', value: isValidSeed(seed) ? `fixed ${seed}` : 'random' })
+  const neg = sessionNegative.value.trim() || s.negative.default?.trim() || ''
+  if (neg) rows.push({ label: 'Negative', value: neg.length > 96 ? `${neg.slice(0, 96)}…` : neg, title: neg })
+  // Debugging aid: the session id — locates data/sessions/<id>.json (the
+  // per-session sampling override feeding the rows above) without digging
+  // through the data folder. Hover shows the file path.
+  const sessionId = sessionsStore.active?.id
+  if (sessionId) rows.push({ label: 'Session', value: sessionId, title: `data/sessions/${sessionId}.json` })
+  return rows
+})
+const maxRef = computed(() => sampling.value?.image_reference.max ?? 0)
+const maxInput = computed(() => sampling.value?.image_input.max ?? 0)
 // 'Add reference images' is offered only for diffusion types whose sampling
-// config allows reference images at all (configurations/sampling.json).
-const allowRef = computed(() => sampling.value?.allow_reference === true)
-// 'Add input images' is offered only for types whose config allows explicit
-// input images (--init-img channel).
-const allowInput = computed(() => sampling.value?.allow_image_input === true)
+// config shows the reference channel (configurations/sampling.json).
+const allowRef = computed(() => sampling.value?.image_reference.show === true)
+// 'Add input images' is offered only for types whose config shows the input
+// channel (--init-img).
+const allowInput = computed(() => sampling.value?.image_input.show === true)
+// 'Use previous image' is offered only for types whose config shows the
+// feature (configurations/sampling.json `use_previous_image.show`) — hidden
+// entirely for the WAN vid_gen families, where chaining the generated video
+// as an image makes no sense. The checkbox's initial state is the
+// descriptor's `default` until the user toggles it (the toggle then persists
+// across diffusion-type switches); the stale-state watch below still clears
+// it when the gate turns off.
+const allowPreviousImage = computed(() => sampling.value?.use_previous_image.show === true)
+const usePreviousUser = ref<boolean | null>(null)
+const usePrevious = computed({
+  get: () => usePreviousUser.value ?? sampling.value?.use_previous_image.default ?? true,
+  set: (v: boolean) => {
+    usePreviousUser.value = v
+  }
+})
+// Video-era channels (WAN): driving audio (--audio), control-frames directory
+// (--control-video) and end image (--end-img).
+const allowAudio = computed(() => sampling.value?.audio_input.show === true)
+const allowControlVideo = computed(() => sampling.value?.video_input.show === true)
+const allowEndImage = computed(() => sampling.value?.end_image_input.show === true)
 const refsEnabled = computed(() => allowRef.value && maxRef.value > 0)
 const inputsEnabled = computed(() => allowInput.value && maxInput.value > 0)
+// Sticky video-era channel states (single-valued flags — one path each).
+const audioPath = ref('')
+const controlVideoPath = ref('')
+const endImagePath = ref('')
 // Stale-state reset on diffusion-type switches: clear each channel when its
-// gate turns off, and uncheck 'Use previous image' only when transitioning
-// into the fully-forbidden state (the checkbox is offered when either
-// channel is enabled).
+// gate turns off, and uncheck 'Use previous image' when its own gate turns
+// off or when transitioning into the fully-forbidden state (the checkbox is
+// offered when either channel is enabled).
 watch(
-  [allowRef, allowInput],
-  ([refOk, inputOk], [prevRefOk, prevInputOk]) => {
+  [allowRef, allowInput, allowPreviousImage],
+  ([refOk, inputOk, chainOk], [prevRefOk, prevInputOk, prevChainOk]) => {
     if (!refOk) refImages.value = []
     if (!inputOk) inputImages.value = []
+    if (!chainOk && prevChainOk) usePrevious.value = false
     if (!refOk && !inputOk && (prevRefOk || prevInputOk)) usePrevious.value = false
   }
 )
@@ -240,11 +329,18 @@ const outpaintOverride = ref(false)
 // URLs, so the panel remembers which file was shown (plain bookkeeping).
 let maskBgPath = ''
 
-// `allow_inpainting` gates BOTH buttons (configurations/sampling.json).
-const allowInpainting = computed(() => sampling.value?.allow_inpainting === true)
-// `allow_painting` gates the Paint button — a separate feature flag from
+// `allow_inpainting.show` HIDES both mask buttons (configurations/sampling.json)
+// — v-if, not disabled, mirroring the paint button's `allow_painting` gate.
+const allowInpainting = computed(() => sampling.value?.allow_inpainting.show === true)
+// `allow_painting.show` gates the Paint button — a separate feature flag from
 // allow_inpainting: painting produces a MERGED image, not a mask.
-const allowPainting = computed(() => sampling.value?.allow_painting === true)
+const allowPainting = computed(() => sampling.value?.allow_painting.show === true)
+// Clear the video-era channel states when their gate turns off.
+watch([allowAudio, allowControlVideo, allowEndImage], ([a, c, e]) => {
+  if (!a) audioPath.value = ''
+  if (!c) controlVideoPath.value = ''
+  if (!e) endImagePath.value = ''
+})
 // Background availability (same rule for both dialogs): the first attached
 // image wins; otherwise the previous image when 'Use previous image' is
 // ticked. When a mask is active the buttons stay enabled regardless —
@@ -259,14 +355,12 @@ const inpaintDisabled = computed(
   () =>
     busy.value ||
     !sessionsStore.activeId ||
-    (!allowInpainting.value && maskState.value?.kind !== 'inpaint') ||
     (maskState.value?.kind !== 'inpaint' && !maskBackgroundAvailable.value)
 )
 const outpaintDisabled = computed(
   () =>
     busy.value ||
     !sessionsStore.activeId ||
-    (!allowInpainting.value && maskState.value?.kind !== 'outpaint') ||
     (maskState.value?.kind !== 'outpaint' && !maskBackgroundAvailable.value)
 )
 const inpaintTitle = computed(() => {
@@ -681,19 +775,40 @@ function onPick(e: CatalogEntry): void {
   pendingRestoreResolution.value = null
   pickerOpen.value = false
   // Remember the pick for the active session (null id no-ops inside
-  // persistInputs).
-  persistInputs(sessionsStore.activeId, { model: e.name, diffusionType: e.diffusionType })
+  // persistInputs). The provider rides along so a reload re-resolves the
+  // SAME variant when two same-family entries share a basename
+  // (model-collision-hardening plan §6).
+  persistInputs(sessionsStore.activeId, {
+    model: e.name,
+    diffusionType: e.diffusionType,
+    modelProvider: e.provider
+  })
 }
 
-const installedModels = ref<Record<ModelType, Set<string>>>({} as never)
+const installedModels = ref<Partial<Record<ModelType, Set<string>>>>({})
 async function refreshInstalled(): Promise<void> {
-  for (const t of ['diffusion', 'encoder', 'vae', 'vision', 'tokenizer'] as ModelType[]) {
+  for (const t of [
+    'diffusion',
+    'encoder',
+    'vae',
+    'vision',
+    'tokenizer',
+    'audio_encoder',
+    'audio_vae',
+    'latent_upscaler'
+  ] as ModelType[]) {
     const files = await window.api.modelsList(t)
-    installedModels[t] = new Set(files.map((f) => f.name))
+    installedModels.value[t] = new Set(files.map((f) => f.name))
   }
 }
 function isInstalled(e: CatalogEntry): boolean {
-  return installedModels[e.type]?.has(e.name) ?? false
+  // Permissive basename compare (model-collision-hardening plan §6): slashed
+  // catalog names match their on-disk basename after the manager's
+  // basename-normalized storage, and extra row metadata never invalidates a
+  // legacy file — partially migrated libraries don't flip to "Not
+  // Downloaded". Two catalog entries sharing a basename light up together —
+  // they DO share the on-disk file; accepted.
+  return installedModels.value[e.type]?.has(baseName(e.name)) ?? false
 }
 const prevPendingUrls = ref<string[]>([])
 watch(
@@ -712,21 +827,43 @@ watch(
 // in-flight background dependency downloads, keyed by `${type}:${url}`
 const inflight = new Map<string, Promise<void>>()
 /**
- * Ensure a catalog entry is on disk. No-op when already installed; otherwise
- * starts (or re-joins) a background download and resolves when it completes.
+ * All bundle members of a catalog entry (WAN MoE `groupId` rows): the cached
+ * catalog entries sharing its type/family/groupId — just `[e]` when the entry
+ * carries no groupId (a plain single-file model). Mirrors
+ * `catalogBundleForUrl()` in hub.ts (main) so the renderer's installed check
+ * covers EVERY file of the selected catalog item: a MoE pair is not optional —
+ * gen:start fails on a missing high-noise companion, and the main-side bundle
+ * fan-out in downloadViaSource only runs once a download actually starts
+ * (an already-installed primary short-circuits before it).
+ */
+function bundleMembers(e: CatalogEntry): CatalogEntry[] {
+  if (!e.groupId) return [e]
+  return (appStore.catalog?.entries ?? []).filter(
+    (x) => x.type === e.type && x.diffusionType === e.diffusionType && x.groupId === e.groupId
+  )
+}
+/**
+ * Ensure a catalog entry — and every bundle member it groups (MoE pairs) — is
+ * on disk. No-op per member when already installed; otherwise starts (or
+ * re-joins) a background download and resolves when it completes.
  */
 async function ensureDownloaded(e: CatalogEntry): Promise<void> {
+  for (const m of bundleMembers(e)) await ensureSingleDownloaded(m)
+}
+async function ensureSingleDownloaded(e: CatalogEntry): Promise<void> {
   if (isInstalled(e)) {
     // The file may be a truncated/corrupted download — verify its size
     // against the server before trusting it.
-    const v = await window.api.modelsVerify(e.type, e.name, e.url)
+    // Verify against the entry's exact family/provider slot (the resolution
+    // gen:start will use) instead of a basename-global guess.
+    const v = await window.api.modelsVerify(e.type, e.name, e.url, e.provider, e.diffusionType)
     if (!v.ok) {
       toast(
         `${e.name} is incomplete (${v.actual} of ${v.expected} bytes) — re-downloading`,
         'info',
         8000
       )
-      await settingsStore.removeModel(e.type, e.name)
+      await settingsStore.removeModel(e.type, e.name, e.provider, e.diffusionType, e.url)
     } else {
       return
     }
@@ -787,9 +924,20 @@ watch(
       encoderBundle.value = []
       visionEntry.value = null
       tokenizerEntry.value = null
+      audioEncoderEntry.value = null
+      audioVaeEntry.value = null
+      latentUpscalerEntry.value = null
       resolution.value = null
+      isCustomResolution.value = false
       return
     }
+    // Companion-model families: the hub entry's `requires` blocks route the
+    // VAE / encoder / audio-encoder resolution to a DIFFERENT diffusion
+    // family (wan2_2_t2v uses the wan2_1 VAE + encoder; S2V adds the wan2_2
+    // audio encoder). Absent → the diffusion type itself.
+    const vaeFamily = requiredFamilyFor(dt, 'vae')
+    const encFamily = requiredFamilyFor(dt, 'encoder')
+    const audFamily = requiredFamilyFor(dt, 'audio_encoder')
     const st = await window.api.settingsGet()
     // Re-entrancy token: restore triggers this watcher on every session
     // switch, so two overlapping async runs — rapid A→B→C switching — could
@@ -799,18 +947,20 @@ watch(
     // race, previously near-impossible to hit by hand; restore makes it
     // reachable.)
     if (modelEntry.value !== entry) return
-    const vaeName = st.defaultVae?.[dt]
-    // The VAE configured for the diffusion_type (from hub.json) is the source of truth
-    const vaeCfg = appStore.configs?.hub.repo.vae[dt]
+    // The default-VAE settings key is the RESOLVED family, so the wan2_1 VAE
+    // selected for wan2_2_t2v is shared with wan2_1 sessions.
+    const vaeName = st.defaultVae?.[vaeFamily]
+    // The VAE configured for the resolved family (from hub.json) is the source of truth
+    const vaeCfg = appStore.configs?.hub.repo.vae[vaeFamily]
     const defaultVaeName =
       typeof vaeCfg === 'string'
         ? vaeCfg.split('/').pop() ?? vaeCfg
         : (vaeCfg?.default.split('/').pop() ?? vaeCfg?.default ?? '')
     vaeEntry.value =
-      (appStore.catalog?.entries ?? []).find((e) => e.type === 'vae' && e.diffusionType === dt && e.name === vaeName) ??
-      (appStore.catalog?.entries ?? []).find((e) => e.type === 'vae' && e.diffusionType === dt && e.name === defaultVaeName) ??
-      (appStore.catalog?.entries ?? []).find((e) => e.type === 'vae' && e.diffusionType === dt && e.isDefault) ??
-      (appStore.catalog?.entries ?? []).find((e) => e.type === 'vae' && e.diffusionType === dt) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'vae' && e.diffusionType === vaeFamily && e.name === vaeName) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'vae' && e.diffusionType === vaeFamily && e.name === defaultVaeName) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'vae' && e.diffusionType === vaeFamily && e.isDefault) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'vae' && e.diffusionType === vaeFamily) ??
       null
     // Encoder bundle (SD3.5-style `defaults[]`) — the bundle check must run
     // BEFORE the single-file resolution chain: after a rescan the catalog
@@ -820,30 +970,39 @@ watch(
     // Assignment (not conditional clearing) covers bundle→single,
     // single→bundle, bundle→bundle and model-deselection without enumerating
     // transitions, so a stale bundle can never leak across model switches.
-    const bundle = resolveEncoderBundle(dt)
+    const bundle = resolveEncoderBundle(encFamily)
     encoderBundle.value = bundle
     if (bundle.length) {
       encoderEntry.value = null
     } else {
-      // Resolution order: user-configured default (settings) > hub.json
-      // `default` (a repo-relative path — match catalog entries by file name
-      // so a stale cached catalog without isDefault flags still resolves
-      // correctly).
-      const userEncoderName = st.defaultEncoder?.[dt]
-      const defaultEncoder = appStore.configs?.hub.repo.encoder[dt]?.default ?? ''
+      // Resolution order: user-configured default (settings, keyed by the
+      // resolved family) > hub.json `default` (a repo-relative path — match
+      // catalog entries by file name so a stale cached catalog without
+      // isDefault flags still resolves correctly).
+      const userEncoderName = st.defaultEncoder?.[encFamily]
+      const defaultEncoder = appStore.configs?.hub.repo.encoder[encFamily]?.default ?? ''
       const defaultEncoderName = defaultEncoder.split('/').pop() ?? defaultEncoder
       encoderEntry.value =
         (userEncoderName
           ? (appStore.catalog?.entries ?? []).find(
-              (e) => e.type === 'encoder' && e.diffusionType === dt && e.name === userEncoderName
+              (e) => e.type === 'encoder' && e.diffusionType === encFamily && e.name === userEncoderName
             )
           : undefined) ??
         (appStore.catalog?.entries ?? []).find(
-          (e) => e.type === 'encoder' && e.diffusionType === dt && (e.name === defaultEncoder || e.name === defaultEncoderName)
+          (e) => e.type === 'encoder' && e.diffusionType === encFamily && (e.name === defaultEncoder || e.name === defaultEncoderName)
         ) ??
-        (appStore.catalog?.entries ?? []).find((e) => e.type === 'encoder' && e.diffusionType === dt && e.isDefault) ??
-        (appStore.catalog?.entries ?? []).find((e) => e.type === 'encoder' && e.diffusionType === dt) ??
+        (appStore.catalog?.entries ?? []).find((e) => e.type === 'encoder' && e.diffusionType === encFamily && e.isDefault) ??
+        (appStore.catalog?.entries ?? []).find((e) => e.type === 'encoder' && e.diffusionType === encFamily) ??
         null
+      // Entry-level `use_as` (the wan umt5-xxl encoder → `--t5xxl`): promote
+      // the single-file encoder into a one-element bundle so the request
+      // takes the bundle path and buildArgs emits `--<use_as>` instead of
+      // the legacy `--llm`.
+      if (encoderEntry.value?.useAs) {
+        const single = encoderEntry.value
+        encoderBundle.value = [{ ...single, useAs: single.useAs! }]
+        encoderEntry.value = null
+      }
     }
     // Vision (mmproj) model — only present for diffusion_types that declare a
     // `vision` dependency in hub.json (e.g. qwen_image_2.1).
@@ -884,17 +1043,76 @@ watch(
       (appStore.catalog?.entries ?? []).find((e) => e.type === 'tokenizer' && e.diffusionType === dt && e.isDefault) ??
       (appStore.catalog?.entries ?? []).find((e) => e.type === 'tokenizer' && e.diffusionType === dt) ??
       null
-    // Restore support: when a saved resolution is pending, prefer it —
-    // matched against the new list by width+height — over the first entry,
-    // then clear the one-shot marker so the resolution watchers resume
-    // normal operation. This relies on this watcher being registered before
-    // the `resolutions` watcher so the restored resolution survives the list
-    // guard (which skips while the marker is set) — keep that order.
-    const saved = pendingRestoreResolution.value
-    resolution.value =
-      (saved && resolutions.value.find((x) => x.width === saved.width && x.height === saved.height)) ||
-      resolutions.value[0] ||
+    // Audio encoder (wav2vec2 — Wan2.2 S2V only): resolved from the REQUIRED
+    // family (hub.json repo.audio_encoder is keyed by the wan2_2 family and
+    // reached through `requires.audio_encoder.from`). Types without a
+    // required audio encoder resolve to null — no entry, no flag.
+    const userAudioEncoderName = st.defaultAudioEncoder?.[audFamily]
+    const defaultAudioEncoder = appStore.configs?.hub.repo.audio_encoder?.[audFamily]?.default ?? ''
+    const defaultAudioEncoderName = defaultAudioEncoder.split('/').pop() ?? defaultAudioEncoder
+    audioEncoderEntry.value =
+      (userAudioEncoderName
+        ? (appStore.catalog?.entries ?? []).find(
+            (e) => e.type === 'audio_encoder' && e.diffusionType === audFamily && e.name === userAudioEncoderName
+          )
+        : undefined) ??
+      (appStore.catalog?.entries ?? []).find(
+        (e) => e.type === 'audio_encoder' && e.diffusionType === audFamily && (e.name === defaultAudioEncoder || e.name === defaultAudioEncoderName)
+      ) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'audio_encoder' && e.diffusionType === audFamily && e.isDefault) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'audio_encoder' && e.diffusionType === audFamily) ??
       null
+    // Audio VAE (LTX 2.5's audio track) and latent upscaler (LTX 2.5 hires
+    // fix) — resolved from the diffusion type ITSELF (no `requires`
+    // indirection; both hub sections are family-keyed single-default-file
+    // entries). Types whose hub config declares neither resolve to null —
+    // no entry, no flag.
+    const userAudioVaeName = st.defaultAudioVae?.[dt]
+    const defaultAudioVae = appStore.configs?.hub.repo.audio_vae?.[dt]?.default ?? ''
+    const defaultAudioVaeName = defaultAudioVae.split('/').pop() ?? defaultAudioVae
+    audioVaeEntry.value =
+      (userAudioVaeName
+        ? (appStore.catalog?.entries ?? []).find(
+            (e) => e.type === 'audio_vae' && e.diffusionType === dt && e.name === userAudioVaeName
+          )
+        : undefined) ??
+      (appStore.catalog?.entries ?? []).find(
+        (e) => e.type === 'audio_vae' && e.diffusionType === dt && (e.name === defaultAudioVae || e.name === defaultAudioVaeName)
+      ) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'audio_vae' && e.diffusionType === dt && e.isDefault) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'audio_vae' && e.diffusionType === dt) ??
+      null
+    const userLatentUpscalerName = st.defaultLatentUpscaler?.[dt]
+    const defaultLatentUpscaler = appStore.configs?.hub.repo.latent_upscaler?.[dt]?.default ?? ''
+    const defaultLatentUpscalerName = defaultLatentUpscaler.split('/').pop() ?? defaultLatentUpscaler
+    latentUpscalerEntry.value =
+      (userLatentUpscalerName
+        ? (appStore.catalog?.entries ?? []).find(
+            (e) => e.type === 'latent_upscaler' && e.diffusionType === dt && e.name === userLatentUpscalerName
+          )
+        : undefined) ??
+      (appStore.catalog?.entries ?? []).find(
+        (e) => e.type === 'latent_upscaler' && e.diffusionType === dt && (e.name === defaultLatentUpscaler || e.name === defaultLatentUpscalerName)
+      ) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'latent_upscaler' && e.diffusionType === dt && e.isDefault) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'latent_upscaler' && e.diffusionType === dt) ??
+      null
+    // Restore support: when a saved resolution is pending, prefer it — the
+    // dimension-matched preset (keeps canonical preset names) when one
+    // matches, else the saved entry VERBATIM (a custom selection is not in
+    // the list and must survive) — over the first entry, then clear the
+    // one-shot marker so the resolution watchers resume normal operation.
+    // This relies on this watcher being registered before the `resolutions`
+    // watcher so the restored resolution survives the list guard (which
+    // skips while the marker is set) — keep that order. Every assignment
+    // here also refreshes isCustomResolution so the list guard knows whether
+    // the current value is an intentional unlisted custom size.
+    const saved = pendingRestoreResolution.value
+    const matched = saved
+      ? resolutions.value.find((x) => x.width === saved.width && x.height === saved.height)
+      : undefined
+    resolution.value = matched ?? saved ?? resolutions.value[0] ?? null
+    isCustomResolution.value = !matchesPresetDimensions(resolution.value, resolutions.value)
     pendingRestoreResolution.value = null
     // Auto-download the selected diffusion model and its VAE / text encoder /
     // vision / tokenizer dependencies in the background. Swallow rejections (a
@@ -909,6 +1127,13 @@ watch(
     for (const e of encoderBundle.value) void ensureDownloaded(e).catch(() => {})
     if (visionEntry.value) void ensureDownloaded(visionEntry.value).catch(() => {})
     if (tokenizerEntry.value) void ensureDownloaded(tokenizerEntry.value).catch(() => {})
+    if (audioEncoderEntry.value) void ensureDownloaded(audioEncoderEntry.value).catch(() => {})
+    // Both LTX companions are REGISTERED family dependencies — they download
+    // with the per-family bundle on model selection (exactly like the audio
+    // encoder), NOT gated on the Upscale checkbox (the checkbox gates only
+    // the flag emission).
+    if (audioVaeEntry.value) void ensureDownloaded(audioVaeEntry.value).catch(() => {})
+    if (latentUpscalerEntry.value) void ensureDownloaded(latentUpscalerEntry.value).catch(() => {})
   },
   { immediate: true }
 )
@@ -923,6 +1148,11 @@ watch(resolutions, (r) => {
   // watcher alone decides the restored value (saved entry when listed, first
   // entry otherwise), which also removes the visible resolution flicker.
   if (pendingRestoreResolution.value) return
+  // A user-picked custom resolution is intentionally unlisted — never snap it
+  // to the first preset on list changes (catalog rescans). Model switches are
+  // handled by the model watcher, which re-seeds a preset default and clears
+  // the flag.
+  if (isCustomResolution.value) return
   if (r.length && (!resolution.value || !r.some((x) => x.width === resolution.value!.width && x.height === resolution.value!.height))) {
     resolution.value = r[0]
   }
@@ -997,13 +1227,22 @@ watch(
       return
     }
 
+    // Prefer the PROVIDER-matching entry when the session saved one (pins the
+    // diffusion variant across reloads when two same-family entries share a
+    // basename); legacy sessions without modelProvider fall back to the
+    // first name match — the pre-change behavior (plan §6/§9 item 14).
+    const nameMatches = catalog.entries.filter(
+      (e) =>
+        e.type === 'diffusion' &&
+        e.diffusionType === inputs.diffusionType &&
+        e.name === inputs.model
+    )
     const resolved =
-      catalog.entries.find(
-        (e) =>
-          e.type === 'diffusion' &&
-          e.diffusionType === inputs.diffusionType &&
-          e.name === inputs.model
-      ) ?? null
+      (inputs.modelProvider
+        ? nameMatches.find((e) => e.provider === inputs.modelProvider)
+        : undefined) ??
+      nameMatches[0] ??
+      null
 
     if (!resolved) {
       // Saved model no longer resolves in the catalog (file deleted, hub
@@ -1025,10 +1264,11 @@ watch(
       // `resolutions.value` is already correct here (the diffusion type did
       // not change): the listed entry matching width+height, else the first.
       const saved = inputs.resolution
-      resolution.value =
-        (saved && resolutions.value.find((x) => x.width === saved.width && x.height === saved.height)) ||
-        resolutions.value[0] ||
-        null
+      const matched = saved
+        ? resolutions.value.find((x) => x.width === saved.width && x.height === saved.height)
+        : undefined
+      resolution.value = matched ?? saved ?? resolutions.value[0] ?? null
+      isCustomResolution.value = !matchesPresetDimensions(resolution.value, resolutions.value)
       return
     }
 
@@ -1068,6 +1308,38 @@ async function addInputs(): Promise<void> {
 }
 function removeInput(p: string): void {
   inputImages.value = inputImages.value.filter((x) => x !== p)
+}
+
+// ---------- video-era channels (WAN) ----------
+/** File-name tail for the non-image channel chips (audio / control frames). */
+function mediaBaseName(p: string): string {
+  return p.split(/[\\/]/).pop() ?? p
+}
+// Driving audio (--audio, Wan2.2 S2V) — picked via the channel `accepts`
+// globs through the parameterized pickMedia invoke.
+async function addAudio(): Promise<void> {
+  const picked = await window.api.pickMedia([{ name: 'Audio', extensions: ['wav', 'mp3', 'ogg', 'flac'] }])
+  if (picked.length) audioPath.value = picked[0]
+}
+function clearAudio(): void {
+  audioPath.value = ''
+}
+// Control video (--control-video, VACE) — sd-cli wants a frames DIRECTORY,
+// so this opens the existing directory picker.
+async function addControlVideo(): Promise<void> {
+  const dir = await window.api.pickDirectory()
+  if (dir) controlVideoPath.value = dir
+}
+function clearControlVideo(): void {
+  controlVideoPath.value = ''
+}
+// End image (--end-img, FLF2V) — dormant while every entry has show:false.
+async function addEndImage(): Promise<void> {
+  const picked = await window.api.pickMedia([{ name: 'Images', extensions: ['jpg', 'jpeg', 'png'] }])
+  if (picked.length) endImagePath.value = picked[0]
+}
+function clearEndImage(): void {
+  endImagePath.value = ''
 }
 
 // Drag-and-drop reference images onto the composer. Files dragged in from the OS
@@ -1184,7 +1456,12 @@ async function generate(): Promise<void> {
       encoderEntry.value,
       ...encoderBundle.value,
       visionEntry.value,
-      tokenizerEntry.value
+      tokenizerEntry.value,
+      audioEncoderEntry.value,
+      // Registered family dependencies — awaited UNCONDITIONALLY (a failed
+      // download fails the Send loudly, same as the VAE/encoder).
+      audioVaeEntry.value,
+      latentUpscalerEntry.value
     ]) {
       if (!e) continue
       try {
@@ -1203,22 +1480,28 @@ async function generate(): Promise<void> {
 
     const s = sessionSampling.value
     // Belt-and-braces with the channel watchers: the previous image is chained
-    // only when the user opted in AND at least one image channel is enabled.
-    // A paint state sourced from the previous image supersedes it: chaining
-    // the raw previous image alongside its painted replacement would
-    // duplicate the reference (As Reference) or let the raw image steal the
-    // single init slot ahead of the painted one (As Input — main unshifts it
-    // first). The checkbox itself is left untouched; the suppression is
-    // per-send while the state is active.
+    // only when the user opted in AND the type's `use_previous_image` gate is
+    // on AND at least one image channel is enabled. A paint state sourced from
+    // the previous image supersedes it: chaining the raw previous image
+    // alongside its painted replacement would duplicate the reference (As
+    // Reference) or let the raw image steal the single init slot ahead of the
+    // painted one (As Input — main unshifts it first). The checkbox itself is
+    // left untouched; the suppression is per-send while the state is active.
     const chainPrevious =
       usePrevious.value &&
+      allowPreviousImage.value &&
       (allowRef.value || allowInput.value) &&
       paintState.value?.source !== 'previous'
     const req: GenerationRequest = {
-      sessionId: sessionsStore.activeId,
+      // A session was created above when none was active, so the id is set.
+      sessionId: sessionsStore.activeId!,
       prompt: text,
       model: modelEntry.value.name,
       diffusionType: modelEntry.value.diffusionType,
+      // Provider disambiguates a basename collision across provider folders
+      // within one family — main resolves the diffusion model through the
+      // family/provider-scoped pathFor chain with it (plan §3.6).
+      modelProvider: modelEntry.value.provider,
       vae: vaeEntry.value?.name,
       // Provider disambiguates a basename collision across provider folders
       // (e.g. sd3_5's `diffusion_pytorch_model.safetensors` exists under both
@@ -1226,43 +1509,70 @@ async function generate(): Promise<void> {
       // basename and picks whichever folder sorts first.
       vaeProvider: vaeEntry.value?.provider,
       // Bundle wins at spawn time: gen:start ignores `encoder` when `encoders`
-      // is non-empty. On the bundle path `encoder` is omitted entirely.
+      // is non-empty. On the bundle path `encoder` is omitted entirely. A
+      // single-file encoder with an entry-level `use_as` (wan umt5-xxl) is
+      // promoted into a one-element bundle in the model watcher, so it takes
+      // this path and emits `--t5xxl` instead of `--llm`.
       ...(encoderBundle.value.length
         ? { encoders: encoderBundle.value.map((e) => ({ name: e.name, useAs: e.useAs, provider: e.provider })) }
         : { encoder: encoderEntry.value?.name, encoderProvider: encoderEntry.value?.provider }),
       vision: visionEntry.value?.name,
       tokenizer: tokenizerEntry.value?.name,
+      // Wan2.2 S2V audio encoder — resolved from the required family; the
+      // name rides the request, main resolves the path.
+      ...(audioEncoderEntry.value ? { audioEncoder: audioEncoderEntry.value.name } : {}),
+      // LTX 2.5 companions — sent whenever resolved; main gates the flag
+      // emission on the merged `upscale` (the audio VAE emits
+      // unconditionally). Provider disambiguates a basename collision across
+      // provider folders.
+      ...(audioVaeEntry.value
+        ? { audioVae: audioVaeEntry.value.name, audioVaeProvider: audioVaeEntry.value.provider }
+        : {}),
+      ...(latentUpscalerEntry.value
+        ? { latentUpscaler: latentUpscalerEntry.value.name, latentUpscalerProvider: latentUpscalerEntry.value.provider }
+        : {}),
       // The resolution selected in the chat panel always wins; per-session
       // width/height overrides are no longer supported.
       resolution:
         resolution.value
           ? { width: resolution.value.width, height: resolution.value.height }
-          : { width: s?.width ?? 1024, height: s?.height ?? 1024 },
+          : { width: s?.width.default ?? 1024, height: s?.height.default ?? 1024 },
       referencePaths: [...refs],
       inputImagePaths: [...inputs],
+      // Video-era channels (S2V audio / VACE control frames / FLF2V end
+      // image) — main re-validates the paths and drops them for types whose
+      // channel config forbids them.
+      ...(audioPath.value ? { audioPath: audioPath.value } : {}),
+      ...(controlVideoPath.value ? { controlVideoPath: controlVideoPath.value } : {}),
+      ...(endImagePath.value ? { endImagePath: endImagePath.value } : {}),
       usePrevious: chainPrevious,
       // omitted entirely when unchecked or disallowed — the request payload
       // carries no previous image unless the user explicitly opted in
       previousImagePath: chainPrevious ? sessionsStore.lastGeneratedImage : undefined,
       previousImageMode: chainPrevious ? previousMode.value : undefined,
-      steps: s?.steps ?? 25,
-      cfg: s?.cfg ?? 1.0,
-      sampler: s?.sampler ?? DEFAULT_SAMPLER,
+      // Steps / cfg / sampler / strength: nullable — a null descriptor
+      // default ("auto") must reach main AS NULL so buildArgs OMITS the flag
+      // and sd-cli's own default applies (steps 20; cfg-scale 7.0;
+      // sampling-method euler for Flux/SD3/Wan, euler_a otherwise; strength
+      // 0.75). Never fall back to a hardcoded value here: it would override
+      // the config's "auto" with an arbitrary constant.
+      steps: s?.steps.default ?? null,
+      cfg: s?.cfg.default ?? null,
+      sampler: s?.sampler.default ?? null,
       // RAW merged value — a concrete string, the 'model-specific' sentinel, or
       // null. Main resolves the sentinel + the global fallback (§2.2);
       // pre-resolving here would erase the distinction between "picked
       // model-specific" and "no scheduler chosen".
-      scheduler: s?.scheduler ?? undefined,
+      scheduler: s?.scheduler.default ?? undefined,
       // RAW merged value — a finite number (incl 0), '', or undefined. Main
       // resolves the global fallback + normalization; `??` (never `||`) keeps
       // 0 and '' intact.
-      flowShift: s?.flow_shift ?? undefined,
-      // RAW merged value — a valid fixed integer, null, or undefined. Main
-      // resolves the session fallback + normalization: a valid integer ⇒ a
-      // fixed --seed, anything else ⇒ a fresh random seed per run.
-      seed: s?.seed ?? undefined,
+      flowShift: s?.flow_shift.default ?? undefined,
+      // Seed is resolved entirely by main (request value wins, then the
+      // session override, then the settings override) — the renderer sends
+      // nothing.
       negativePrompt: sessionNegative.value.trim() || undefined,
-      strength: s?.strength ?? 0.75
+      strength: s?.strength.default ?? null
     }
     // Sticky mask: a saved mask rides on EVERY Send until cleared. The
     // renderer sends the exact background it drew on (initImagePath captured
@@ -1359,7 +1669,7 @@ async function removeLastMessage(): Promise<void> {
 function onGenProgress(p: {
   sessionId: string
   messageId: string
-  status: 'running' | 'done' | 'stopped' | 'error'
+  status: 'running' | 'done' | 'stopped' | 'error' | 'converting'
   step?: number
   totalSteps?: number
   image?: { path: string; name: string }
@@ -1378,19 +1688,27 @@ function onGenProgress(p: {
   if (p.status === 'running' && p.step !== undefined) {
     progress.value = { step: p.step, total: p.totalSteps ?? 0 }
   }
+  // 'converting' — the .avi → .mp4 post-processing is running: keep busy +
+  // show the indicator, no step update, no busy reset.
+  if (p.status === 'converting') {
+    converting.value = true
+  }
   if (p.status === 'done') {
     busy.value = false
     progress.value = null
+    converting.value = false
     toast('Image generated', 'ok')
   }
   if (p.status === 'stopped') {
     busy.value = false
     progress.value = null
+    converting.value = false
     toast('Generation stopped', 'info')
   }
   if (p.status === 'error') {
     busy.value = false
     progress.value = null
+    converting.value = false
   }
   // Real messages are now flowing from main — load them and drop the
   // optimistic placeholders.
@@ -1487,8 +1805,9 @@ function fmtBytes(n: number): string {
             </div>
             <div class="status muted">
               <span class="spinner"></span>
-              Generating
-              <template v-if="progress && progress.total"> · step {{ progress.step }}/{{ progress.total }}</template>
+              <template v-if="converting">Converting…</template>
+              <template v-else>Generating</template>
+              <template v-if="!converting && progress && progress.total"> · step {{ progress.step }}/{{ progress.total }}</template>
             </div>
           </div>
         </div>
@@ -1508,14 +1827,21 @@ function fmtBytes(n: number): string {
             <div v-if="m.refs && m.refs.length" class="refs">
               <ImageFromPath v-for="(r, i) in m.refs" :key="i" :path="r" :alt="'reference ' + (i + 1)" :max="120" />
             </div>
+            <!-- Video-era channel chips (display-only, like refs). -->
+            <div v-if="m.audioPath || m.controlVideoPath || m.endImagePath" class="refs">
+              <span v-if="m.audioPath" class="chip-label mono" :title="m.audioPath">♪ {{ mediaBaseName(m.audioPath) }}</span>
+              <span v-if="m.controlVideoPath" class="chip-label mono" :title="m.controlVideoPath">▣ {{ mediaBaseName(m.controlVideoPath) }}</span>
+              <span v-if="m.endImagePath" class="chip-label mono" :title="m.endImagePath">⇥ {{ mediaBaseName(m.endImagePath) }}</span>
+            </div>
             <div
               v-if="m.role === 'assistant' && busy && !m.image && m.status !== 'error' && m.status !== 'stopped'"
               class="gen-indicator"
             >
               <span class="spinner"></span>
               <span class="muted">
-                Generating
-                <template v-if="progress && progress.total">
+                <template v-if="converting">Converting…</template>
+                <template v-else>Generating</template>
+                <template v-if="!converting && progress && progress.total">
                   · step {{ progress.step }}/{{ progress.total }}
                 </template>
               </span>
@@ -1568,7 +1894,7 @@ function fmtBytes(n: number): string {
     </div>
     <footer class="composer-wrap">
       <div class="composer">
-        <div v-if="refImages.length || inputImages.length" class="refs">
+        <div v-if="refImages.length || inputImages.length || audioPath || controlVideoPath || endImagePath" class="refs">
           <div v-for="p in refImages" :key="'r' + p" class="ref-thumb">
             <ImageFromPath :path="p" :max="72" />
             <button class="icon remove" title="Remove" @click="removeRef(p)">×</button>
@@ -1577,6 +1903,20 @@ function fmtBytes(n: number): string {
             <ImageFromPath :path="p" :max="72" />
             <span class="input-badge">input</span>
             <button class="icon remove" title="Remove" @click="removeInput(p)">×</button>
+          </div>
+          <!-- Video-era channel chips: sticky like the mask state — they ride
+               every Send until cleared. -->
+          <div v-if="audioPath" class="ref-thumb chip" :title="audioPath">
+            <span class="chip-label mono">♪ {{ mediaBaseName(audioPath) }}</span>
+            <button class="icon remove" title="Remove" @click="clearAudio()">×</button>
+          </div>
+          <div v-if="controlVideoPath" class="ref-thumb chip" :title="controlVideoPath">
+            <span class="chip-label mono">▣ {{ mediaBaseName(controlVideoPath) }}</span>
+            <button class="icon remove" title="Remove" @click="clearControlVideo()">×</button>
+          </div>
+          <div v-if="endImagePath" class="ref-thumb chip" :title="endImagePath">
+            <span class="chip-label mono">⇥ {{ mediaBaseName(endImagePath) }}</span>
+            <button class="icon remove" title="Remove" @click="clearEndImage()">×</button>
           </div>
         </div>
         <div v-if="depDownloads.length" class="dep-dl">
@@ -1639,6 +1979,54 @@ function fmtBytes(n: number): string {
               <rect x="3" y="3" width="18" height="18" rx="2" />
               <circle cx="8.5" cy="8.5" r="1.5" />
               <path d="m21 15-5-5L5 21" />
+            </svg>
+          </button>
+          <!-- Video-era channels (WAN): driving audio (S2V), control-frames
+               directory (VACE) and end image (FLF2V). Gated by the sampling
+               descriptor's channel `show` flags. -->
+          <button
+            v-if="allowAudio"
+            class="icon"
+            :class="{ active: !!audioPath }"
+            title="Driving audio (Wan S2V)"
+            aria-label="Driving audio"
+            :disabled="busy"
+            @click="addAudio()"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M9 18V5l12-2v13" />
+              <circle cx="6" cy="18" r="3" />
+              <circle cx="18" cy="16" r="3" />
+            </svg>
+          </button>
+          <button
+            v-if="allowControlVideo"
+            class="icon"
+            :class="{ active: !!controlVideoPath }"
+            title="Control video frames directory (VACE)"
+            aria-label="Control video frames"
+            :disabled="busy"
+            @click="addControlVideo()"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="4" width="20" height="16" rx="2" />
+              <path d="M2 9h20" />
+              <path d="M7 4v5M12 4v5M17 4v5" />
+            </svg>
+          </button>
+          <button
+            v-if="allowEndImage"
+            class="icon"
+            :class="{ active: !!endImagePath }"
+            title="End image (FLF2V)"
+            aria-label="End image"
+            :disabled="busy"
+            @click="addEndImage()"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <path d="m9 9 6 6" />
+              <path d="M15 9v6H9" />
             </svg>
           </button>
           <button
@@ -1704,6 +2092,7 @@ function fmtBytes(n: number): string {
             </svg>
           </button>
           <button
+            v-if="allowInpainting"
             class="icon"
             :class="{ active: maskState?.kind === 'inpaint' }"
             :title="inpaintTitle"
@@ -1718,6 +2107,7 @@ function fmtBytes(n: number): string {
             </svg>
           </button>
           <button
+            v-if="allowInpainting"
             class="icon"
             :class="{ active: maskState?.kind === 'outpaint' }"
             :title="outpaintTitle"
@@ -1745,12 +2135,12 @@ function fmtBytes(n: number): string {
           <span v-if="inputImages.length" class="muted faint">
             {{ inputImages.length }}/{{ maxInput }} input{{ inputImages.length === 1 ? '' : 's' }}
           </span>
-          <label v-if="allowRef || allowInput" class="chk">
+          <label v-if="allowPreviousImage && (allowRef || allowInput)" class="chk">
             <input v-model="usePrevious" type="checkbox" :disabled="busy" />
             Use previous image
           </label>
           <select
-            v-if="usePrevious && (allowRef || allowInput)"
+            v-if="allowPreviousImage && usePrevious && (allowRef || allowInput)"
             v-model="previousMode"
             title="How the previous image is used"
             :disabled="busy"
@@ -1772,12 +2162,42 @@ function fmtBytes(n: number): string {
               <path d="m6 9 6 6 6-6" />
             </svg>
           </button>
-          <select v-model="resolution" title="Resolution" :disabled="busy || !resolutions.length">
-            <option v-for="r in resolutions" :key="r.name" :value="r">{{ r.name }} ({{ r.width }}×{{ r.height }})</option>
-          </select>
-          <span v-if="sessionSampling" class="faint mono ml-auto">
-            {{ sessionSampling.steps }} steps · cfg {{ sessionSampling.cfg }} · {{ sessionSampling.sampler }} · {{ sessionSampling.scheduler || 'model-specific' }}<template v-if="typeof sessionSampling.flow_shift === 'number'"> · flow {{ sessionSampling.flow_shift }}</template>
-          </span>
+          <button
+            class="model-chip"
+            title="Resolution"
+            aria-haspopup="dialog"
+            aria-label="Select resolution"
+            :disabled="busy || !resolutions.length"
+            @click="resOpen = true"
+          >
+            <span class="model-chip-label">{{ resolutionLabel }}</span>
+            <svg class="model-chip-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+          <div v-if="sessionSampling" class="sampling-info ml-auto">
+            <button class="icon sampling-info-btn" title="Sampling settings" aria-label="Sampling settings">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 16v-4" />
+                <path d="M12 8h.01" />
+              </svg>
+            </button>
+            <!-- Floating hover window: the configured sampling for the current
+                 session (descriptor defaults ← settings overrides ← session
+                 override). Pure-CSS hover — no click, no component state. -->
+            <div class="sampling-popover" role="tooltip">
+              <div class="sampling-popover-title">Sampling · {{ diffusionType }}</div>
+              <table>
+                <tbody>
+                  <tr v-for="row in samplingRows" :key="row.label">
+                    <th>{{ row.label }}</th>
+                    <td :title="row.title">{{ row.value }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </div>
     </footer>
@@ -1801,6 +2221,13 @@ function fmtBytes(n: number): string {
       :selected="modelEntry"
       @select="onPick"
       @close="pickerOpen = false"
+    />
+    <ResolutionSelectorDialog
+      v-if="resOpen"
+      :diffusion-type="diffusionType"
+      :current="resolution"
+      @select="onResolutionSelect"
+      @close="resOpen = false"
     />
     <NegativePromptDialog
       v-if="negOpen"
@@ -2135,6 +2562,69 @@ function fmtBytes(n: number): string {
   flex-shrink: 0;
   color: var(--text-dim);
 }
+/* sampling-info — the composer's ⓘ icon; hovering it floats a window with
+   the configured sampling for the current session (replaces the old inline
+   one-line summary, which could not carry the full descriptor). Shown on
+   :hover and :focus-within (keyboard); the ::after bridge spans the gap
+   between icon and window so the pointer never leaves the hover chain. */
+.sampling-info {
+  position: relative;
+  display: inline-flex;
+}
+.sampling-info-btn {
+  color: var(--text-faint);
+}
+.sampling-info-btn:hover:not(:disabled) {
+  color: var(--text);
+}
+.sampling-popover {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: -6px;
+  z-index: 80;
+  min-width: 230px;
+  max-width: 320px;
+  padding: 10px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+}
+.sampling-popover::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+.sampling-info:hover .sampling-popover,
+.sampling-info:focus-within .sampling-popover {
+  display: block;
+}
+.sampling-popover-title {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.sampling-popover table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.sampling-popover th {
+  text-align: left;
+  font-weight: normal;
+  color: var(--text-dim);
+  padding: 2px 12px 2px 0;
+  white-space: nowrap;
+  vertical-align: top;
+}
+.sampling-popover td {
+  padding: 2px 0;
+  word-break: break-word;
+}
 .dep-dl {
   display: flex;
   flex-direction: column;
@@ -2165,6 +2655,24 @@ function fmtBytes(n: number): string {
   background: var(--accent);
   color: #fff;
   pointer-events: none;
+}
+/* Non-image channel chips (audio / control-frames dir / end image): a text
+   tile in the refs strip, and a plain inline chip on persisted messages. */
+.ref-thumb.chip {
+  display: inline-flex;
+  align-items: center;
+  height: 72px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  max-width: 180px;
+}
+.chip-label {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .prev-mode {
   font-size: 12px;

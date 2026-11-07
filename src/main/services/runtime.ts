@@ -70,7 +70,7 @@ export interface RuntimeService {
 export function createRuntimeService(): RuntimeService {
   function versions(): RuntimeVersionInfo[] {
     const cfg = loadRuntimeConfig()
-    return Object.keys(cfg)
+    return Object.keys(cfg.releases)
       .sort((a, b) => Number(b) - Number(a))
       .map((version) => {
         const binary = findSdCliBinary(version)
@@ -195,8 +195,8 @@ export function createRuntimeService(): RuntimeService {
   ): { key: RuntimeKey; url: string }[] {
     const targets = [key, ...(extraKeys[key] ?? [])]
     return targets
-      .filter((k) => cfg[version]?.[k])
-      .map((k) => ({ key: k, url: cfg[version][k] as string }))
+      .filter((k) => cfg.releases[version]?.[k])
+      .map((k) => ({ key: k, url: cfg.releases[version][k] as string }))
   }
 
   return { versions, download, binaryFor }

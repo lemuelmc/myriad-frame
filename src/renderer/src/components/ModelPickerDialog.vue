@@ -10,6 +10,7 @@ import type { CatalogEntry } from '@shared/types'
 import { useAppStore } from '../stores/app'
 import { useSettingsStore } from '../stores/settings'
 import { matchesSearch, providerLabel } from '../search'
+import { accessForFamily } from '../deps'
 import { toast } from '../toast'
 
 const props = defineProps<{ selected: CatalogEntry | null }>()
@@ -39,28 +40,95 @@ const diffusionEntries = computed(() =>
     return !e.name.startsWith('text_encoders/') && !e.name.startsWith('vae/')
   })
 )
-const totalCount = computed(() => diffusionEntries.value.length)
-
 const search = computed(() => query.value.trim().toLowerCase())
+
+/** One picker row: a plain single-file model OR a MoE group (groupId). */
+interface PickerRow {
+  key: string
+  /** the selectable entry (the low-noise expert; the only member for plain rows) */
+  primary: CatalogEntry
+  /** every file of the row — the group members, or [primary] for plain rows */
+  members: CatalogEntry[]
+  /** display label — the group's shared label with the noise suffix stripped */
+  label: string
+  /** true when the row groups a MoE pair */
+  isMoe: boolean
+}
+
+/** Group catalog entries into picker rows: entries sharing a `groupId` (a
+ *  WAN MoE pair) collapse into ONE row whose primary is the low-noise
+ *  expert; plain single-file entries keep one row each. */
+function groupEntries(list: CatalogEntry[]): PickerRow[] {
+  const groups = new Map<string, CatalogEntry[]>()
+  const ordered: string[] = []
+  for (const e of list) {
+    const key = e.groupId ?? `id:${e.id}`
+    if (!groups.has(key)) {
+      groups.set(key, [])
+      ordered.push(key)
+    }
+    groups.get(key)!.push(e)
+  }
+  const out: PickerRow[] = []
+  for (const key of ordered) {
+    const members = groups.get(key)!
+    const primary = members.find((e) => e.useAs === 'diffusion-model') ?? members[0]
+    const raw = primary.label || primary.name
+    out.push({
+      key,
+      primary,
+      members,
+      label: raw.replace(/\s*\((?:low|high) noise\)$/i, ''),
+      isMoe: !!primary.groupId
+    })
+  }
+  return out
+}
+
+const totalCount = computed(() => groupEntries(diffusionEntries.value).length)
 
 // Rows sorted stably by diffusionType → provider → name: raw catalog order is
 // hub.json order followed by HF tree order, which is not stable across scans.
-const rows = computed(() => {
+const rows = computed<PickerRow[]>(() => {
   const q = search.value
   const list = diffusionEntries.value.filter((e) => !q || matchesSearch(e, q, hubProviders.value))
-  return [...list].sort((a, b) => {
-    const family = a.diffusionType.localeCompare(b.diffusionType)
+  return groupEntries(list).sort((a, b) => {
+    const pa = a.primary
+    const pb = b.primary
+    const family = pa.diffusionType.localeCompare(pb.diffusionType)
     if (family !== 0) return family
-    const provider = providerLabel(a.provider, hubProviders.value).localeCompare(
-      providerLabel(b.provider, hubProviders.value)
+    const provider = providerLabel(pa.provider, hubProviders.value).localeCompare(
+      providerLabel(pb.provider, hubProviders.value)
     )
     if (provider !== 0) return provider
-    return a.name.localeCompare(b.name)
+    return pa.name.localeCompare(pb.name)
   })
 })
 
 function baseName(name: string): string {
   return name.split('/').pop() ?? name
+}
+
+/**
+ * Access badge for the row's diffusion family, from the FRESH hub config
+ * (`diffusion_models[].access` via accessForFamily()): 'Auth' when downloads
+ * need an API token, 'Gated' when a token AND accepting the terms/license on
+ * the model page are required, null when freely downloadable. Rendered in
+ * the same accent style as the CivitAI source badge — which is suppressed
+ * while an access badge shows, since the access badge already covers the
+ * token requirement.
+ */
+function accessBadge(e: CatalogEntry): 'Auth' | 'Gated' | null {
+  const a = accessForFamily(e.diffusionType)
+  if (!a) return null
+  return a === 'gated' ? 'Gated' : 'Auth'
+}
+
+/** Hover text for the access badge — what it requires + where to configure the token. */
+function accessTitle(e: CatalogEntry): string {
+  return accessForFamily(e.diffusionType) === 'gated'
+    ? 'Gated model — requires a token AND accepting the terms/license on the model page. Configure a token (Settings → Tokens)'
+    : 'Requires authentication — configure a token (Settings → Tokens)'
 }
 
 /** Format an on-disk size in bytes as a human-readable string, matching the
@@ -86,11 +154,15 @@ function fmtBytes(n: number): string {
  * and `modelLists` starts as an empty object, so an unguarded `.some()` would
  * throw on first paint.
  */
-function isInstalled(e: CatalogEntry): boolean {
-  return (settingsStore.modelLists.diffusion ?? []).some((f) => f.name === e.name)
+/** A row is installed when EVERY member file is on disk (a MoE pair is not
+ *  optional — gen:start fails on a missing high-noise companion). */
+function isInstalled(row: PickerRow): boolean {
+  return row.members.every((e) =>
+    (settingsStore.modelLists.diffusion ?? []).some((f) => f.name === baseName(e.name))
+  )
 }
-function isDownloading(e: CatalogEntry): boolean {
-  return !!settingsStore.modelDownloads[`diffusion:${e.url}`]
+function isDownloading(row: PickerRow): boolean {
+  return row.members.some((e) => !!settingsStore.modelDownloads[`diffusion:${e.url}`])
 }
 
 async function refreshHub(): Promise<void> {
@@ -158,42 +230,52 @@ onBeforeUnmount(() => {
         <div v-else class="list-wrap">
           <ul class="model-list">
             <li
-              v-for="e in rows"
-              :key="e.id"
+              v-for="row in rows"
+              :key="row.key"
               class="model-item"
-              :class="{ selected: selected?.id === e.id }"
-              :title="e.name"
-              @click="emit('select', e)"
+              :class="{ selected: selected?.id === row.primary.id }"
+              :title="row.primary.name"
+              @click="emit('select', row.primary)"
             >
               <div class="item-main">
                 <div class="title-row">
-                  <span class="mono model-name">{{ baseName(e.name) }}</span>
-                  <span class="tag">{{ e.diffusionType }}</span>
-                  <span v-if="e.quant" class="tag">{{ e.quant }}</span>
+                  <span class="mono model-name">{{ baseName(row.label) }}</span>
+                  <span class="tag">{{ row.primary.diffusionType }}</span>
+                  <span v-if="row.primary.quant" class="tag">{{ row.primary.quant }}</span>
                   <span
-                    v-if="e.source === 'civitai'"
+                    v-if="row.isMoe"
+                    class="tag"
+                    title="MoE pair — both the low-noise and high-noise experts are required and download together"
+                  >MoE</span>
+                  <span
+                    v-if="accessBadge(row.primary)"
+                    class="tag auth-tag"
+                    :title="accessTitle(row.primary)"
+                  >{{ accessBadge(row.primary) }}</span>
+                  <span
+                    v-else-if="row.primary.source === 'civitai'"
                     class="tag auth-tag"
                     title="Downloads from CivitAI — requires a CivitAI API token (Settings → Tokens)"
                   >Auth</span>
-                  <span v-if="isDownloading(e)" class="status-tag status-dl">Downloading…</span>
-                  <span v-else-if="isInstalled(e)" class="status-tag status-ok">Downloaded</span>
+                  <span v-if="isDownloading(row)" class="status-tag status-dl">Downloading…</span>
+                  <span v-else-if="isInstalled(row)" class="status-tag status-ok">Downloaded</span>
                   <span v-else class="status-tag status-none">Not Downloaded</span>
                 </div>
                 <div class="item-sub">
-                  <span class="provider">{{ providerLabel(e.provider, hubProviders) }}</span>
-                  <span v-if="e.size" class="faint"> · {{ fmtBytes(e.size) }}</span>
-                  <template v-if="e.description">
+                  <span class="provider">{{ providerLabel(row.primary.provider, hubProviders) }}</span>
+                  <span v-if="row.primary.size" class="faint"> · {{ fmtBytes(row.primary.size) }}</span>
+                  <template v-if="row.primary.description">
                     <span class="sep">·</span>
-                    <span class="desc">{{ e.description }}</span>
+                    <span class="desc">{{ row.primary.description }}</span>
                   </template>
                 </div>
               </div>
               <button
                 class="set-default"
-                :class="{ active: selected?.id === e.id }"
-                @click.stop="emit('select', e)"
+                :class="{ active: selected?.id === row.primary.id }"
+                @click.stop="emit('select', row.primary)"
               >
-                {{ selected?.id === e.id ? 'Selected' : 'Select' }}
+                {{ selected?.id === row.primary.id ? 'Selected' : 'Select' }}
               </button>
             </li>
           </ul>
@@ -306,9 +388,10 @@ onBeforeUnmount(() => {
   padding: 0 6px;
   white-space: nowrap;
 }
-/* Auth marker for entries downloaded from CivitAI — accent-colored so it
-   stands out from the neutral family/quant tags. Hover for where to
-   configure the token. */
+/* Auth/access marker — accent-colored so it stands out from the neutral
+   family/quant tags. Covers BOTH the CivitAI source badge and the hub.json
+   `access` badge ('Auth' / 'Gated'). Hover for what it requires and where
+   to configure the token. */
 .tag.auth-tag {
   color: var(--accent);
   border-color: var(--accent);

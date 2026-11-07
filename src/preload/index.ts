@@ -66,6 +66,12 @@ const api = {
     ipcRenderer.invoke('app:resolutions', diffusionType),
   about: (): Promise<AboutInfo> => ipcRenderer.invoke('app:about'),
   pickImages: (): Promise<string[]> => ipcRenderer.invoke('app:pickImages'),
+  /**
+   * Parameterized media picker (the sampling.json channel `accepts` lists:
+   * audio for S2V, images for FLF2V's end-image). Resolves [] when canceled.
+   */
+  pickMedia: (filters: { name: string; extensions: string[] }[]): Promise<string[]> =>
+    ipcRenderer.invoke('app:pickMedia', filters),
   /** Native directory picker (the LoRA dialog's custom dir); null when canceled. */
   pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('app:pickDirectory'),
   imageFromPath: (p: string): Promise<string> => ipcRenderer.invoke('app:imageFromPath', p),
@@ -73,6 +79,8 @@ const api = {
   saveImage: (p: string): Promise<string | null> => ipcRenderer.invoke('app:saveImage', p),
   /** Reveal the file in the OS file manager (selects the file). */
   showInFolder: (p: string): Promise<boolean> => ipcRenderer.invoke('app:showInFolder', p),
+  /** Open the file with the OS default application (e.g. the .avi video player). */
+  openPath: (p: string): Promise<boolean> => ipcRenderer.invoke('app:openPath', p),
 
   // runtime
   runtimeVersions: (): Promise<RuntimeVersionInfo[]> => ipcRenderer.invoke('runtime:versions'),
@@ -110,14 +118,33 @@ const api = {
     force?: boolean
   ): Promise<string> =>
     ipcRenderer.invoke('models:download', type, url, provider, force),
-  modelsRemove: (type: ModelType, name: string): Promise<void> =>
-    ipcRenderer.invoke('models:remove', type, name),
+  /**
+   * Delete ONE installed file. `provider` / `diffusionType` scope the delete
+   * to the row's exact directory (list rows); `url` (catalog-entry sites
+   * only) enables the gated chain-resolution fallback that reaches a
+   * shared-URL file stored under another family's dir. Omitting the context
+   * keeps the legacy delete-all-matches behavior.
+   */
+  modelsRemove: (
+    type: ModelType,
+    name: string,
+    provider?: string,
+    diffusionType?: string,
+    url?: string
+  ): Promise<void> => ipcRenderer.invoke('models:remove', type, name, provider, diffusionType, url),
+  /**
+   * Verify an installed model file. `provider` / `diffusionType` (the catalog
+   * entry's fields) scope pathFor's resolution to the entry's exact
+   * family/provider slot; `url` doubles as the resolution's expectUrl.
+   */
   modelsVerify: (
     type: ModelType,
     name: string,
-    url: string
+    url: string,
+    provider?: string,
+    diffusionType?: string
   ): Promise<{ ok: boolean; actual: number; expected: number }> =>
-    ipcRenderer.invoke('models:verify', type, name, url),
+    ipcRenderer.invoke('models:verify', type, name, url, provider, diffusionType),
 
   // downloads registry
   downloadsList: (): Promise<DownloadsListResult> => ipcRenderer.invoke('downloads:list'),

@@ -13,9 +13,59 @@ Myriad Frame is a free, open-source project. If you find it useful and would lik
 ## Runtime & Model Providers
 
 - **Runtime**: [`stable-diffusion.cpp`](https://github.com/leejet/stable-diffusion.cpp) by @leejet — a C++ port of Stable Diffusion, optimized for speed and low memory usage.
-- **Model Providers**:
-  - **[unsloth](https://huggingface.co/unsloth)** — High-quality quantized LLM and diffusion models.
-  - **[abenzerps](https://huggingface.co/abenzerps)** — Curated diffusion model quantizations.
+- **Model Providers** — models are downloaded from [Hugging Face](https://huggingface.co) and [CivitAI](https://civitai.com). The full list is maintained in [`configurations/hub.json`](configurations/hub.json).
+
+**Hugging Face** _(click to expand)_:
+<details>
+<summary>Providers</summary>
+
+- **[Unsloth](https://huggingface.co/unsloth)** — quantized diffusion models, VAEs, and text encoders.
+- **[Abenzerps](https://huggingface.co/abenzerps)** — community diffusion model quantizations.
+- **[Black Forest Labs](https://huggingface.co/black-forest-labs)** — official FLUX checkpoints and VAEs.
+- **[Qwen](https://huggingface.co/Qwen)** — Qwen text encoders.
+- **[City 96](https://huggingface.co/city96)** — distilled SD3.5 / FLUX.2 GGUF quantizations, T5 encoders.
+- **[huaweilin](https://huggingface.co/huaweilin)** — SD3.5 VAE.
+- **[Comfy-Org](https://huggingface.co/Comfy-Org)** — split-file model bundles (Z-Image, Wan, Qwen-Image, MOSS-Image).
+- **[Rebel AI](https://huggingface.co/realrebelai)** — Krea 2 Turbo GGUF.
+- **[Stability AI](https://huggingface.co/stabilityai)** — official SDXL checkpoints.
+- **[CircleStone Labs](https://huggingface.co/circlestone-labs)** — Anima model.
+- **[RunDiffusion](https://huggingface.co/RunDiffusion)** — Juggernaut-XL SDXL finetunes.
+- **[Krea](https://huggingface.co/krea)** — Krea 2 LoRAs.
+- **[Unmods](https://huggingface.co/UntMods)** — Krea 2 character LoRAs.
+- **[Diffusers](https://huggingface.co/diffusers)** — SDXL inpainting model.
+- **[leejet](https://huggingface.co/leejet)** — GGUF quantizations (FLUX, Z-Image, MOSS-Image).
+- **[comfyanonymous](https://huggingface.co/comfyanonymous)** — FLUX text encoders.
+- **[QuantStack](https://huggingface.co/QuantStack)** — Wan2.2 / FLUX.1-Kontext GGUF quantizations.
+- **[OpenMOSS-Team](https://huggingface.co/OpenMOSS-Team)** — MOSS-Image tokenizer.
+- **[Vantage with AI](https://huggingface.co/vantagewithai)** — LTX-2.5 GGUF (dev / distilled).
+- **[Lightricks](https://huggingface.co/Lightricks)**
+
+</details>
+
+
+**CivitAI** _(click to expand)_:
+<details>
+<summary>Providers</summary>
+
+- **[Euge_](https://civitai.com/user/euge_)** — Anime Illust Diffusion XL.
+- **[Lykon](https://civitai.com/user/lykon_)** — AAM XL Anime Mix.
+- **[JRD_2212](https://civitai.com/user/jrd_2212)** — Realism_Engine Reprise 4.0 (SDXL / Z-Image).
+- **[Kranos94](https://civitai.com/user/kranos94)** — Pikon-Realism.
+- **[captain_daddy](https://civitai.com/user/captain_daddy)** — ENI Pattern LoRA.
+- **[angelomaiota](https://civitai.com/user/angelomaiota)** — V67 LoRA series.
+- **[Wackiii](https://civitai.com/user/wackiii)** — Oddling Reverie LoRA.
+- **[annguyentruongandrew142](https://civitai.com/user/annguyentruongandrew142)** — jewelry macro LoRA.
+- **[Darkessence](https://civitai.com/user/darkessence)** — oil pastel fantasy LoRA.
+- **[arrssenne](https://civitai.com/user/arrssenne)** — Roman baths LoRA.
+- **[valpat1988108](https://civitai.com/user/valpat1988108)** — Aircrayons-style LoRA.
+- **[theevildarkmage126](https://civitai.com/user/theevildarkmage126)** — DRKM4GE Chiaroscuro LoRA.
+- **[cyberthron](https://civitai.com/user/cyberthron)** — mood-helper LoRA.
+- **[tigerart](https://civitai.com/user/tigerart)** — HaveallSDXL Inpaint.
+- **[Maxed_Out](https://civitai.com/user/maxed_out)** — Hyper3D Inpainting (SDXL / Pony).
+- **[WereCatf](https://civitai.com/user/were_catf)** — AnimagineXL / Juggernaut XL inpainting.
+- **[CagliostroLab](https://civitai.com/user/cagliostro_lab)** — Animagine XL.
+
+</details>
 
 ## Prerequisites
 
@@ -106,7 +156,9 @@ data/
 - **Sidebar** — resizable. Header shows the app name; lists sessions (create / rename /
   delete); footer gear icon opens the **Settings** dialog.
 - **Chat panel** — the session. Pick a diffusion model/quant via a searchable **Model
-  Picker** dialog, and choose a resolution; add up to `max_reference` reference images;
+  Picker** dialog, and choose a resolution via the **Resolution selector** dialog
+  (aspect-ratio presets, orientation, custom width/height, megapixels and divisible-by
+  sliders, live preview); add up to `max_reference` reference images;
   toggle "use previous image as reference" (default on). Two composer icons open
   **per-session** dialogs for the **Negative prompt** and a **Sampling override** (steps,
   cfg, strength, sampler, scheduler) that persist in the session file. The **Generate**
@@ -132,6 +184,7 @@ data/
   <figure style="margin:0"><img src="docs/assets/improved_sampling_settings.png" alt="Improved sampling settings" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Improved sampling settings</figcaption></figure>
   <figure style="margin:0"><img src="docs/assets/sampling_override.png" alt="Sampling override" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Sampling override</figcaption></figure>
   <figure style="margin:0"><img src="docs/assets/negative_override.png" alt="Negative prompt override" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Negative prompt</figcaption></figure>
+  <figure style="margin:0"><img src="docs/assets/unified_resolution_selector.png" alt="Unified resolution selector" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Resolution selector</figcaption></figure>
   <figure style="margin:0"><img src="docs/assets/performance_settings.png" alt="Performance settings" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Performance settings</figcaption></figure>
   <figure style="margin:0"><img src="docs/assets/appearance_settings.png" alt="Appearance settings" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Appearance settings</figcaption></figure>
   <figure style="margin:0"><img src="docs/assets/qwen_image_2_1_gen.png" alt="Qwen Image 2.1 generation" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Qwen Image 2.1 — generation</figcaption></figure>
