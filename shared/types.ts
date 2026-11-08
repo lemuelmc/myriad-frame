@@ -991,6 +991,17 @@ export interface MaskSaveResult {
   initPath?: string
 }
 
+/** Renderer → main payload for `resize:save` (ResizeCropOverlay Save). */
+export interface ResizeSaveRequest {
+  /** PNG data URL — the cropped / resized result (the ORIGINAL file is never touched) */
+  png: string
+}
+
+/** Result of `resize:save` — the absolute path of the processed PNG under data/tmp/resize. */
+export interface ResizeSaveResult {
+  path: string
+}
+
 export interface GenProgress {
   sessionId: string
   messageId: string

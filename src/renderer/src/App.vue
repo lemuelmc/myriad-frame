@@ -14,6 +14,7 @@ import Sidebar from './components/Sidebar.vue'
 import ChatPanel from './components/ChatPanel.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import ImageLightbox from './components/ImageLightbox.vue'
+import ResizeCropOverlay from './components/ResizeCropOverlay.vue'
 import InitOverlay from './components/InitOverlay.vue'
 import Toasts from './components/Toasts.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
@@ -146,6 +147,7 @@ onMounted(async () => {
     <ChatPanel class="chat" />
     <SettingsDialog v-if="settingsOpen" @close="settingsOpen = false" />
     <ImageLightbox />
+    <ResizeCropOverlay />
     <InitOverlay v-if="!appStore.ready" />
     <ConfirmDialog />
     <Toasts />

@@ -17,6 +17,7 @@ import type {
 } from '@shared/types'
 import { DOWNLOAD_ABORTED_MESSAGE, applySamplingOverrides, isValidSeed } from '@shared/types'
 import { useAppStore } from '../stores/app'
+import { useResizeStore } from '../stores/resize'
 import { useSessionsStore } from '../stores/sessions'
 import { useSettingsStore, type ModelDownloadState } from '../stores/settings'
 import { requiredFamilyFor, resolveEncoderBundle, type EncoderBundleEntry } from '../deps'
@@ -38,6 +39,7 @@ import PaintDialog from './PaintDialog.vue'
 import logoTiny from '../../../assets/logo-square-tiny.png'
 
 const appStore = useAppStore()
+const resizeStore = useResizeStore()
 const sessionsStore = useSessionsStore()
 const settingsStore = useSettingsStore()
 
@@ -1282,29 +1284,65 @@ watch(
   { immediate: true }
 )
 
-async function addRefs(): Promise<void> {
-  const picked = await window.api.pickImages()
-  for (const p of picked) {
-    if (refImages.value.length >= maxRef.value) {
-      toast(`Maximum of ${maxRef.value} reference images`, 'error')
-      break
+/**
+ * Attach the picked paths to a composer channel. Shared tail of addRefs /
+ * addInputs: the cap checks and dedupe run over the FINAL paths (after the
+ * optional resize/crop pass), so a processed file — always a fresh unique
+ * path — still lands under the same channel caps.
+ */
+function attachPicked(paths: string[], channel: 'reference' | 'input'): void {
+  for (const p of paths) {
+    if (channel === 'reference') {
+      if (refImages.value.length >= maxRef.value) {
+        toast(`Maximum of ${maxRef.value} reference images`, 'error')
+        break
+      }
+      if (!refImages.value.includes(p)) refImages.value.push(p)
+    } else {
+      if (inputImages.value.length >= maxInput.value) {
+        toast(`Maximum of ${maxInput.value} input images`, 'error')
+        break
+      }
+      if (!inputImages.value.includes(p)) inputImages.value.push(p)
     }
-    if (!refImages.value.includes(p)) refImages.value.push(p)
   }
+}
+
+/**
+ * Offer the non-destructive resize/crop editor for freshly picked images
+ * (plans/image-resize-crop.md). The confirm asks ONCE for the whole selection;
+ * the editor processes the queue one-by-one and resolves with the final path
+ * list (null = canceled → attach nothing).
+ */
+async function attachWithOptionalEdit(picked: string[], channel: 'reference' | 'input'): Promise<void> {
+  if (!picked.length) return
+  if (
+    await confirm('Resize or crop the selected image(s) before adding?', {
+      confirmLabel: 'Edit',
+      cancelLabel: 'Add as-is'
+    })
+  ) {
+    const final = await resizeStore.openEditor(
+      picked,
+      channel,
+      modelEntry.value?.diffusionType ?? null
+    )
+    if (final === null) return
+    attachPicked(final, channel)
+  } else {
+    attachPicked(picked, channel)
+  }
+}
+
+async function addRefs(): Promise<void> {
+  await attachWithOptionalEdit(await window.api.pickImages(), 'reference')
 }
 function removeRef(p: string): void {
   refImages.value = refImages.value.filter((x) => x !== p)
 }
 
 async function addInputs(): Promise<void> {
-  const picked = await window.api.pickImages()
-  for (const p of picked) {
-    if (inputImages.value.length >= maxInput.value) {
-      toast(`Maximum of ${maxInput.value} input images`, 'error')
-      break
-    }
-    if (!inputImages.value.includes(p)) inputImages.value.push(p)
-  }
+  await attachWithOptionalEdit(await window.api.pickImages(), 'input')
 }
 function removeInput(p: string): void {
   inputImages.value = inputImages.value.filter((x) => x !== p)

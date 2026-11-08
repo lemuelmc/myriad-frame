@@ -23,6 +23,8 @@ import type {
   LogsInfo,
   MaskSaveRequest,
   MaskSaveResult,
+  ResizeSaveRequest,
+  ResizeSaveResult,
   ModelFile,
   ModelType,
   PlatformInfo,
@@ -75,6 +77,13 @@ const api = {
   /** Native directory picker (the LoRA dialog's custom dir); null when canceled. */
   pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('app:pickDirectory'),
   imageFromPath: (p: string): Promise<string> => ipcRenderer.invoke('app:imageFromPath', p),
+  /**
+   * Persist a cropped / resized image (PNG data URL from the ResizeCropOverlay)
+   * as a NEW file under data/tmp/resize — the original file is never modified.
+   * Resolves the absolute written path; rejects on a malformed payload.
+   */
+  resizeSave: (req: ResizeSaveRequest): Promise<ResizeSaveResult> =>
+    ipcRenderer.invoke('resize:save', req),
   /** Resolves the absolute saved file path, or null when canceled/failed. */
   saveImage: (p: string): Promise<string | null> => ipcRenderer.invoke('app:saveImage', p),
   /** Reveal the file in the OS file manager (selects the file). */

@@ -25,6 +25,8 @@ import type {
   MaskSaveRequest,
   MaskSaveResult,
   ModelFile,
+  ResizeSaveRequest,
+  ResizeSaveResult,
   ModelType,
   PlatformInfo,
   ResolutionEntry,
@@ -56,6 +58,7 @@ import { getInitState } from './services/init'
 import { authHeadersForUrl, createModelsService, ensureModelDirs } from './services/models'
 import { detectPlatform } from './services/platform'
 import { clearMask, saveMask } from './services/masks'
+import { saveResized } from './services/resize'
 import { createRuntimeService } from './services/runtime'
 import { createSessionsService } from './services/sessions'
 import { createSettingsService } from './services/settings'
@@ -420,6 +423,15 @@ export function registerIpc(): void {
   // directory can ever be removed.
   ipcMain.handle('masks:clear', (_e, paths: string[]): void => clearMask(paths))
 
+  // ---------- resize / crop (data/tmp/resize — ResizeCropOverlay) ----------
+  // Persist the renderer's cropped / resized image as a NEW PNG under
+  // data/tmp/resize — the ORIGINAL picked file is never modified
+  // (non-destructive by construction). The invoke rejects on a malformed
+  // payload (wrong prefix / over the size cap); the overlay toasts the error.
+  ipcMain.handle('resize:save', (_e, req: ResizeSaveRequest): ResizeSaveResult =>
+    saveResized(req?.png)
+  )
+
   ipcMain.handle('app:imageFromPath', (_e, p: string): string => {
     if (!existsSync(p)) return ''
     const ext = p.toLowerCase().split('.').pop() ?? 'png'
@@ -436,9 +448,11 @@ export function registerIpc(): void {
         ? 'image/jpeg'
         : ext === 'webp'
           ? 'image/webp'
-          : ext === 'avi'
-            ? 'video/x-msvideo'
-            : 'image/png'
+          : ext === 'bmp'
+            ? 'image/bmp'
+            : ext === 'avi'
+              ? 'video/x-msvideo'
+              : 'image/png'
     return `data:${mime};base64,${buf.toString('base64')}`
   })
 
