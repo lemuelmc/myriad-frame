@@ -29,6 +29,10 @@ const store = useResizeStore()
 
 const imgEl = ref<HTMLImageElement | null>(null)
 let cropper: Cropper | null = null
+// Reactive mirror of `cropper !== null` — the cropper instance itself is a
+// plain module-scope object (non-reactive), so the Save button's computed
+// needs this flag to re-evaluate once the instance is created.
+const ready = ref(false)
 
 /** Data URL of the current image (loaded via app:imageFromPath). */
 const src = ref('')
@@ -52,7 +56,7 @@ const total = computed(() => store.queue.length)
 const position = computed(() => store.index + 1)
 const multi = computed(() => total.value > 1)
 const saveLabel = computed(() => (multi.value ? 'Save & Next' : 'Save'))
-const canSave = computed(() => src.value !== '' && cropper !== null)
+const canSave = computed(() => src.value !== '' && ready.value)
 
 /** Resolve when the <img> has decoded its current src (or failed). */
 function waitForImage(img: HTMLImageElement): Promise<void> {
@@ -77,6 +81,7 @@ watch(
   async (path) => {
     cropper?.destroy()
     cropper = null
+    ready.value = false
     src.value = ''
     natural.value = { w: 0, h: 0 }
     if (!path) return
@@ -96,6 +101,7 @@ watch(
       autoCropArea: 1,
       background: false
     })
+    ready.value = true
   },
   { immediate: true }
 )
@@ -141,6 +147,33 @@ function rotate(deg: number): void {
 }
 function resetCrop(): void {
   cropper?.reset()
+}
+
+// ---------- middle-click panning ----------
+// Middle-drag repositions the image (cropperjs `move()`) WITHOUT touching the
+// left-drag crop behavior. The `.middle.prevent` template modifier keeps the
+// browser's middle-click autoscroll out of the way.
+const panning = ref(false)
+let panLast = { x: 0, y: 0 }
+
+function startPan(e: MouseEvent): void {
+  if (!cropper) return
+  panLast = { x: e.clientX, y: e.clientY }
+  panning.value = true
+  window.addEventListener('mousemove', onPanMove)
+  window.addEventListener('mouseup', endPan)
+}
+
+function onPanMove(e: MouseEvent): void {
+  if (!panning.value || !cropper) return
+  cropper.move(e.clientX - panLast.x, e.clientY - panLast.y)
+  panLast = { x: e.clientX, y: e.clientY }
+}
+
+function endPan(): void {
+  panning.value = false
+  window.removeEventListener('mousemove', onPanMove)
+  window.removeEventListener('mouseup', endPan)
 }
 
 /**
@@ -194,6 +227,9 @@ function cancel(): void {
 onBeforeUnmount(() => {
   cropper?.destroy()
   cropper = null
+  ready.value = false
+  window.removeEventListener('mousemove', onPanMove)
+  window.removeEventListener('mouseup', endPan)
 })
 </script>
 
@@ -206,7 +242,7 @@ onBeforeUnmount(() => {
       <span class="rz-hint">The original file is never modified — edits are saved as a copy</span>
     </div>
     <div class="rz-body">
-      <div class="rz-canvas">
+      <div class="rz-canvas" :class="{ panning }" @mousedown.middle.prevent="startPan($event)">
         <img v-if="src" ref="imgEl" :src="src" alt="" class="rz-img" />
         <div v-else class="rz-error">Could not load this image — use Skip to add it as-is.</div>
       </div>
@@ -330,6 +366,9 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   background: var(--bg-elevated);
+}
+.rz-canvas.panning {
+  cursor: grabbing;
 }
 .rz-img {
   display: block;
