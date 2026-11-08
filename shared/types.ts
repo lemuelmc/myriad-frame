@@ -17,6 +17,7 @@ export type ModelType =
   | 'audio_encoder'
   | 'audio_vae'
   | 'latent_upscaler'
+  | 'llm'
 
 /**
  * Renderer theme key. Kept open-ended (`string`) so new themes can be added in
@@ -285,6 +286,80 @@ export interface HubAudioEncoderEntry {
   domain?: string
 }
 
+/** One LLM type definition from hub.json (top-level llm_models array). */
+export interface HubLlmModel {
+  /** machine name (e.g. 'gemma_3_1b_it') — the catalog family key */
+  name: string
+  /** human-readable label (e.g. 'Gemma 3 1B IT') */
+  label: string
+}
+
+/** One selectable quant of an LLM `catalog[]` entry. */
+export interface HubLlmCatalogItem {
+  /** group id — the catalog ITEM name (e.g. `unsloth_gemma_3_1b_it_q4_k_m`) */
+  name: string
+  /** human-readable label (e.g. 'Unsloth/Gemma-3 IT @q4km') */
+  label: string
+  /** the GGUF files of this item (an EXPLICIT list — no repo scan) */
+  items: { file: string }[]
+}
+
+/** Provider entry from hub.json repo.llm.models — an explicit-file-list LLM repo. */
+export interface HubLlmEntry {
+  /** LLM type key (e.g. 'gemma_3_1b_it') — the family-scoped destination dir */
+  llm_type: string
+  /** quantization container type (e.g. 'gguf') */
+  quant_type: string
+  /** HuggingFace repo URL (tree URL) */
+  url: string
+  /** optional repo-relative folder restriction (informational for v1 — the catalog is explicit) */
+  path?: string
+  /** the selectable catalog items, each an explicit file list */
+  catalog: HubLlmCatalogItem[]
+}
+
+/** hub.json repo.llm.default — the default enhancer configuration. */
+export interface HubLlmDefault {
+  /** LLM type key (e.g. 'gemma_3_1b_it') */
+  llm_type: string
+  /** provider key of the default model (e.g. 'unsloth') */
+  provider: string
+  /** default catalog ITEM name (e.g. 'unsloth_gemma_3_1b_it_q4_k_m') — NOT a file basename */
+  model: string
+  /** flash attention: 'on' | 'off' */
+  flash_attention: 'on' | 'off'
+  /** K-cache type (e.g. 'q8_0', 'f16') */
+  k_cache: string
+  /** V-cache type (e.g. 'q8_0', 'f16') */
+  v_cache: string
+  /** context size (-c) */
+  context_size: number
+  /** eval batch size (-b) */
+  eval_batch_size: number
+  /** chunk batch size (-ub) */
+  chunk_batch_size: number
+  /** sampling temperature (--temp) */
+  temp: number
+  /** min-p sampling (--min-p) */
+  min_p: number
+  /** top-p sampling (--top-p) */
+  top_p: number
+  /** top-k sampling (--top-k) */
+  top_k: number
+  /** repeat penalty (--repeat-penalty) */
+  repeat_penalty: number
+}
+
+/** The hub.json repo.llm section (LLM prompt enhancer). Optional — older overrides lack it. */
+export interface HubLlmSection {
+  /** prompt id -> default system prompt (the enhancer reads the 'llm' key) */
+  system_prompts?: Record<string, string>
+  /** provider key -> LLM repo entry (explicit catalog, no repo scan) */
+  models?: Record<string, HubLlmEntry>
+  /** the default enhancer configuration (resolved through the catalog) */
+  default?: HubLlmDefault
+}
+
 export interface HubConfig {
   /** "last updated" marker carried by the file (and the override) as-is */
   updatedOn: string
@@ -294,6 +369,8 @@ export interface HubConfig {
   providers: HubProvider[]
   /** per-inference-type composer metadata; optional (older overrides lack it) */
   diffusion_inference_types?: HubInferenceTypes
+  /** top-level LLM type definitions (the prompt enhancer); optional — older overrides lack it */
+  llm_models?: HubLlmModel[]
   repo: {
     /** diffusionType -> VAE repo + default file; the legacy plain-URL form is still accepted at runtime */
     vae: Record<string, HubVaeEntry | string>
@@ -313,6 +390,8 @@ export interface HubConfig {
     diffusion: HubDiffusionEntry[]
     /** downloadable LoRA adapters; optional so older hub.json overrides without it stay valid */
     lora?: HubLoraEntry[]
+    /** LLM (prompt-enhancer) repos + defaults; optional so older hub.json overrides without it stay valid */
+    llm?: HubLlmSection
   }
 }
 
@@ -812,6 +891,55 @@ export interface Settings {
   performance?: PerformanceSettings
   /** renderer theme key (see ThemeKey); applied via documentElement data-theme */
   theme?: ThemeKey
+  /** LLM prompt-enhancer settings (model selection + inference overrides) */
+  llm?: LlmSettings
+}
+
+// ---------- LLM prompt enhancer ----------
+
+/** The user's LLM model selection (settings.llm.model). */
+export interface LlmModelSelection {
+  /** LLM type key (e.g. 'gemma_3_1b_it') */
+  llmType: string
+  /** provider key (e.g. 'unsloth') */
+  provider: string
+  /** the selected catalog ITEM name (CatalogEntry.name — the file basename) */
+  model: string
+}
+
+/**
+ * LLM prompt-enhancer settings (data/settings.json `llm`). Every field is
+ * optional: absent keys inherit the hub default (`repo.llm.default` /
+ * `repo.llm.system_prompts.llm`). `systemPrompt: null` and a dropped key
+ * both mean "inherit the hub default".
+ */
+export interface LlmSettings {
+  /** absent → hub.repo.llm.default resolved through the catalog */
+  model?: LlmModelSelection
+  /** null/'' → hub default (repo.llm.system_prompts.llm) */
+  systemPrompt?: string | null
+  /** flash attention: 'on' | 'off' */
+  flashAttention?: 'on' | 'off'
+  /** K-cache type ('f16' | 'q8_0' | 'q5_1' | 'q4_0' …) */
+  kCache?: string
+  /** V-cache type */
+  vCache?: string
+  /** context size (-c) */
+  contextSize?: number
+  /** eval batch size (-b) */
+  evalBatchSize?: number
+  /** chunk batch size (-ub) */
+  chunkBatchSize?: number
+  /** sampling temperature (--temp) */
+  temp?: number
+  /** min-p sampling (--min-p) */
+  minP?: number
+  /** top-p sampling (--top-p) */
+  topP?: number
+  /** top-k sampling (--top-k) */
+  topK?: number
+  /** repeat penalty (--repeat-penalty) */
+  repeatPenalty?: number
 }
 
 export type FlashAttentionMode = 'on' | 'off' | 'auto' | 'custom'
@@ -1024,6 +1152,12 @@ export interface PlatformInfo {
   gpu: 'nvidia' | 'amd' | 'none' | 'unknown'
   gpuDetail?: string
   runtimeKey: RuntimeKey
+  /**
+   * LLM runtime platform key (llama.cpp build vocabulary — separate from the
+   * sd-cli `runtimeKey`), e.g. 'windows_x64_cuda12'. Undefined when the
+   * platform has no LLM runtime (the Enhance feature reports that).
+   */
+  llmRuntimeKey?: string
 }
 
 // ---------- runtime ----------
@@ -1118,8 +1252,40 @@ export interface DownloadsListResult {
   paused: boolean
 }
 
+// ---------- configurations/llm_runtime.json ----------
+/**
+ * Shape of `configurations/llm_runtime.json`: llama.cpp release archives per
+ * platform. `releases` maps a build key (e.g. 'b12207') -> platform key ->
+ * archive URL. Platform keys follow `<os>_<arch>_<gpu>`; a `*_lib` companion
+ * key (e.g. `windows_x64_cuda12_lib`) carries the cudart DLLs and is
+ * extracted into the SAME directory as the main archive.
+ */
+export interface LlmRuntimeConfig {
+  /** "last updated" marker carried by the file as-is */
+  updatedOn: string
+  /** build key (e.g. 'b12207') -> platform key -> archive URL */
+  releases: Record<string, Record<string, string>>
+}
+
+/** Result of `llm:enhance` — the enhanced prompt text. */
+export interface LlmEnhanceResult {
+  text: string
+}
+
+/** Shape returned by `llm:status` (Settings → Language Models row + Enhance gating). */
+export interface LlmStatusInfo {
+  /** selected llama.cpp build key (e.g. 'b12207'); undefined when the platform has no key */
+  version?: string
+  /** true when the llama-cli binary is installed on disk */
+  installed: boolean
+  /** the resolved platform key (e.g. 'windows_x64_cuda12'); undefined when the platform has no key */
+  platformKey?: string
+  /** true when the effective default LLM model file is installed on disk */
+  modelInstalled: boolean
+}
+
 // ---------- init pipeline ----------
-export type InitStage = 'platform' | 'runtime' | 'ffmpeg' | 'catalog' | 'done'
+export type InitStage = 'platform' | 'runtime' | 'ffmpeg' | 'llm' | 'catalog' | 'done'
 
 export interface InitStatus {
   stage: InitStage

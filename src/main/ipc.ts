@@ -19,6 +19,8 @@ import type {
   GenerationRequest,
   HubCatalog,
   HubCheckResult,
+  LlmEnhanceResult,
+  LlmStatusInfo,
   LogLevel,
   LogsInfo,
   LoraApplyMode,
@@ -63,6 +65,8 @@ import { createRuntimeService } from './services/runtime'
 import { createSessionsService } from './services/sessions'
 import { createSettingsService } from './services/settings'
 import { convertToMp4, ensureFfmpeg } from './services/ffmpeg'
+import { defaultModelInstalled, enhancePrompt, stopActiveEnhance } from './services/llm'
+import { ensureLlmRuntime, llmStatus } from './services/llm-runtime'
 import { isStreamableVideo, mediaUrlFor } from './services/media'
 import { createSdCliService, newOutputPath } from './services/sdcli'
 import { sourceNames } from './services/sources'
@@ -1374,6 +1378,40 @@ export function registerIpc(): void {
 
   ipcMain.handle('gen:isRunning', (_e, sessionId: string): boolean => activeGens.has(sessionId))
 
+  // ---------- llm (prompt enhancer) ----------
+  // One enhancement at a time (module state inside llm.ts); a second click on
+  // the Enhance button routes through llm:stop (the Send→Stop pattern).
+  ipcMain.handle('llm:enhance', async (_e, prompt: string): Promise<LlmEnhanceResult> => {
+    const result = await enhancePrompt(typeof prompt === 'string' ? prompt : '')
+    return { text: result.text }
+  })
+
+  ipcMain.handle('llm:stop', (): void => {
+    stopActiveEnhance()
+  })
+
+  ipcMain.handle('llm:status', (): LlmStatusInfo => {
+    const platformKey = getInitState().platform?.llmRuntimeKey
+    const st = llmStatus(platformKey)
+    return {
+      version: st.version,
+      installed: st.installed,
+      platformKey: st.platformKey,
+      modelInstalled: defaultModelInstalled()
+    }
+  })
+
+  // Manual (re)install of the llama.cpp runtime — awaits ensureLlmRuntime and
+  // streams llm:progress to all windows (the runtime:progress pattern).
+  ipcMain.handle('llm:installRuntime', async (): Promise<string> => {
+    const platformKey = getInitState().platform?.llmRuntimeKey
+    return ensureLlmRuntime(platformKey, (p) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('llm:progress', p)
+      }
+    })
+  })
+
   // ---------- logs ----------
   /** Serve at most the last 1 MB of latest.log (Settings â†’ Logs). */
   const LOG_TAIL_BYTES = 1024 * 1024
@@ -1462,6 +1500,8 @@ export function initDataDirs(): void {
     // bundled ffmpeg binary (downloaded once per machine by the init pipeline;
     // lives outside data/tmp so it survives the per-launch wipe + app updates)
     'bin/ffmpeg',
+    // llama.cpp LLM runtime (the prompt enhancer; same outside-tmp lifecycle)
+    'bin/llm',
     'logs'
   ]) {
     mkdirSync(join(root, d), { recursive: true })
@@ -1476,6 +1516,7 @@ export function initDataDirs(): void {
   rmSync(join(root, 'tmp'), { recursive: true, force: true })
   mkdirSync(join(root, 'tmp'), { recursive: true })
   mkdirSync(join(root, 'tmp', 'ffmpeg'), { recursive: true })
+  mkdirSync(join(root, 'tmp', 'llm'), { recursive: true })
   ensureModelDirs()
 }
 

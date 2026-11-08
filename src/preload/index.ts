@@ -19,6 +19,8 @@ import type {
   HubCheckResult,
   InitState,
   InitStatus,
+  LlmEnhanceResult,
+  LlmStatusInfo,
   LogLevel,
   LogsInfo,
   MaskSaveRequest,
@@ -236,6 +238,20 @@ const api = {
   genStart: (req: GenerationRequest): Promise<string> => ipcRenderer.invoke('gen:start', req),
   genStop: (sessionId: string): Promise<void> => ipcRenderer.invoke('gen:stop', sessionId),
   genIsRunning: (sessionId: string): Promise<boolean> => ipcRenderer.invoke('gen:isRunning', sessionId),
+
+  // llm (prompt enhancer)
+  /** One-shot prompt enhancement through the configured llama.cpp model. */
+  llmEnhance: (prompt: string): Promise<LlmEnhanceResult> => ipcRenderer.invoke('llm:enhance', prompt),
+  /** Cancel the in-flight enhancement (the Enhance button's second click). */
+  llmStop: (): Promise<void> => ipcRenderer.invoke('llm:stop'),
+  /** Runtime + model status for the Settings → Language Models row + Enhance gating. */
+  llmStatus: (): Promise<LlmStatusInfo> => ipcRenderer.invoke('llm:status'),
+  /** Manual (re)install of the llama.cpp runtime; resolves the binary path. */
+  llmInstallRuntime: (): Promise<string> => ipcRenderer.invoke('llm:installRuntime'),
+  /** Pushed during a manual runtime install (the runtime:progress pattern). */
+  onLlmProgress: (cb: (p: DownloadProgress) => void): void => {
+    ipcRenderer.on('llm:progress', (_e, p: DownloadProgress) => cb(p))
+  },
 
   // events (main -> renderer)
   onInitStatus: (cb: (s: InitStatus) => void): void => {

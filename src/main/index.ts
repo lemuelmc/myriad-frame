@@ -8,19 +8,22 @@
 import { app, BrowserWindow, Menu, shell } from 'electron'
 import { join } from 'node:path'
 import { initDataDirs, registerIpc } from './ipc'
-import { loadApplicationConfig, loadRuntimeConfig } from './services/config'
+import { loadApplicationConfig, loadHubConfig, loadRuntimeConfig } from './services/config'
 import { ensureFfmpeg } from './services/ffmpeg'
-import { createHubService } from './services/hub'
+import { catalogEntriesForType, createHubService } from './services/hub'
 import { setInitState } from './services/init'
+import { stopActiveEnhance } from './services/llm'
+import { ensureLlmRuntime } from './services/llm-runtime'
 import { initLogging } from './services/logging'
 import { registerMediaProtocol } from './services/media'
-import { migrateModelLayout } from './services/models'
+import { createModelsService, migrateModelLayout } from './services/models'
 import { detectPlatform } from './services/platform'
 import { createRuntimeService } from './services/runtime'
 import { createSettingsService } from './services/settings'
 import { checkForConfigUpdates } from './services/updates'
-import { startAllPending } from './services/downloads'
-import type { InitStatus } from '@shared/types'
+import { listModels, startAllPending } from './services/downloads'
+import type { InitStatus, PlatformInfo } from '@shared/types'
+import type { HubService } from './services/hub'
 
 // Disable GPU compositing. Without this, resizing the window while the main
 // process is busy (e.g. streaming model/runtime downloads) can leave the
@@ -161,6 +164,43 @@ async function runInitPipeline(win: BrowserWindow): Promise<void> {
     status({ stage: 'ffmpeg', message: `ffmpeg download failed: ${(e as Error).message}` })
   }
 
+  // 2.5 ensure the llama.cpp LLM runtime is installed (the prompt enhancer).
+  // Same outside-tmp lifecycle as ffmpeg: downloaded once per machine into
+  // data/bin/llm/, a cheap existsSync on every launch afterwards. Non-fatal:
+  // the enhance path retries the download lazily on first use. Placed after
+  // the ffmpeg step (the two largest first-launch transfers do not compete)
+  // and before the catalog step.
+  if (!platform.llmRuntimeKey) {
+    status({ stage: 'llm', message: 'No LLM runtime for this platform (Enhance disabled)' })
+  } else {
+    status({ stage: 'llm', message: 'Checking LLM runtime…' })
+    try {
+      // Throttled per-chunk progress (the runtime-step pattern — one
+      // init:status IPC per HTTP chunk would flood the renderer).
+      let lastStatusAt = 0
+      let lastPhase: string | undefined
+      await ensureLlmRuntime(platform.llmRuntimeKey, (p) => {
+        const phase = p.phase ?? 'downloading'
+        const now = Date.now()
+        if (phase !== lastPhase || now - lastStatusAt >= 100) {
+          lastPhase = phase
+          lastStatusAt = now
+          status({
+            stage: 'llm',
+            message: `${phase === 'extracting' ? 'Extracting' : 'Downloading'} LLM runtime… ${Math.round((p.downloadedBytes / Math.max(p.totalBytes, 1)) * 100)}%`,
+            downloadedBytes: p.downloadedBytes,
+            totalBytes: p.totalBytes,
+            phase: p.phase
+          })
+        }
+      })
+      status({ stage: 'llm', message: 'LLM runtime ready' })
+    } catch (e) {
+      // non-fatal: the enhance path retries the download lazily
+      status({ stage: 'llm', message: `LLM runtime download failed: ${(e as Error).message}` })
+    }
+  }
+
   // 3. ensure the hub catalog cache exists (scan only when missing)
   if (!hub.get()) {
     status({ stage: 'catalog', message: 'Scanning model hub…' })
@@ -188,6 +228,65 @@ async function runInitPipeline(win: BrowserWindow): Promise<void> {
       if (!win.isDestroyed()) win.webContents.send('updates:available', status)
     }
   })
+
+  // 4. background default-model ensure (fire-and-forget, non-fatal): when no
+  // 'llm' model is installed, none is pending, and the platform HAS an LLM
+  // runtime key, resolve the hub default entry from the cached catalog (the
+  // catalog step above already ensured the cache) and download it in the
+  // background — progress lands in the Downloads panel via models:progress.
+  // Never blocks the InitOverlay; the Enhance button errors gracefully with a
+  // pointer to Settings until the model lands.
+  void ensureDefaultLlmModel(hub, platform)
+}
+
+/**
+ * Background first-launch download of the hub default language model (the
+ * prompt enhancer). Skipped entirely when a model is already installed, a
+ * download is already pending, or the platform has no LLM runtime key.
+ *
+ * Stale-catalog self-heal (existing installs): a catalog cache built before
+ * this feature has NO 'llm' rows, so the default entry cannot resolve. When
+ * the cache has zero 'llm' entries while `hub.repo.llm.models` is non-empty,
+ * run a one-shot `hub.refresh()` first and re-read; only then enqueue the
+ * download.
+ */
+async function ensureDefaultLlmModel(hub: HubService, platform: PlatformInfo): Promise<void> {
+  try {
+    if (!platform.llmRuntimeKey) return
+    const models = createModelsService()
+    if (models.list('llm').length > 0) return
+    const pending = listModels().some((e) => e.type === 'llm' && e.status !== 'failed')
+    if (pending) return
+    const hubCfg = loadHubConfig()
+    const hasLlmRepos = Object.keys(hubCfg.repo.llm?.models ?? {}).length > 0
+    let entries = catalogEntriesForType('llm')
+    if (entries.length === 0 && hasLlmRepos) {
+      console.log('[llm] catalog cache has no llm entries — rescanning the hub once')
+      await hub.refresh()
+      entries = catalogEntriesForType('llm')
+    }
+    if (entries.length === 0) return
+    // Resolve the hub default entry: the default.model item (groupId or name
+    // match) with the default provider, else a stamped isDefault entry, else
+    // the first 'llm' entry.
+    const def = hubCfg.repo.llm?.default
+    const base = def?.model ? (def.model.split('/').pop() ?? def.model) : undefined
+    const entry =
+      entries.find(
+        (e) =>
+          base !== undefined &&
+          (e.groupId === def?.model || e.name === base) &&
+          (e.provider ?? 'default') === (def?.provider ?? 'default')
+      ) ??
+      entries.find((e) => e.isDefault) ??
+      entries[0]
+    console.log(`[llm] background download of the default language model: ${entry.name}`)
+    // The manager broadcasts models:progress itself; the callback is a no-op.
+    await models.download('llm', entry.url, () => {}, entry.provider)
+    console.log(`[llm] default language model downloaded: ${entry.name}`)
+  } catch (e) {
+    console.warn(`[llm] background default-model download failed: ${(e as Error).message}`)
+  }
 }
 
 // Single instance: two app instances share the same userData/data tree — a
@@ -246,4 +345,10 @@ if (!app.requestSingleInstanceLock()) {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+// Best-effort kill of an in-flight enhancement on quit (the llm.ts module
+// state child would otherwise outlive the window teardown on some platforms).
+app.on('before-quit', () => {
+  stopActiveEnhance()
 })

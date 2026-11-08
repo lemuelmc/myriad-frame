@@ -35,6 +35,9 @@
     { "name": "wan2_2_s2v", "label": "WAN2.2", "type": "audio_to_video" },
     { "name": "ltx_2_5", "label": "LTX 2.5", "type": "text_image_to_video", "runtime": "<= 1025" }
   ],
+  "llm_models": [
+    { "name": "gemma_3_1b_it", "label": "Gemma 3 1B IT" }
+  ],
   "providers": [
     {"name": "unsloth", "label": "Unsloth"},
     {"name": "abenzerps", "label": "Abenzerps"},
@@ -534,6 +537,42 @@
         "max_page": 10
       }
     ],
+    "llm": {
+      "system_prompts": {
+        "llm": "You are a master prompt engineer for text-to-image models like Stable Diffusion.\nYour task is to expand the user's short concept into a highly detailed, visually descriptive prompt.\nAdhere to the following rules:\n- Describe the subject, composition, background environment, lighting, camera angle, atmospheric mood, and specific textures.\n- Avoid buzzwords like 'photorealistic', 'hyperrealistic', '4K', or '8K'. Instead, describe real visual elements that imply high quality (e.g., 'captured on 35mm film, shallow depth of field, visible skin pores, volumetric dust particles').\n- Separate key concepts with commas.\n- Output ONLY the final enhanced prompt. Do not include introductions, explanations, conversational text, or markdown code blocks.\n"
+      },
+      "models": {
+        "unsloth": {
+          "llm_type": "gemma_3_1b_it",
+          "quant_type": "gguf",
+          "url": "https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/tree/main",
+          "path": "/",
+          "catalog": [
+            {"name": "unsloth_gemma_3_1b_it_q3_k_m", "label": "Unsloth/Gemma-3 IT @q3km", "items": [{"file": "gemma-3-1b-it-Q3_K_M.gguf"}]},
+            {"name": "unsloth_gemma_3_1b_it_q4_k_m", "label": "Unsloth/Gemma-3 IT @q4km", "items": [{"file": "gemma-3-1b-it-Q4_K_M.gguf"}]},
+            {"name": "unsloth_gemma_3_1b_it_q5_k_m", "label": "Unsloth/Gemma-3 IT @q5km", "items": [{"file": "gemma-3-1b-it-Q5_K_M.gguf"}]},
+            {"name": "unsloth_gemma_3_1b_it_q6_k", "label": "Unsloth/Gemma-3 IT @q6k", "items": [{"file": "gemma-3-1b-it-Q6_K.gguf"}]},
+            {"name": "unsloth_gemma_3_1b_it_q8__0", "label": "Unsloth/Gemma-3 IT @q8_0", "items": [{"file": "gemma-3-1b-it-Q8_0.gguf"}]}
+          ]
+        }
+      },
+      "default": {
+        "llm_type": "gemma_3_1b_it",
+        "provider": "unsloth",
+        "model": "unsloth_gemma_3_1b_it_q4_k_m",
+        "flash_attention": "on",
+        "k_cache": "q8_0",
+        "v_cache": "q8_0",
+        "context_size": 32000,
+        "eval_batch_size": 2048,
+        "chunk_batch_size": 512,
+        "temp": 1.0,
+        "min_p": 0.5,
+        "top_p": 0.95,
+        "top_k": 40,
+        "repeat_penalty": 1.1
+      }
+    },
     "diffusion": [
       {
         "provider": "unsloth",

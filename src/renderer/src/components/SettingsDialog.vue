@@ -9,6 +9,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type {
   CatalogEntry,
   DownloadEntry,
+  LlmSettings,
   ModelFile,
   ModelType,
   PerformanceSettings,
@@ -40,7 +41,7 @@ const emit = defineEmits<{ close: [] }>()
 const appStore = useAppStore()
 const settingsStore = useSettingsStore() 
 
-type Section = 'appearance' | 'about' | 'release-notes' | 'models' | 'vae' | 'encoder' | 'vision' | 'tokenizer' | 'audio_encoder' | 'audio_vae' | 'latent_upscaler' | 'lora' | 'sampling' | 'runtime' | 'performance' | 'downloads' | 'tokens' | 'logs'
+type Section = 'appearance' | 'about' | 'release-notes' | 'models' | 'vae' | 'encoder' | 'vision' | 'tokenizer' | 'audio_encoder' | 'audio_vae' | 'latent_upscaler' | 'lora' | 'llm_models' | 'llm_inference' | 'sampling' | 'runtime' | 'performance' | 'downloads' | 'tokens' | 'logs'
 const section = ref<Section>('appearance')  // default to appearance instead of 'about'
 
 const sections: { id: Section; label: string }[] = [
@@ -55,6 +56,8 @@ const sections: { id: Section; label: string }[] = [
   { id: 'audio_vae', label: 'Audio VAE' },
   { id: 'latent_upscaler', label: 'Latent Upscaler' },
   { id: 'lora', label: 'LoRA' },
+  { id: 'llm_models', label: 'Language Models' },
+  { id: 'llm_inference', label: 'Language Inference' },
   { id: 'sampling', label: 'Sampling' },
   { id: 'performance', label: 'Performance' },
   { id: 'runtime', label: 'Runtime' },
@@ -1059,6 +1062,166 @@ watch(
   { immediate: true }
 )
 
+// ---------- llm (Language Models + Language Inference) ----------
+const llmTypes = computed(() => appStore.configs?.hub.llm_models ?? [])
+const llmType = ref('')
+// Default the type dropdown to the hub default llm_type, else the first
+// configured type (configs load async — react once they arrive).
+watch(
+  () => llmTypes.value,
+  (types) => {
+    if (llmType.value || types.length === 0) return
+    const def = appStore.configs?.hub.repo?.llm?.default?.llm_type
+    llmType.value = def && types.some((t) => t.name === def) ? def : types[0]!.name
+  },
+  { immediate: true }
+)
+
+const llmFiles = computed(() => settingsStore.modelLists.llm ?? [])
+const llmEntries = computed(() =>
+  (appStore.catalog?.entries ?? []).filter((e) => e.type === 'llm' && e.diffusionType === llmType.value)
+)
+const llmInstalledNames = computed(() => new Set(llmFiles.value.map((f) => baseName(f.name))))
+const llmSelected = computed(() => settingsStore.settings.llm?.model ?? null)
+
+function llmRowKey(f: ModelFile): string {
+  return `${f.diffusionType ?? ''}/${f.provider ?? ''}/${f.name}`
+}
+
+/**
+ * Save a patch into settings.llm — the FULL merged object. settings:save
+ * merges patches SHALLOWLY (`{ ...current, ...patch }`), so a partial
+ * `{ llm: … }` patch would wipe the rest of the block.
+ */
+async function saveLlm(patch: Partial<LlmSettings>): Promise<void> {
+  const current = settingsStore.settings.llm ?? {}
+  await settingsStore.save({ llm: { ...current, ...patch } })
+}
+
+async function downloadLlm(e: CatalogEntry): Promise<void> {
+  try {
+    await settingsStore.downloadModel('llm', e.url, e.provider)
+    toast(`Downloaded ${e.name}`, 'ok')
+  } catch (err) {
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
+  }
+}
+
+/** Context-scoped delete (one path — see removeModel). */
+async function removeLlm(f: ModelFile): Promise<void> {
+  const ok = await confirm(`Delete ${f.name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
+  if (!ok) return
+  await settingsStore.removeModel('llm', f.name, f.provider, f.diffusionType)
+}
+
+function llmDlState(e: CatalogEntry) {
+  return settingsStore.modelDownloads[`llm:${e.url}`]
+}
+
+/** Whether a hub row is the effective default: the explicit settings pick,
+ *  or (no pick) the hub-default-stamped entry. */
+function isLlmDefault(e: CatalogEntry): boolean {
+  const sel = llmSelected.value
+  if (sel) return sel.model === e.name && sel.provider === (e.provider ?? 'default')
+  return !!e.isDefault
+}
+
+/** Set-default toggle: clicking the active selection clears the override
+ *  (inherit the hub default); clicking another entry selects it. */
+async function setDefaultLlm(e: CatalogEntry): Promise<void> {
+  const sel = llmSelected.value
+  if (sel && sel.model === e.name && sel.provider === (e.provider ?? 'default')) {
+    await saveLlm({ model: undefined })
+    toast('Default language model reset to the hub default', 'ok')
+    return
+  }
+  await saveLlm({
+    model: { llmType: e.diffusionType, provider: e.provider ?? 'default', model: e.name }
+  })
+  toast(`Default language model set to ${e.name}`, 'ok')
+}
+
+// llama.cpp runtime status row (Install / Re-install + llm:progress).
+const llmInstalling = ref(false)
+async function installLlmRuntime(): Promise<void> {
+  llmInstalling.value = true
+  try {
+    await settingsStore.installLlmRuntime()
+    toast('LLM runtime installed', 'ok')
+  } catch (err) {
+    toast(`LLM runtime install failed: ${(err as Error).message}`, 'error')
+  } finally {
+    llmInstalling.value = false
+  }
+}
+
+// ---------- Language Inference ----------
+const llmHubDefault = computed(() => appStore.configs?.hub.repo?.llm?.default)
+const llmHubSystemPrompt = computed(
+  () => appStore.configs?.hub.repo?.llm?.system_prompts?.['llm'] ?? ''
+)
+
+const LLM_CACHE_TYPES = ['f16', 'bf16', 'q8_0', 'q5_1', 'q4_0'] as const
+
+// Editable fields — empty string = inherit the hub default (only non-empty
+// fields are written to settings.llm on Save). The dialog is v-if mounted, so
+// seeding from the saved settings at setup time runs on every open.
+const llmSystemPrompt = ref(settingsStore.settings.llm?.systemPrompt ?? '')
+const llmFlash = ref<string>(settingsStore.settings.llm?.flashAttention ?? '')
+const llmKCache = ref<string>(settingsStore.settings.llm?.kCache ?? '')
+const llmVCache = ref<string>(settingsStore.settings.llm?.vCache ?? '')
+const str = (v: number | undefined): string => (typeof v === 'number' && Number.isFinite(v) ? String(v) : '')
+const llmContextSize = ref(str(settingsStore.settings.llm?.contextSize))
+const llmEvalBatch = ref(str(settingsStore.settings.llm?.evalBatchSize))
+const llmChunkBatch = ref(str(settingsStore.settings.llm?.chunkBatchSize))
+const llmTemp = ref(str(settingsStore.settings.llm?.temp))
+const llmMinP = ref(str(settingsStore.settings.llm?.minP))
+const llmTopP = ref(str(settingsStore.settings.llm?.topP))
+const llmTopK = ref(str(settingsStore.settings.llm?.topK))
+const llmRepeatPenalty = ref(str(settingsStore.settings.llm?.repeatPenalty))
+
+function llmNum(s: string): number | undefined {
+  const t = s.trim()
+  if (!t) return undefined
+  const n = Number(t)
+  return Number.isFinite(n) ? n : undefined
+}
+
+/** Save the inference overrides: only non-empty fields are written (empty =
+ *  inherit the hub default), merged into the FULL settings.llm object. */
+async function saveLlmInference(): Promise<void> {
+  const patch: Partial<LlmSettings> = {}
+  if (llmSystemPrompt.value.trim()) patch.systemPrompt = llmSystemPrompt.value
+  if (llmFlash.value === 'on' || llmFlash.value === 'off') patch.flashAttention = llmFlash.value
+  if (llmKCache.value) patch.kCache = llmKCache.value
+  if (llmVCache.value) patch.vCache = llmVCache.value
+  const ctx = llmNum(llmContextSize.value)
+  if (ctx !== undefined) patch.contextSize = Math.round(ctx)
+  const eb = llmNum(llmEvalBatch.value)
+  if (eb !== undefined) patch.evalBatchSize = Math.round(eb)
+  const cb = llmNum(llmChunkBatch.value)
+  if (cb !== undefined) patch.chunkBatchSize = Math.round(cb)
+  const temp = llmNum(llmTemp.value)
+  if (temp !== undefined) patch.temp = temp
+  const minP = llmNum(llmMinP.value)
+  if (minP !== undefined) patch.minP = minP
+  const topP = llmNum(llmTopP.value)
+  if (topP !== undefined) patch.topP = topP
+  const topK = llmNum(llmTopK.value)
+  if (topK !== undefined) patch.topK = Math.round(topK)
+  const rp = llmNum(llmRepeatPenalty.value)
+  if (rp !== undefined) patch.repeatPenalty = rp
+  await saveLlm(patch)
+  toast('Language inference settings saved', 'ok')
+}
+
+/** Clear the system-prompt override so the hub default applies again. */
+async function resetLlmSystemPrompt(): Promise<void> {
+  llmSystemPrompt.value = ''
+  await saveLlm({ systemPrompt: null })
+  toast('System prompt reset to the hub default', 'ok')
+}
+
 onMounted(async () => {
   await settingsStore.listModels('diffusion')
   await settingsStore.listModels('encoder')
@@ -1068,6 +1231,8 @@ onMounted(async () => {
   await settingsStore.listModels('audio_encoder')
   await settingsStore.listModels('audio_vae')
   await settingsStore.listModels('latent_upscaler')
+  await settingsStore.listModels('llm')
+  void settingsStore.loadLlmStatus()
   loadOverride()
 })
 </script> 
@@ -1761,6 +1926,188 @@ onMounted(async () => {
           <section v-if="section === 'lora'">
             <LoraBrowser />
           </section>
+          <section v-if="section === 'llm_models'">
+            <div class="section-head">
+              <h3>Language Models</h3>
+              <button :disabled="appStore.catalogScanning" @click="refreshHub()">
+                {{ appStore.catalogScanning ? 'Scanning…' : 'Refresh hub' }}
+              </button>
+            </div>
+            <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p>
+
+            <h4>llama.cpp runtime</h4>
+            <p class="muted">
+              The Enhance button rewrites your prompt through a local language model. The runtime
+              downloads once per machine{{ settingsStore.llmStatus?.platformKey ? ` (${settingsStore.llmStatus.platformKey})` : '' }}.
+            </p>
+            <div class="dl-item-top">
+              <span class="mono">{{ settingsStore.llmStatus?.version ?? '—' }}</span>
+              <span v-if="settingsStore.llmStatus?.installed" class="ok-tag">installed</span>
+              <span v-else-if="!settingsStore.llmStatus?.platformKey" class="faint">no runtime for this platform</span>
+              <span v-else class="faint">not installed</span>
+              <button
+                v-if="settingsStore.llmStatus?.platformKey"
+                class="dl-btn"
+                :disabled="llmInstalling"
+                @click="installLlmRuntime()"
+              >
+                {{ llmInstalling ? 'Installing…' : settingsStore.llmStatus?.installed ? 'Re-install' : 'Install' }}
+              </button>
+            </div>
+            <DownloadProgress
+              v-if="llmInstalling && settingsStore.llmRuntimeProgress"
+              class="grow"
+              :downloaded-bytes="settingsStore.llmRuntimeProgress.downloadedBytes"
+              :total-bytes="settingsStore.llmRuntimeProgress.totalBytes"
+            />
+
+            <label class="muted">Model type</label>
+            <select v-model="llmType">
+              <option v-for="t in llmTypes" :key="t.name" :value="t.name">{{ t.label }}</option>
+            </select>
+
+            <h4>Available from hub</h4>
+            <ul class="file-list">
+              <li v-for="e in llmEntries" :key="e.id" class="dl-item">
+                <div class="dl-item-top">
+                  <span class="mono">{{ e.name }}</span>
+                  <span v-if="e.quant" class="quant-tag">{{ e.quant }}</span>
+                  <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
+                  <template v-if="llmInstalledNames.has(baseName(e.name))">
+                    <span class="ok-tag">installed</span>
+                  </template>
+                  <template v-else>
+                    <button
+                      v-if="llmDlState(e)"
+                      class="dl-btn"
+                      disabled
+                      :title="`${llmDlState(e)!.downloadedBytes} / ${llmDlState(e)!.totalBytes} downloaded`"
+                    >
+                      Downloading…
+                    </button>
+                    <button v-else class="dl-btn" @click="downloadLlm(e)">Download</button>
+                  </template>
+                  <button
+                    class="set-default"
+                    :class="{ active: isLlmDefault(e) }"
+                    @click="setDefaultLlm(e)"
+                  >
+                    {{ isLlmDefault(e) ? 'Default' : 'Set default' }}
+                  </button>
+                </div>
+                <DownloadProgress
+                  v-if="llmDlState(e)"
+                  class="grow"
+                  :downloaded-bytes="llmDlState(e)!.downloadedBytes"
+                  :total-bytes="llmDlState(e)!.totalBytes"
+                />
+              </li>
+              <li v-if="!llmEntries.length" class="muted">No language model entries for this type.</li>
+            </ul>
+
+            <h4>Installed</h4>
+            <ul class="file-list">
+              <li v-for="f in llmFiles" :key="llmRowKey(f)">
+                <span class="mono">{{ f.name }}</span>
+                <span class="faint">{{ fmtBytes(f.size) }}</span>
+                <span v-if="rowContext(f)" class="faint">{{ rowContext(f) }}</span>
+                <DownloadProgress
+                  v-if="installedDlState('llm', f.name)"
+                  class="grow"
+                  :downloaded-bytes="installedDlState('llm', f.name)!.downloadedBytes"
+                  :total-bytes="installedDlState('llm', f.name)!.totalBytes"
+                />
+                <button class="icon danger" title="Delete" @click="removeLlm(f)">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14" />
+                  </svg>
+                </button>
+              </li>
+              <li v-if="!llmFiles.length" class="muted">No language models downloaded yet.</li>
+            </ul>
+          </section>
+          <section v-if="section === 'llm_inference'">
+            <h3>Language Inference</h3>
+            <p class="muted">
+              Overrides for the prompt enhancer's llama.cpp run. Empty fields inherit the hub default
+              ({{ llmHubDefault ? `context ${llmHubDefault.context_size}, temp ${llmHubDefault.temp}` : 'see hub.json' }}).
+            </p>
+
+            <label class="muted">System prompt</label>
+            <textarea
+              v-model="llmSystemPrompt"
+              rows="7"
+              class="llm-system-prompt"
+              :placeholder="llmHubSystemPrompt || 'System prompt for the enhancer'"
+            ></textarea>
+            <button class="dl-btn" @click="resetLlmSystemPrompt()">Reset to default</button>
+
+            <table class="kv">
+              <tbody>
+                <tr>
+                  <td>Flash attention</td>
+                  <td>
+                    <select v-model="llmFlash" style="width: 120px">
+                      <option value="">(default)</option>
+                      <option value="on">on</option>
+                      <option value="off">off</option>
+                    </select>
+                  </td>
+                </tr>
+                <tr>
+                  <td>K cache</td>
+                  <td>
+                    <select v-model="llmKCache" style="width: 120px">
+                      <option value="">(default)</option>
+                      <option v-for="t in LLM_CACHE_TYPES" :key="t" :value="t">{{ t }}</option>
+                    </select>
+                  </td>
+                </tr>
+                <tr>
+                  <td>V cache</td>
+                  <td>
+                    <select v-model="llmVCache" style="width: 120px">
+                      <option value="">(default)</option>
+                      <option v-for="t in LLM_CACHE_TYPES" :key="t" :value="t">{{ t }}</option>
+                    </select>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Context size</td>
+                  <td><input v-model="llmContextSize" type="number" min="256" :placeholder="llmHubDefault ? String(llmHubDefault.context_size) : ''" style="width: 110px" /></td>
+                </tr>
+                <tr>
+                  <td>Eval batch size (-b)</td>
+                  <td><input v-model="llmEvalBatch" type="number" min="1" :placeholder="llmHubDefault ? String(llmHubDefault.eval_batch_size) : ''" style="width: 110px" /></td>
+                </tr>
+                <tr>
+                  <td>Chunk batch size (-ub)</td>
+                  <td><input v-model="llmChunkBatch" type="number" min="1" :placeholder="llmHubDefault ? String(llmHubDefault.chunk_batch_size) : ''" style="width: 110px" /></td>
+                </tr>
+                <tr>
+                  <td>Temperature</td>
+                  <td><input v-model="llmTemp" type="number" step="0.05" min="0" :placeholder="llmHubDefault ? String(llmHubDefault.temp) : ''" style="width: 110px" /></td>
+                </tr>
+                <tr>
+                  <td>Min P</td>
+                  <td><input v-model="llmMinP" type="number" step="0.01" min="0" max="1" :placeholder="llmHubDefault ? String(llmHubDefault.min_p) : ''" style="width: 110px" /></td>
+                </tr>
+                <tr>
+                  <td>Top P</td>
+                  <td><input v-model="llmTopP" type="number" step="0.01" min="0" max="1" :placeholder="llmHubDefault ? String(llmHubDefault.top_p) : ''" style="width: 110px" /></td>
+                </tr>
+                <tr>
+                  <td>Top K</td>
+                  <td><input v-model="llmTopK" type="number" min="1" :placeholder="llmHubDefault ? String(llmHubDefault.top_k) : ''" style="width: 110px" /></td>
+                </tr>
+                <tr>
+                  <td>Repeat penalty</td>
+                  <td><input v-model="llmRepeatPenalty" type="number" step="0.01" min="1" :placeholder="llmHubDefault ? String(llmHubDefault.repeat_penalty) : ''" style="width: 110px" /></td>
+                </tr>
+              </tbody>
+            </table>
+            <button class="dl-btn" @click="saveLlmInference()">Save</button>
+          </section>
           <section v-if="section === 'sampling'">
             <h3>Sampling</h3>
             <label class="muted">Diffusion type</label>
@@ -2281,6 +2628,24 @@ onMounted(async () => {
    the input is already full-width — spacing only. */
 .model-search {
   margin-bottom: 10px;
+}
+/* Language Inference system-prompt textarea — full-width, theme-styled. */
+.llm-system-prompt {
+  width: 100%;
+  max-width: 100%;
+  display: block;
+  margin-bottom: 8px;
+  resize: vertical;
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  font: inherit;
+}
+.llm-system-prompt:focus {
+  outline: none;
+  border-color: var(--accent, var(--border));
 }
 .provider-group h5 {
   margin: 10px 0 2px;

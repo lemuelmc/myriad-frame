@@ -21,6 +21,7 @@ import type {
   ApplicationConfig,
   FfmpegConfig,
   HubConfig,
+  LlmRuntimeConfig,
   ResolutionConfig,
   ResolutionEntry,
   RuntimeConfig,
@@ -688,6 +689,159 @@ export function validateHubConfig(cfg: unknown): string | undefined {
     }
   }
 
+  // llm_models — optional (the LLM prompt enhancer); present must be an array
+  // (empty allowed) of { name, label } objects.
+  const llmModels = obj['llm_models']
+  if (llmModels !== undefined && llmModels !== null) {
+    if (!Array.isArray(llmModels)) {
+      return 'hub config "llm_models" must be an array when present'
+    }
+    for (let i = 0; i < llmModels.length; i++) {
+      const m = llmModels[i]
+      if (m === null || typeof m !== 'object' || Array.isArray(m)) {
+        return `llm_models[${i}] must be an object`
+      }
+      const mo = m as Record<string, unknown>
+      for (const key of ['name', 'label'] as const) {
+        const v = mo[key]
+        if (typeof v !== 'string' || v === '') {
+          return `llm_models[${i}].${key} must be a non-empty string`
+        }
+      }
+    }
+  }
+
+  // repo.llm — optional (the LLM prompt enhancer); present-must-be-valid.
+  const llm = repoObj['llm']
+  if (llm !== undefined && llm !== null) {
+    if (typeof llm !== 'object' || Array.isArray(llm)) {
+      return 'hub config "repo.llm" must be an object when present'
+    }
+    const llobj = llm as Record<string, unknown>
+    // system_prompts — a string -> string record (empty allowed).
+    const prompts = llobj['system_prompts']
+    if (prompts !== undefined && prompts !== null) {
+      if (typeof prompts !== 'object' || Array.isArray(prompts)) {
+        return 'hub config "repo.llm.system_prompts" must be an object when present'
+      }
+      for (const [key, v] of Object.entries(prompts as Record<string, unknown>)) {
+        if (typeof v !== 'string' || v === '') {
+          return `repo.llm.system_prompts["${key}"] must be a non-empty string`
+        }
+      }
+    }
+    // models — provider-keyed explicit-catalog entries.
+    const models = llobj['models']
+    if (models !== undefined && models !== null) {
+      if (typeof models !== 'object' || Array.isArray(models)) {
+        return 'hub config "repo.llm.models" must be an object when present'
+      }
+      for (const [prov, v] of Object.entries(models as Record<string, unknown>)) {
+        if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+          return `repo.llm.models["${prov}"] must be an object`
+        }
+        const mo = v as Record<string, unknown>
+        for (const key of ['llm_type', 'quant_type'] as const) {
+          const val = mo[key]
+          if (typeof val !== 'string' || val === '') {
+            return `repo.llm.models["${prov}"].${key} must be a non-empty string`
+          }
+        }
+        const murl = mo['url']
+        if (typeof murl !== 'string' || murl === '' || !murl.startsWith('https://')) {
+          return `repo.llm.models["${prov}"].url must be a non-empty string starting with https://`
+        }
+        if (mo['path'] !== undefined) {
+          const p = mo['path']
+          if (typeof p !== 'string' || p.trim() === '') {
+            return `repo.llm.models["${prov}"].path must be a non-empty string when present`
+          }
+        }
+        const cat = mo['catalog']
+        if (!Array.isArray(cat) || cat.length === 0) {
+          return `repo.llm.models["${prov}"].catalog must be a non-empty array`
+        }
+        // Duplicate basenames within one provider would collide on disk
+        // (case-insensitive: Windows FS is case-folded).
+        const seenBase = new Set<string>()
+        for (let j = 0; j < cat.length; j++) {
+          const item = cat[j]
+          if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+            return `repo.llm.models["${prov}"].catalog[${j}] must be an object`
+          }
+          const io = item as Record<string, unknown>
+          for (const key of ['name', 'label'] as const) {
+            const val = io[key]
+            if (typeof val !== 'string' || val === '') {
+              return `repo.llm.models["${prov}"].catalog[${j}].${key} must be a non-empty string`
+            }
+          }
+          const items = io['items']
+          if (!Array.isArray(items) || items.length === 0) {
+            return `repo.llm.models["${prov}"].catalog[${j}].items must be a non-empty array`
+          }
+          for (let k = 0; k < items.length; k++) {
+            const f = items[k]
+            if (f === null || typeof f !== 'object' || Array.isArray(f)) {
+              return `repo.llm.models["${prov}"].catalog[${j}].items[${k}] must be an object`
+            }
+            const fo = f as Record<string, unknown>
+            if (typeof fo['file'] !== 'string' || fo['file'] === '') {
+              return `repo.llm.models["${prov}"].catalog[${j}].items[${k}].file must be a non-empty string`
+            }
+            const base = (fo['file'] as string).split('/').pop() ?? ''
+            if (base !== '') {
+              const low = base.toLowerCase()
+              if (seenBase.has(low)) {
+                return `repo.llm.models["${prov}"].catalog[${j}].items[${k}] duplicates basename "${base}"`
+              }
+              seenBase.add(low)
+            }
+          }
+        }
+      }
+    }
+    // default — non-empty strings + finite numbers.
+    const def = llobj['default']
+    if (def !== undefined && def !== null) {
+      if (typeof def !== 'object' || Array.isArray(def)) {
+        return 'hub config "repo.llm.default" must be an object when present'
+      }
+      const dobj = def as Record<string, unknown>
+      for (const key of [
+        'llm_type',
+        'provider',
+        'model',
+        'flash_attention',
+        'k_cache',
+        'v_cache'
+      ] as const) {
+        const v = dobj[key]
+        if (typeof v !== 'string' || v === '') {
+          return `repo.llm.default.${key} must be a non-empty string`
+        }
+      }
+      if (dobj['flash_attention'] !== 'on' && dobj['flash_attention'] !== 'off') {
+        return 'repo.llm.default.flash_attention must be "on" or "off"'
+      }
+      for (const key of [
+        'context_size',
+        'eval_batch_size',
+        'chunk_batch_size',
+        'temp',
+        'min_p',
+        'top_p',
+        'top_k',
+        'repeat_penalty'
+      ] as const) {
+        const v = dobj[key]
+        if (typeof v !== 'number' || !Number.isFinite(v)) {
+          return `repo.llm.default.${key} must be a finite number`
+        }
+      }
+    }
+  }
+
   return undefined
 }
 
@@ -1040,6 +1194,17 @@ export function resetRuntimeConfig(): void {
  */
 export function loadFfmpegConfig(): FfmpegConfig {
   return readJson<FfmpegConfig>(join(getAppRoot(), 'ffmpeg.json'))
+}
+
+/**
+ * The bundled `configurations/llm_runtime.json`: llama.cpp release archives
+ * per platform (the LLM prompt enhancer runtime). Bundled file only — no
+ * override / Check / Reset UI for v1 (the ffmpeg.json contract). Throws when
+ * missing — same loud-failure contract as `loadApplicationConfig()` for a
+ * file that must always exist in the bundle.
+ */
+export function loadLlmRuntimeConfig(): LlmRuntimeConfig {
+  return readJson<LlmRuntimeConfig>(join(getAppRoot(), 'llm_runtime.json'))
 }
 
 export function loadAllConfigs(): AllConfigs {

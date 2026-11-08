@@ -45,7 +45,8 @@ export function ensureModelDirs(): void {
     'tokenizer',
     'audio_encoder',
     'audio_vae',
-    'latent_upscaler'
+    'latent_upscaler',
+    'llm'
   ] as const) {
     mkdirSync(join(root, t), { recursive: true })
   }
@@ -603,7 +604,8 @@ export function migrateModelLayout(): void {
     'tokenizer',
     'audio_encoder',
     'audio_vae',
-    'latent_upscaler'
+    'latent_upscaler',
+    'llm'
   ] as const) {
     const dir = modelsDir(type)
     if (!existsSync(dir)) continue

@@ -11,6 +11,7 @@ import type {
   DownloadProgress,
   DownloadsListResult,
   HubCheckResult,
+  LlmStatusInfo,
   ModelFile,
   ModelType,
   PerformanceSettings,
@@ -74,7 +75,11 @@ export const useSettingsStore = defineStore('settings', {
       downloading: boolean
       phase?: 'downloading' | 'extracting'
       progress?: { downloadedBytes: number; totalBytes: number }
-    } | null
+    } | null,
+    /** llama.cpp runtime + default-model status (Settings → Language Models). */
+    llmStatus: null as LlmStatusInfo | null,
+    /** Live progress of a manual LLM runtime install (llm:progress pushes). */
+    llmRuntimeProgress: null as { downloadedBytes: number; totalBytes: number; phase?: 'downloading' | 'extracting' } | null
   }),
   getters: {
     selectedVersion(): string | null {
@@ -272,6 +277,33 @@ export const useSettingsStore = defineStore('settings', {
     },
     async listModels(type: ModelType) {
       this.modelLists[type] = await window.api.modelsList(type)
+    },
+    /** Pull the LLM runtime + default-model status (Settings → Language Models). */
+    async loadLlmStatus() {
+      this.llmStatus = await window.api.llmStatus()
+    },
+    /**
+     * Manual (re)install of the llama.cpp runtime. Streams llm:progress into
+     * `llmRuntimeProgress` for the row's progress bar; refreshes the status
+     * afterwards. Errors propagate to the caller (the section toasts them).
+     * The llm:progress listener is registered ONCE (ipcRenderer.on has no
+     * removal in the preload bridge — repeated installs must not stack
+     * duplicate listeners).
+     */
+    llmProgressHooked: false,
+    async installLlmRuntime() {
+      if (!this.llmProgressHooked) {
+        this.llmProgressHooked = true
+        window.api.onLlmProgress((p) => {
+          this.llmRuntimeProgress = { downloadedBytes: p.downloadedBytes, totalBytes: p.totalBytes, phase: p.phase }
+        })
+      }
+      try {
+        await window.api.llmInstallRuntime()
+      } finally {
+        this.llmRuntimeProgress = null
+        await this.loadLlmStatus()
+      }
     },
     async downloadModel(type: ModelType, url: string, provider?: string, force = false) {
       const key = `${type}:${url}`

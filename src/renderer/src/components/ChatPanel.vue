@@ -1669,6 +1669,35 @@ function stop(): void {
   if (sessionsStore.activeId) void window.api.genStop(sessionsStore.activeId)
 }
 
+// ---------- prompt enhancer (LLM) ----------
+// Icon-only Enhance button in the composer toolbar: rewrites the prompt
+// through the configured llama.cpp model + system prompt. While an
+// enhancement runs the button shows a spinner and a second click CANCELS it
+// (llm:stop — the Send→Stop pattern); on success the textarea content is
+// replaced with the enhanced prompt; errors surface as toasts (including the
+// "download the model in Settings → Language Models" hint main sends).
+const enhancing = ref(false)
+async function enhance(): Promise<void> {
+  if (enhancing.value) {
+    await window.api.llmStop()
+    return
+  }
+  const text = prompt.value.trim()
+  if (!text || busy.value) return
+  enhancing.value = true
+  try {
+    const res = await window.api.llmEnhance(text)
+    if (res.text) prompt.value = res.text
+  } catch (err) {
+    const msg = (err as Error)?.message ?? ''
+    // The cancel path rejects with a sentinel the renderer recognizes —
+    // not an error toast.
+    if (msg !== 'Enhancement cancelled') toast(msg || 'Enhance failed', 'error')
+  } finally {
+    enhancing.value = false
+  }
+}
+
 // ---------- per-session dialogs ----------
 async function onSaveNegative(draft: string): Promise<void> {
   const id = sessionsStore.activeId
@@ -2109,6 +2138,31 @@ function fmtBytes(n: number): string {
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="8" y="3" width="13" height="13" rx="2" />
               <path d="M16 16v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h3" />
+            </svg>
+          </button>
+          <button
+            class="icon"
+            :class="{ active: enhancing }"
+            title="Enhance prompt"
+            aria-label="Enhance prompt"
+            :disabled="busy || (!prompt.trim() && !enhancing)"
+            @click="enhance()"
+          >
+            <!-- sparkles / wand — while enhancing the icon spins and a second
+                 click cancels the in-flight enhancement -->
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linejoin="round"
+              :class="{ 'enhance-spin': enhancing }"
+            >
+              <path d="M12 4l1.8 4.2L18 10l-4.2 1.8L12 16l-1.8-4.2L6 10l4.2-1.8z" />
+              <path d="M19 14.5l.8 1.7 1.7.8-1.7.8-.8 1.7-.8-1.7-1.7-.8 1.7-.8z" />
+              <path d="M13.5 8.5 21 1" />
             </svg>
           </button>
           <button
@@ -2569,6 +2623,16 @@ function fmtBytes(n: number): string {
   gap: 8px;
   flex-wrap: wrap;
   font-size: 13px;
+}
+/* Enhance spinner: the sparkles icon rotates while the LLM runs; a second
+   click on the button cancels the enhancement (llm:stop). */
+@keyframes enhance-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.enhance-spin {
+  animation: enhance-rotate 1.2s linear infinite;
 }
 .composer-tools select {
   max-width: 220px;

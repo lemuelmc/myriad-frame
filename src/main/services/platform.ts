@@ -108,6 +108,37 @@ export function runtimeKeyFor(os: PlatformInfo['os'], gpu: PlatformInfo['gpu']):
   }
 }
 
+/**
+ * LLM runtime platform key (llama.cpp build vocabulary — separate from the
+ * sd-cli `runtimeKeyFor` above; the two key sets differ). Mirrors the
+ * sd-cli mapping where the vocabularies overlap (AMD on Windows → Vulkan,
+ * consistent with `runtimeKeyFor`; the `windows_x64_rocm` LLM key stays
+ * available for a future setting). Returns undefined when the platform has
+ * no LLM runtime — the Enhance feature reports that non-fatally.
+ */
+export function llmRuntimeKeyFor(
+  os: PlatformInfo['os'],
+  gpu: PlatformInfo['gpu'],
+  arch: string
+): string | undefined {
+  switch (os) {
+    case 'win32':
+      if (arch === 'arm64') return gpu === 'nvidia' || gpu === 'amd' ? 'windows_arm64_vulkan' : 'windows_arm64_cpu'
+      if (gpu === 'nvidia') return 'windows_x64_cuda12'
+      if (gpu === 'amd') return 'windows_x64_vulkan'
+      return 'windows_x64_cpu'
+    case 'darwin':
+      return arch === 'arm64' ? 'macos_silicon' : 'macos_intel'
+    case 'linux':
+      if (arch === 'arm64') {
+        return gpu === 'nvidia' || gpu === 'amd' ? 'ubuntu_arm64_vulkan' : 'ubuntu_arm64_cpu'
+      }
+      if (gpu === 'nvidia') return 'ubuntu_x64_cuda12'
+      if (gpu === 'amd') return 'ubuntu_x64_rocm'
+      return 'ubuntu_x64_cpu'
+  }
+}
+
 export async function detectPlatform(): Promise<PlatformInfo> {
   const os: PlatformInfo['os'] =
     process.platform === 'win32' || process.platform === 'darwin' || process.platform === 'linux'
@@ -130,5 +161,6 @@ export async function detectPlatform(): Promise<PlatformInfo> {
   }
 
   const runtimeKey = runtimeKeyFor(os, gpu)
-  return { os, gpu, gpuDetail: detail, runtimeKey }
+  const llmRuntimeKey = llmRuntimeKeyFor(os, gpu, process.arch)
+  return { os, gpu, gpuDetail: detail, runtimeKey, llmRuntimeKey }
 }

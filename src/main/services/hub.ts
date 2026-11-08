@@ -666,6 +666,72 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
     }
   }
 
+  // llm (optional map; the LLM prompt enhancer) — an EXPLICIT file list per
+  // provider entry: one catalog entry per provider × catalog item ×
+  // items[].file. NO repo scan, NO headSize (the diffusion `catalog[]`
+  // rationale: one HEAD per row for display sugar only). Entries whose item
+  // name matches `repo.llm.default.model` (+ provider) are stamped
+  // `isDefault: true`. Lenient by design: a malformed provider entry warns +
+  // contributes no rows, never failing the build (the lora-loop policy); an
+  // unknown source is a dispatch miss → warn + skip (uniform policy).
+  const llmSection = hub.repo.llm
+  if (llmSection?.models) {
+    const defaultModel = typeof llmSection.default?.model === 'string' ? llmSection.default.model : undefined
+    const defaultProvider = typeof llmSection.default?.provider === 'string' ? llmSection.default.provider : undefined
+    for (const [provider, lm] of Object.entries(llmSection.models)) {
+      if (lm === null || typeof lm !== 'object') continue
+      if (typeof lm.url !== 'string' || lm.url === '') {
+        console.warn(`[hub] llm entry "${provider}" has no url; skipping`)
+        continue
+      }
+      if (!Array.isArray(lm.catalog) || lm.catalog.length === 0) {
+        console.warn(`[hub] llm entry "${provider}" has no catalog; skipping`)
+        continue
+      }
+      eligibleEntries++
+      const source = getSourceForEntry(lm.url)
+      if (!source) {
+        console.warn(`[hub] llm entry "${provider}" (${lm.url}): no model source for this URL's host — skipping`)
+        continue
+      }
+      const repo = source.repoFromUrl(lm.url)
+      for (const item of lm.catalog) {
+        if (item === null || typeof item !== 'object') continue
+        const files = Array.isArray(item.items) ? item.items : []
+        for (const f of files) {
+          if (f === null || typeof f !== 'object' || typeof f.file !== 'string' || f.file === '') {
+            continue
+          }
+          const path = source.normalizeFilePath?.(f.file) ?? f.file
+          // The on-disk name is ALWAYS a single basename (the single-segment
+          // storage rule — downloads.ts basename-normalizes anyway; stating
+          // it here keeps the catalog id collision-free per family).
+          const name = path.split('/').pop() ?? path
+          entries.push({
+            id: `llm:${lm.llm_type}:${name}`,
+            type: 'llm' as ModelType,
+            diffusionType: lm.llm_type,
+            name,
+            // The hub item's human label ("Unsloth/Gemma-3 IT @q4km") beats
+            // the file basename; the ?? guards an unvalidated bundled config.
+            label: item.label ?? name,
+            url: source.resolveUrl(repo, path),
+            quant: quantFromName(name),
+            repo,
+            provider,
+            // download-time routing key + provenance (see CatalogEntry.source)
+            source: source.name,
+            // The catalog ITEM name is the group id — the settings/default
+            // resolution matches on it (the item name, not the file basename).
+            groupId: item.name,
+            ...(item.name === defaultModel && provider === defaultProvider ? { isDefault: true } : {})
+          })
+          dispatchedEntries++
+        }
+      }
+    }
+  }
+
   // vae (repo + default file; the legacy plain-URL form is still accepted)
   for (const [diffusionType, v] of Object.entries(hub.repo.vae)) {
     if (typeof v === 'string') {
@@ -916,6 +982,24 @@ export function catalogBundleForUrl(url: string): CatalogEntry[] {
       x.diffusionType === clicked.diffusionType &&
       x.groupId === clicked.groupId
   )
+}
+
+/**
+ * All cached catalog entries of ONE type — the shared catalog read behind the
+ * LLM enhancer's default-model resolution (`effectiveLlm` in llm.ts) and the
+ * background default-model ensure in index.ts. Empty array on a missing or
+ * corrupt cache (the permissive-degradation pattern of the other accessors).
+ */
+export function catalogEntriesForType(type: ModelType): CatalogEntry[] {
+  const p = catalogPath()
+  if (!existsSync(p)) return []
+  let catalog: HubCatalog
+  try {
+    catalog = JSON.parse(readFileSync(p, 'utf-8')) as HubCatalog
+  } catch {
+    return []
+  }
+  return (catalog.entries ?? []).filter((e) => e.type === type)
 }
 
 export interface HubService {
