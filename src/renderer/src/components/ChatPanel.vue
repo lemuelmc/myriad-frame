@@ -1672,7 +1672,7 @@ function stop(): void {
 // ---------- prompt enhancer (LLM) ----------
 // Icon-only Enhance button in the composer toolbar: rewrites the prompt
 // through the configured llama.cpp model + system prompt. While an
-// enhancement runs the button shows a spinner and a second click CANCELS it
+// enhancement runs the button pulses and a second click CANCELS it
 // (llm:stop — the Send→Stop pattern); on success the textarea content is
 // replaced with the enhanced prompt; errors surface as toasts (including the
 // "download the model in Settings → Language Models" hint main sends).
@@ -2148,7 +2148,7 @@ function fmtBytes(n: number): string {
             :disabled="busy || (!prompt.trim() && !enhancing)"
             @click="enhance()"
           >
-            <!-- sparkles / wand — while enhancing the icon spins and a second
+            <!-- sparkles / wand — while enhancing the icon pulses and a second
                  click cancels the in-flight enhancement -->
             <svg
               width="15"
@@ -2158,7 +2158,7 @@ function fmtBytes(n: number): string {
               stroke="currentColor"
               stroke-width="2"
               stroke-linejoin="round"
-              :class="{ 'enhance-spin': enhancing }"
+              :class="{ 'enhance-busy': enhancing }"
             >
               <path d="M12 4l1.8 4.2L18 10l-4.2 1.8L12 16l-1.8-4.2L6 10l4.2-1.8z" />
               <path d="M19 14.5l.8 1.7 1.7.8-1.7.8-.8 1.7-.8-1.7-1.7-.8 1.7-.8z" />
@@ -2624,15 +2624,22 @@ function fmtBytes(n: number): string {
   flex-wrap: wrap;
   font-size: 13px;
 }
-/* Enhance spinner: the sparkles icon rotates while the LLM runs; a second
-   click on the button cancels the enhancement (llm:stop). */
-@keyframes enhance-rotate {
-  to {
-    transform: rotate(360deg);
+/* Enhance busy indicator: the sparkles icon pulses (scale + opacity) while
+   the LLM runs; a second click on the button cancels the enhancement
+   (llm:stop). */
+@keyframes enhance-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.18);
+    opacity: 0.55;
   }
 }
-.enhance-spin {
-  animation: enhance-rotate 1.2s linear infinite;
+.enhance-busy {
+  animation: enhance-pulse 1.1s ease-in-out infinite;
 }
 .composer-tools select {
   max-width: 220px;
