@@ -127,12 +127,15 @@ Planned directions for future releases (in rough priority order):
 
 - **Better session & chat management** — richer session organization: folders/tags, search & filter, drag-and-drop reordering, message-level actions (edit, regenerate, copy), threaded replies, and import/export of sessions.
 - **Expanded supported diffusion models** — broaden the curated Hugging Face catalog, add first-run model discovery, and improve quantization/version selection.
-- **LoRA support & management** — load and mix LoRAs per generation, with a management UI to browse, download, enable/disable, and tune per-LoRA weight.
+- ~~**LoRA support & management** — load and mix LoRAs per generation, with a management UI to browse, download, enable/disable, and tune per-LoRA weight.~~
 - **ControlNet support & management** — attach ControlNet conditions (pose, depth, canny, etc.) to generations, with a management UI for model and preset selection.
 - **IP-Adapter & ADetailer support** — IP-Adapter for reference-image style/fidelity adaptation, and ADetailer for automatic face/hand refinement of generated images, each with its own model management UI.
-- **In-built masking & inpainting** — draw/paint a mask directly on the canvas for inpainting, outpainting, and region-based edits without external image editors.
+- ~~**In-built masking & inpainting** — draw/paint a mask directly on the canvas for inpainting, outpainting, and region-based edits without external image editors.~~
 - **Audio generation support** — drive text-to-audio / audio generation runtimes alongside image generation.
-- **Video generation support** — generate short clips from prompts (and prompt + reference/image) through supported video runtimes.
+- ~~**Video generation support** — generate short clips from prompts (and prompt + reference/image) through supported video runtimes.~~
+- ~~**Unified Resolution Selector** — a single resolution picker replacing scattered width/height controls: aspect-ratio presets, orientation, custom width/height, megapixels and divisible-by sliders, with a live preview.~~
+- ~~**UI for image resize / crop** — a non-destructive overlay to resize and crop attached images before generation: resolution presets, custom dimensions, crop-only mode, zoom/rotate tools, saving edits as new files.~~
+- ~~**Prompt Enhancer** — one-click prompt rewriting through a local LLM (llama.cpp) that expands a short prompt into a richer, more detailed one before generation.~~
 
 ## Data layout
 
@@ -158,22 +161,62 @@ data/
 - **Chat panel** — the session. Pick a diffusion model/quant via a searchable **Model
   Picker** dialog, and choose a resolution via the **Resolution selector** dialog
   (aspect-ratio presets, orientation, custom width/height, megapixels and divisible-by
-  sliders, live preview); add up to `max_reference` reference images;
-  toggle "use previous image as reference" (default on). Two composer icons open
-  **per-session** dialogs for the **Negative prompt** and a **Sampling override** (steps,
-  cfg, strength, sampler, scheduler) that persist in the session file. The **Generate**
-  button (play icon) becomes **Stop** (stop icon) while a generation is in flight, with a
-  spinner/dot indicator and live step progress. Clicking a generated image opens a
-  **fullscreen lightbox** preview.
+  sliders, live preview). Composer toolbar:
+  - **Add input images** / **Add reference images** — attach up to `max_image_input`
+    input images (`--init-img`) and `max_reference` reference images (`--ref-image`);
+    picking offers an optional **Edit** step that opens a full-screen, non-destructive
+    **resize/crop** overlay (resolution presets, custom dimensions, crop-only mode,
+    zoom/rotate) before attaching. Drag-and-drop from the OS file explorer also works.
+  - **Media channels** (per diffusion type) — driving audio (Wan S2V), control video
+    frames directory (VACE), and end image (FLF2V).
+  - **Negative prompt** and **Sampling override** — per-session dialogs (steps, cfg,
+    strength, sampler, scheduler, seed) that persist in the session file.
+  - **LoRA** — per-session apply mode (`off` / `auto` / `immediately` / `at_runtime`)
+    and optional custom `--lora-model-dir`, with a hub LoRA browser for browsing and
+    downloading adapters.
+  - **Enhance prompt** — one-click prompt rewriting through a local LLM (llama.cpp).
+  - **Image editing tools** — **Paint** (paint onto an image, used as input or
+    reference), **Inpaint** (paint a mask over an image to regenerate the masked
+    region), and **Outpaint** (expand the canvas with edge margins); the three are
+    mutually exclusive with an in-app confirm on switch.
+  - **Use previous image** — chains the last generated image as input or reference
+    (dropdown, default reference).
+  - The **Generate** button (play icon) becomes **Stop** (stop icon) while a generation
+    is in flight, with a spinner/dot indicator and live step progress. Generated images
+    and videos (`.mp4` / `.webm` inline players) render in the chat; clicking one opens
+    a **fullscreen lightbox** with save/copy actions, and messages support copy and
+    delete.
 - **Settings dialog** — sections:
-  - **Appearance** — theme picker (`Default`, `Halloween`, `Christmas`).
   - **About** — app/runtime/platform/GPU info.
-  - **Models** — list, download, and delete models per type; filter the hub catalog by name,
-    family, quant, provider, or description.
+  - **Release Notes** — bundled release notes.
+  - **Models** — list, download, and delete diffusion models; filter the hub catalog by
+    name, family, quant, provider, or description; one-click dependency download
+    (VAE, text encoder, vision); hub config update check/reset.
   - **VAE** — pick the default VAE per `diffusion_type`.
+  - **Text Encoder** — list, download, and delete text encoders per `diffusion_type`.
+  - **Vision** — vision (mmproj) models.
+  - **Tokenizer** — tokenizer models.
+  - **Audio Encoder** — audio encoder models (Wan S2V).
+  - **Audio VAE** — audio VAE models (LTX-2.5).
+  - **Latent Upscaler** — latent upscaler models (LTX-2.5 hires fix).
+  - **LoRA** — hub LoRA browser: browse, download, and delete LoRA adapters.
+  - **Language Models** — LLM runtime status; list, download, and delete prompt-enhancer
+    models; set the default.
+  - **Language Inference** — system prompt and sampler overrides for the prompt
+    enhancer.
   - **Sampling** — override sampling defaults per `diffusion_type`, including `Sampler`,
-    `Scheduler`, and `Negative` fields.
-  - **Runtime** — detected platform, recommended runtime, version list with download/select.
+    `Scheduler`, `Negative`, and `Seed` fields.
+  - **Performance** — global inference flags applied to every generation: flash
+    attention, direct convolution, VAE tile size/overlap, force CPU offload, and
+    parameter backend (memory-vs-speed trade-offs).
+  - **Runtime** — detected platform, recommended runtime, version list with
+    download/select; runtime config update check/reset.
+  - **Downloads** — unified download manager: pause/resume all, cancel, and retry
+    in-flight downloads (runtime and models).
+  - **Tokens** — manage per-source API tokens (`data/hub-tokens.json`): add, edit,
+    delete, import, and export.
+  - **Appearance** — theme picker (`Default`, `Halloween`, `Christmas`).
+  - **Logs** — view the tail of `data/logs/latest.log`.
 
 ## Screenshots
 
@@ -197,7 +240,7 @@ data/
 A short demo of the built-in inpainting workflow (painting a mask over an image and regenerating the masked region):
 
 <video controls preload="metadata" style="width:100%;border-radius:6px;">
-  <source src="docs/assets/inpainting-20261101.mp4" type="video/mp4">
+  <source src="docs/assets/inpainting-20261101-h264_2.mp4" type="video/mp4">
   Your browser does not support the video tag.
 </video>
 

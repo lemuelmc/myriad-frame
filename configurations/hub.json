@@ -1,5 +1,5 @@
 {
-  "updatedOn": "2026-11-07 00:00:00",
+  "updatedOn": "2026-11-09 00:00:00",
   "diffusion_inference_types": {
     "image": {"text_input": true, "accepts": ["*.jpg, *.png"]},
     "video": {"text_input": true, "accepts": ["*.jpg, *.png"]},
@@ -1002,6 +1002,7 @@
         "name": "vantagewithai_ltx_2_5_gguf_dev",
         "label": "Vantage with AI/LTX-2.5-GGUF (DEV)",
         "description": "LTX-2.5 Dev video generation model.",
+        "inference_type": "text_image_to_video",
         "quant_type": "gguf",
         "diffusion_type": "ltx_2_5",
         "url": "https://huggingface.co/vantagewithai/LTX-2.5-GGUF",
@@ -1012,6 +1013,7 @@
         "name": "vantagewithai_ltx_2_5_gguf_distilled",
         "label": "Vantage with AI/LTX-2.5-GGUF (DISTILLED)",
         "description": "LTX-2.5 Distilled generation model for fast infererence",
+        "inference_type": "text_image_to_video",
         "quant_type": "gguf",
         "diffusion_type": "ltx_2_5",
         "url": "https://huggingface.co/vantagewithai/LTX-2.5-GGUF",

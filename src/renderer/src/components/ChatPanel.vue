@@ -1806,6 +1806,13 @@ function autoGrow(): void {
   el.style.height = Math.min(el.scrollHeight, 160) + 'px'
 }
 
+// Programmatic prompt changes (e.g. the LLM enhancer replacing the text)
+// don't fire `@input`, so re-grow the textarea whenever the value changes.
+// `flush: 'post'` is required: the default `pre` flush would run before the
+// DOM re-renders, so `scrollHeight` would still reflect the OLD text and the
+// box would be sized too small (clipping the enhanced prompt).
+watch(prompt, autoGrow, { flush: 'post' })
+
 onMounted(async () => {
   window.api.onGenProgress(onGenProgress)
   // Main purged a stale mask reference during gen:start (the mask/background
