@@ -25,6 +25,7 @@
     </a>
     <div class="links">
       <a class="hide-sm" href="#features">Features</a>
+      <a class="hide-sm" href="#models">Models</a>
       <a class="hide-sm" href="#how">How it works</a>
       <a class="hide-sm" href="#video">Video Demo</a>
       <a class="hide-sm" href="#screenshots">Screenshots</a>
@@ -39,7 +40,7 @@
   <!-- Hero -->
   <header class="hero" id="top">
     <div class="wrap">
-      <img class="logo" src="assets/logo-wide-small.png" alt="Myriad Frame" />
+      <img class="logo" src="assets/logo-square-medium.png" alt="Myriad Frame" />
       <span class="eyebrow">Electron + Vue 3 · Open Source</span>
       <h1>Myriad Frame</h1>
       <p class="lead">A free, open-source desktop front-end for <a href="https://github.com/leejet/stable-diffusion.cpp" rel="noopener" target="_blank">stable-diffusion.cpp</a>. Manage chat sessions, download and select models, and drive image/video generation through a bundled <code>sd-cli</code> runtime — all in one place.</p>
@@ -63,7 +64,12 @@
         <div class="card reveal">
           <div class="icon">💬</div>
           <h3>Session & chat management</h3>
-          <p>Organize generations into chat sessions with per-session sampling, negative prompt, and image-persistence settings that save automatically — plus a one-click prompt enhancer that rewrites your prompt through a local LLM.</p>
+          <p>Organize generations into chat sessions with per-session sampling, negative prompt, and image-persistence settings that save automatically.</p>
+        </div>
+        <div class="card reveal">
+          <div class="icon">✨</div>
+          <h3>LLM prompt enhancer</h3>
+          <p>Rewrite your prompt on demand with a one-click Enhance button — a fully local, one-shot run of a downloadable Gemma 3 model via llama.cpp, with a configurable system prompt and sampler settings.</p>
         </div>
         <div class="card reveal">
           <div class="icon">🧩</div>
@@ -76,9 +82,19 @@
           <p>Runs on <a href="https://github.com/leejet/stable-diffusion.cpp" rel="noopener" target="_blank">stable-diffusion.cpp</a> with CUDA/Vulkan or CPU support. Recommended runtime is auto-selected per platform and GPU.</p>
         </div>
         <div class="card reveal">
+          <div class="icon">🚀</div>
+          <h3>Performance tuning</h3>
+          <p>Settings → Performance exposes the low-level runtime flags — flash attention, compute backend, VRAM budget, auto-fit, and more — behind a single master switch to squeeze the fastest generation out of your hardware.</p>
+        </div>
+        <div class="card reveal">
           <div class="icon">🖼️</div>
           <h3>References & image input</h3>
-          <p>Attach reference images for style adaptation or use a previous output as an init image — resize and crop any pick in a fullscreen editor before attaching. Fullscreen lightbox previews every generated image.</p>
+          <p>Attach reference images for style adaptation or use a previous output as an init image. Fullscreen lightbox previews every generated image.</p>
+        </div>
+        <div class="card reveal">
+          <div class="icon">✂️</div>
+          <h3>Image crop & resize</h3>
+          <p>Open any pick in a fullscreen, non-destructive editor before attaching — resolution presets, custom width/height, crop-only mode, zoom and rotate — saved as a new PNG. The original file is never modified.</p>
         </div>
         <div class="card reveal">
           <div class="icon">🎨</div>
@@ -106,6 +122,123 @@
           <p>Store tokens for private Hugging Face and CivitAI repos via a built-in Tokens manager — never hand-edited, never logged.</p>
         </div>
       </div>
+    </div>
+  </section>
+
+  <!-- Model families -->
+  <section id="models">
+    <div class="wrap">
+      <div class="center">
+        <span class="eyebrow">Model families</span>
+        <h2>Fourteen model families, one catalog</h2>
+        <p class="lead">From Flux and SDXL to WAN and LTX — every family ships as quantized GGUF weights with its own VAE and text encoder(s), browsable and downloadable without leaving the app.</p>
+      </div>
+      <div class="fam-groups">
+        <div class="fam-group reveal">
+          <div class="fam-group-head">
+            <h3>Image models</h3>
+            <span class="fam-count">12 families</span>
+          </div>
+          <div class="fam-grid">
+            <div class="fam">
+              <span class="fam-type">Unified</span>
+              <h4>Qwen Image 2.1</h4>
+              <p>Alibaba's unified text-to-image and editing model — up to 7 reference images, image-to-image, and flow-shift control.</p>
+              <div class="fam-tags"><span class="fam-tag">References ×7</span><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Text to image</span>
+              <h4>Z-Image Turbo</h4>
+              <p>Fast 8-step turbo model for quick drafts and fast iteration.</p>
+              <div class="fam-tags"><span class="fam-tag">8 steps</span><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Text to image</span>
+              <h4>SD3.5</h4>
+              <p>Stability AI's MMDiT model with a three-encoder text stack (CLIP-G, CLIP-L, T5-XXL).</p>
+              <div class="fam-tags"><span class="fam-tag">3 encoders</span><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Text to image</span>
+              <h4>Krea 2</h4>
+              <p>Krea's fast 8-step model with reference and image input.</p>
+              <div class="fam-tags"><span class="fam-tag">8 steps</span><span class="fam-tag">References</span><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Text to image</span>
+              <h4>SDXL-1.0</h4>
+              <p>The classic SDXL checkpoint, loaded all-in-one with its VAE baked in.</p>
+              <div class="fam-tags"><span class="fam-tag">All-in-one</span><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Text to image</span>
+              <h4>Anima</h4>
+              <p>CircleStone Labs' open Qwen-based image model.</p>
+              <div class="fam-tags"><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Image editing</span>
+              <h4>Qwen Image Edit</h4>
+              <p>Instruction-based image editing with up to 3 reference images.</p>
+              <div class="fam-tags"><span class="fam-tag">Editing</span><span class="fam-tag">References ×3</span><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Text to image</span>
+              <h4>Flux 1</h4>
+              <p>Black Forest Labs FLUX.1-dev with CLIP-L + T5-XXL text encoders.</p>
+              <div class="fam-tags"><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Text to image</span>
+              <h4>Flux 2</h4>
+              <p>FLUX.2 with the Mistral-Small 3.2 24B text encoder.</p>
+              <div class="fam-tags"><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Text to image</span>
+              <h4>Flux 3</h4>
+              <p>FLUX.3 with the Qwen3-VL 4B text encoder.</p>
+              <div class="fam-tags"><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Image editing</span>
+              <h4>Flux 1 Kontext</h4>
+              <p>FLUX.1 Kontext instruction editing with reference and image input.</p>
+              <div class="fam-tags"><span class="fam-tag">Editing</span><span class="fam-tag">References</span><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Text to image</span>
+              <h4>Moss Image</h4>
+              <p>OpenMOSS's MOSS-Image model with a dedicated tokenizer.</p>
+              <div class="fam-tags"><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="fam-group reveal">
+          <div class="fam-group-head">
+            <h3>Video models</h3>
+            <span class="fam-count">2 families</span>
+          </div>
+          <div class="fam-grid">
+            <div class="fam">
+              <span class="fam-type video">Video suite</span>
+              <h4>WAN2.2</h4>
+              <p>MoE high/low-noise expert pairs across text-to-video, image-to-video, VACE video-to-video with control video, and audio-driven S2V.</p>
+              <div class="fam-tags"><span class="fam-tag">T2V</span><span class="fam-tag">I2V</span><span class="fam-tag">VACE</span><span class="fam-tag">S2V</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type video">Text/image to video</span>
+              <h4>LTX 2.5</h4>
+              <p>Lightricks LTX-2.5 with a native audio track and a 2× spatial latent upscaler for hires fixes.</p>
+              <div class="fam-tags"><span class="fam-tag">Audio</span><span class="fam-tag">I2V</span><span class="fam-tag">Hires fix</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="fam-note">
+        Image families can be styled with <strong>LoRA adapters</strong> from CivitAI, and a local
+        <strong>Gemma 3</strong> LLM rewrites prompts on demand.
+      </p>
     </div>
   </section>
 
