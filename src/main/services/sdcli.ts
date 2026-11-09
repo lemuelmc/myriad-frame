@@ -387,14 +387,6 @@ export function createSdCliService(): SdCliService {
     cb: GenCallbacks
   ): RunningGen {
     const args = buildArgs(req, paths)
-    // Debug aid: log the complete command line (binary + args) so generation
-    // issues can be diagnosed from the main-process console. Args containing
-    // whitespace are wrapped in double quotes — except ones that already
-    // start and end with a quote (the prompt is pre-wrapped by buildArgs()),
-    // so the logged line can be pasted back into a shell as-is.
-    const quoteArg = (a: string): string =>
-      /\s/.test(a) && !(a.startsWith('"') && a.endsWith('"')) ? `"${a}"` : a
-    // Debug aid: log the complete command line (binary + args) so generation
     // issues can be diagnosed from the main-process console.
     const child = spawn(binary, args, {
       cwd: dataRoot(),

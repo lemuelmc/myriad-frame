@@ -353,10 +353,6 @@ export async function enhancePrompt(prompt: string): Promise<{ text: string }> {
 
   const gpuBuild = isGpuLlmBuild(getInitState().platform?.llmRuntimeKey)
   const args = buildLlmArgs(cfg, modelPath, trimmed, gpuBuild)
-  // Debug aid: log the complete command line (the sdcli.ts:398 pattern).
-  const quoteArg = (a: string): string =>
-    /\s/.test(a) && !(a.startsWith('"') && a.endsWith('"')) ? `"${a}"` : a
-  console.log(`[llama-cli] ${[binary, ...args.map(quoteArg)].join(' ')}`)
 
   return new Promise<{ text: string }>((resolve, reject) => {
     const child = spawn(binary as string, args, {
