@@ -218,6 +218,15 @@ data/
   - **Appearance** — theme picker (`Default`, `Halloween`, `Christmas`).
   - **Logs** — view the tail of `data/logs/latest.log`.
 
+## Video Demo
+
+A short demo of the built-in inpainting workflow (painting a mask over an image and regenerating the masked region):
+
+<video controls preload="metadata" style="width:100%;border-radius:6px;">
+  <source src="docs/assets/inpainting-20261101-h264_2.mp4" type="video/mp4">
+  Your browser does not support the video tag.
+</video>
+
 ## Screenshots
 
 <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;">
@@ -233,16 +242,9 @@ data/
   <figure style="margin:0"><img src="docs/assets/qwen_image_2_1_gen.png" alt="Qwen Image 2.1 generation" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Qwen Image 2.1 — generation</figcaption></figure>
   <figure style="margin:0"><img src="docs/assets/qwen_image_2_1_edit.png" alt="Qwen Image 2.1 editing" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Qwen Image 2.1 — editing</figcaption></figure>
   <figure style="margin:0"><img src="docs/assets/krea_2.png" alt="Krea" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Krea</figcaption></figure>
+  <figure style="margin:0"><img src="docs/assets/crop_and_resize_1.png" alt="Resize / Crop overlay (crop only)" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Resize / Crop — crop only</figcaption></figure>
+  <figure style="margin:0"><img src="docs/assets/crop_and_resize_2.png" alt="Resize / Crop overlay (custom size)" style="width:100%;border-radius:6px;"><figcaption style="font-size:12px;color:#666;margin-top:4px;">Resize / Crop — custom size</figcaption></figure>
 </div>
-
-## Video Demo
-
-A short demo of the built-in inpainting workflow (painting a mask over an image and regenerating the masked region):
-
-<video controls preload="metadata" style="width:100%;border-radius:6px;">
-  <source src="docs/assets/inpainting-20261101-h264_2.mp4" type="video/mp4">
-  Your browser does not support the video tag.
-</video>
 
 ## How generation works
 

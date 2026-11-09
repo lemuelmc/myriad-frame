@@ -2579,7 +2579,7 @@ onMounted(async () => {
   min-height: 0;
 }
 .dialog-nav {
-  width: 150px;
+  width: 180px;
   flex-shrink: 0;
   border-right: 1px solid var(--border);
   padding: 10px 8px;
