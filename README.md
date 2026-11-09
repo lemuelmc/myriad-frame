@@ -4,6 +4,8 @@
 
 An Electron + Vue 3 + TypeScript desktop front-end that uses [`stable-diffusion.cpp`](https://github.com/leejet/stable-diffusion.cpp) as its runtime provider. It manages sessions, downloads and selects models (diffusion / VAE / text encoder) from curated Hugging Face repositories, and drives image generation through the bundled `sd-cli` runtime.
 
+🌐 **Project website**: [lemuelmc.github.io/myriad-frame](https://lemuelmc.github.io/myriad-frame)
+
 ## Support
 
 Myriad Frame is a free, open-source project. If you find it useful and would like to support its development, you can buy me a coffee:
@@ -226,6 +228,8 @@ A short demo of the built-in inpainting workflow (painting a mask over an image 
   <source src="docs/assets/inpainting-20261101-h264_2.mp4" type="video/mp4">
   Your browser does not support the video tag.
 </video>
+
+[▶ Watch the demo video](https://lemuelmc.github.io/myriad-frame/#video)
 
 ## Screenshots
 
