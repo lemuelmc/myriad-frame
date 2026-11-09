@@ -117,9 +117,73 @@ nav .btn-gh:hover {
   text-decoration: none;
 }
 
+/* Hamburger toggle (hidden on desktop, shown ≤720px). */
+nav .nav-toggle {
+  display: none;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  width: 38px;
+  height: 38px;
+  padding: 9px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+nav .nav-toggle span {
+  display: block;
+  height: 2px;
+  width: 100%;
+  background: var(--text);
+  border-radius: 1px;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+nav.open .nav-toggle span:nth-child(1) {
+  transform: translateY(6px) rotate(45deg);
+}
+nav.open .nav-toggle span:nth-child(2) {
+  opacity: 0;
+}
+nav.open .nav-toggle span:nth-child(3) {
+  transform: translateY(-6px) rotate(-45deg);
+}
+
 @media (max-width: 720px) {
-  nav .links a.hide-sm {
+  nav .nav-toggle {
+    display: inline-flex;
+  }
+  /* Links collapse into a dropdown panel below the nav bar. */
+  nav .links {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
     display: none;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    background: rgba(15, 17, 21, 0.97);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 16px 16px;
+  }
+  nav.open .links {
+    display: flex;
+  }
+  /* hide-sm links are reachable inside the open panel. */
+  nav .links a.hide-sm {
+    display: block;
+    padding: 11px 4px;
+    font-size: 15px;
+    border-bottom: 1px solid var(--border);
+  }
+  nav .btn-gh {
+    justify-content: center;
+    width: 100%;
+    margin-top: 12px;
+    padding: 10px 12px;
+    font-size: 15px;
   }
 }
 
