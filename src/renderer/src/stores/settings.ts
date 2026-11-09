@@ -43,8 +43,14 @@ export interface RuntimeDownloadState {
 /** Default performance settings; every generation falls back to these. */
 export const defaultPerformance: PerformanceSettings = {
   enabled: false,
-  flashAttention: 'off',
+  // 'none' = do not emit --flash-attn at all (sd-cli's own default applies)
+  flashAttention: 'none',
   flashAttentionCustom: '',
+  backend: 'off',
+  backendCustom: '',
+  sageAttention: false,
+  autoFit: 'none',
+  maxVram: '',
   convDirect: 'off',
   vaeTiling: {
     tileSize: 'off',

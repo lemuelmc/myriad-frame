@@ -2216,9 +2216,54 @@ onMounted(async () => {
                   </td>
                 </tr>
                 <tr>
+                  <td>Backend</td>
+                  <td>
+                    <div class="row">
+                      <select v-model="perf.backend" style="width: 140px">
+                        <option value="off">Off</option>
+                        <option value="cpu">CPU</option>
+                        <option value="cuda0">CUDA 0</option>
+                        <option value="rocm">ROCm</option>
+                        <option value="hipblas">HIP BLAS</option>
+                        <option value="sycl0">SYCL 0</option>
+                        <option value="opencl0">OpenCL 0</option>
+                        <option value="auto">Auto</option>
+                        <option value="custom">Custom</option>
+                      </select>
+                      <input
+                        v-if="perf.backend === 'custom'"
+                        v-model="perf.backendCustom"
+                        type="text"
+                        placeholder="backend, e.g. cuda0 or te=cpu,vae=cuda0"
+                        style="width: 220px"
+                      />
+                    </div>
+                    <span class="faint">Runtime backend assignment; Off lets sd-cli choose.</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Sage Attention</td>
+                  <td>
+                    <input v-model="perf.sageAttention" type="checkbox" />
+                    <span class="faint">Native CUDA SageAttention with flash/default fallback (CUDA builds only).</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Auto-fit</td>
+                  <td>
+                    <select v-model="perf.autoFit" style="width: 140px">
+                      <option value="none">None</option>
+                      <option value="on">On</option>
+                      <option value="off">Off</option>
+                    </select>
+                    <span class="faint">Automatic placement of weights across GPU/RAM/disk. None lets sd-cli decide. A non-Off Param Backend overrides this setting.</span>
+                  </td>
+                </tr>
+                <tr>
                   <td>Flash Attention</td>
                   <td>
                     <select v-model="perf.flashAttention">
+                      <option value="none">None</option>
                       <option value="off">Off</option>
                       <option value="on">On</option>
                       <option value="auto">Auto</option>
@@ -2231,7 +2276,19 @@ onMounted(async () => {
                       placeholder="flash-attn value"
                       style="width: 160px"
                     />
-                    <span class="faint">Enabling flash attention may reduce memory usage depending on the architecture.</span>
+                    <span class="faint">None omits the flag entirely; enabling flash attention may reduce memory usage depending on the architecture.</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Max Vram</td>
+                  <td>
+                    <input
+                      v-model="perf.maxVram"
+                      type="text"
+                      placeholder="e.g. 6, -1, or cuda0=6,vulkan0=2"
+                      style="width: 220px"
+                    />
+                    <span class="faint">Per-device VRAM budget in GiB for segmented execution; empty = sd-cli default.</span>
                   </td>
                 </tr>
                 <tr>

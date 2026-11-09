@@ -288,10 +288,39 @@ export function pushPerformanceArgs(
 ): void {
   if (!perf) return
 
-  if (perf.flashAttention === 'custom' && perf.flashAttentionCustom) {
-    args.push('--flash-attn', perf.flashAttentionCustom)
-  } else if (perf.flashAttention) {
-    args.push('--flash-attn', perf.flashAttention)
+  // --flash-attn: 'none' omits the flag entirely (sd-cli's own default applies);
+  // 'custom' with an empty textbox also emits nothing (never the literal 'custom').
+  if (perf.flashAttention && perf.flashAttention !== 'none') {
+    if (perf.flashAttention === 'custom' && perf.flashAttentionCustom) {
+      args.push('--flash-attn', perf.flashAttentionCustom)
+    } else if (perf.flashAttention !== 'custom') {
+      args.push('--flash-attn', perf.flashAttention)
+    }
+  }
+  // --backend: 'off' omits the flag; 'custom' uses the free-form value (skip
+  // when empty/whitespace — a garbage value would fail sd-cli argument parsing).
+  if (perf.backend && perf.backend !== 'off') {
+    const backendCustom = (perf.backendCustom ?? '').trim()
+    if (perf.backend === 'custom' && backendCustom) {
+      args.push('--backend', backendCustom)
+    } else if (perf.backend !== 'custom') {
+      args.push('--backend', perf.backend)
+    }
+  }
+  // --sage-attn: valueless flag (native CUDA SageAttention with flash/default
+  // attention fallback; CUDA builds only).
+  if (perf.sageAttention) {
+    args.push('--sage-attn')
+  }
+  // --auto-fit: 'none' omits the flag; on/off are explicit values.
+  if (perf.autoFit && perf.autoFit !== 'none') {
+    args.push('--auto-fit', perf.autoFit)
+  }
+  // --max-vram: trimmed non-empty string (a single GiB budget — including
+  // negative values — or per-device assignments like 'cuda0=6,vulkan0=2').
+  const maxVram = (perf.maxVram ?? '').trim()
+  if (maxVram) {
+    args.push('--max-vram', maxVram)
   }
   if (perf.convDirect) {
     args.push('--conv-direct', perf.convDirect)

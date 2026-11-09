@@ -942,7 +942,18 @@ export interface LlmSettings {
   repeatPenalty?: number
 }
 
-export type FlashAttentionMode = 'on' | 'off' | 'auto' | 'custom'
+export type FlashAttentionMode = 'none' | 'on' | 'off' | 'auto' | 'custom'
+export type BackendMode =
+  | 'off'
+  | 'cpu'
+  | 'cuda0'
+  | 'rocm'
+  | 'hipblas'
+  | 'sycl0'
+  | 'opencl0'
+  | 'auto'
+  | 'custom'
+export type AutoFitMode = 'none' | 'on' | 'off'
 export type ConvDirectMode = 'on' | 'off' | 'auto'
 export type VaeTileSize = 'off' | '256x256' | '512x512'
 export type OffloadMode = 'off' | 'on'
@@ -955,9 +966,20 @@ export interface PerformanceSettings {
    * individual flags below are honored.
    */
   enabled: boolean
+  /** 'none' omits --flash-attn entirely; 'custom' uses flashAttentionCustom */
   flashAttention: FlashAttentionMode
   /** free-form value used when flashAttention === 'custom' */
   flashAttentionCustom: string
+  /** runtime backend; 'off' omits --backend entirely, 'custom' uses backendCustom */
+  backend: BackendMode
+  /** free-form value used when backend === 'custom' */
+  backendCustom: string
+  /** emit the valueless --sage-attn flag when true (CUDA builds only) */
+  sageAttention: boolean
+  /** 'none' omits --auto-fit; otherwise the explicit on/off value */
+  autoFit: AutoFitMode
+  /** raw --max-vram string (e.g. '6', '-1', 'cuda0=6,vulkan0=2'); empty = omit the flag */
+  maxVram: string
   convDirect: ConvDirectMode
   vaeTiling: {
     /** tile size; `off` disables VAE tiling entirely */
