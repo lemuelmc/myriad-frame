@@ -1566,6 +1566,7 @@ onMounted(async () => {
                                   <td>Engine</td>
                                   <td class="mono">stable-diffusion.cpp</td>
                                   </tr>
+                                  <tr><td>Home</td><td><a class="about-link" href="https://lemuelmc.github.io/myriad-frame/" target="_blank" rel="noopener noreferrer">https://lemuelmc.github.io/myriad-frame/</a></td></tr>
                                   </tbody>
                                   </table>
                                   <div class="about-footer">By: Lemuel Raganas</div>
@@ -3315,6 +3316,14 @@ onMounted(async () => {
   text-align: right;
   color: #736f6f;
   font-size: 12px;
+}
+.about-link {
+  color: #4ec9b0;
+  text-decoration: none;
+}
+.about-link:hover {
+  color: #3ba994;
+  text-decoration: underline;
 }
 .kv {
   width: 100%;
