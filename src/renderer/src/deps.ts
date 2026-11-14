@@ -5,41 +5,83 @@
  * (commercial or private) provided the license notice and copyright are preserved.
  */
 
-import type { CatalogEntry } from '@shared/types'
+import type { CatalogEntry, CompanionKind, CompanionRef } from '@shared/types'
+import { COMPANION_USE_AS_DEFAULTS } from '@shared/types'
 import { useAppStore } from './stores/app'
 
 /**
- * The diffusion family a companion model (VAE / text encoder / audio
- * encoder) resolves from for a diffusion type — the hub entry's
- * `requires.<kind>.from` when present, else the diffusion type itself.
- * Read from the FRESH hub config (`app:configs`) the same way
+ * The companion references for a diffusion type + kind — one { from, useAs }
+ * per companion file, resolved from the hub entry's `requires.<kind>` block
+ * (scalar → single item under the kind's default flag; array → one item per
+ * entry). Read from the FRESH hub config (`app:configs`) the same way
  * `resolveEncoderBundle` reads `defaults[]`; `requires` is per hub ENTRY,
  * so the FIRST `repo.diffusion` entry with the requested diffusion_type
  * wins (each wan family maps to exactly one entry today; the catalog stamp
  * on the selected entry is the per-entry truth where one exists).
+ *
+ * NEVER empty: when the hub entry declares no `requires.<kind>` — or no
+ * `repo.diffusion` entry matches — the FALLBACK `[{ from: diffusionType,
+ * useAs: <kind default> }]` is returned, so every caller can use
+ * `comps[0].from` directly (the diffusion type itself — exactly what the
+ * old `requiredFamilyFor` returned).
  */
-export function requiredFamilyFor(
+export function requiredCompanionsFor(
   diffusionType: string,
-  kind: 'vae' | 'encoder' | 'audio_encoder'
-): string {
+  kind: CompanionKind,
+  hubName?: string
+): CompanionRef[] {
   const appStore = useAppStore()
   const entries = appStore.configs?.hub.repo.diffusion ?? []
-  const entry = entries.find((d) => d.diffusion_type === diffusionType)
-  const from = entry?.requires?.[kind]?.from
-  return typeof from === 'string' && from !== '' ? from : diffusionType
+  // A family may map to SEVERAL hub entries (multiple providers); the hub
+  // entry `name` (CatalogEntry.hubName — the session's `diffusionName`) pins
+  // the exact entry when present, falling back to the first family match.
+  const entry =
+    (hubName
+      ? entries.find((d) => d.family === diffusionType && d.name === hubName)
+      : undefined) ?? entries.find((d) => d.family === diffusionType)
+  const raw = entry?.requires?.[kind]
+  const fallback: CompanionRef[] = [{ from: diffusionType, useAs: COMPANION_USE_AS_DEFAULTS[kind] }]
+  if (!raw) return fallback
+  const items = Array.isArray(raw) ? raw : [raw]
+  const out: CompanionRef[] = []
+  for (const it of items) {
+    if (!it || typeof it !== 'object' || typeof it.from !== 'string' || it.from === '') continue
+    const io = it as { from: string; use_as?: string }
+    out.push({ from: io.from, useAs: io.use_as || COMPANION_USE_AS_DEFAULTS[kind] })
+  }
+  return out.length > 0 ? out : fallback
+}
+
+/**
+ * The hub.json diffusion entry `name` for a catalog row (e.g.
+ * `comfy_org_boogu_image`) — the value a session persists as `diffusionName`
+ * and the gen:start request carries to pin the exact hub entry. The stamped
+ * `CatalogEntry.hubName` wins when the catalog cache carries it (post-rescan);
+ * otherwise it is derived from the FRESH hub config by family + provider
+ * (falling back to the first family entry), so the field populates
+ * immediately even while the cached catalog predates the stamp.
+ */
+export function hubEntryNameFor(e: CatalogEntry): string | undefined {
+  const appStore = useAppStore()
+  const pool = appStore.configs?.hub.repo.diffusion ?? []
+  if (e.hubName) return e.hubName
+  const byProvider = e.provider
+    ? pool.find((d) => d.family === e.diffusionType && d.provider === e.provider)
+    : undefined
+  return (byProvider ?? pool.find((d) => d.family === e.diffusionType))?.name
 }
 
 /**
  * The access requirement stamped on a diffusion family in hub.json
- * (`diffusion_models[].access`): 'auth' = downloads require an API token,
+ * (`model_families[].access`): 'auth' = downloads require an API token,
  * 'gated' = a token PLUS accepting the terms/license on the model page.
  * Read from the FRESH hub config (`app:configs`) — the same stale-cache
- * immunity as `requiredFamilyFor` — so a newly configured family badges
+ * immunity as `requiredCompanionsFor` — so a newly configured family badges
  * immediately, without a catalog rescan. `undefined` = freely downloadable.
  */
 export function accessForFamily(diffusionType: string): 'auth' | 'gated' | undefined {
   const appStore = useAppStore()
-  const models = appStore.configs?.hub.diffusion_models ?? []
+  const models = appStore.configs?.hub.model_families ?? []
   const access = models.find((m) => m.name === diffusionType)?.access
   return access === 'auth' || access === 'gated' ? access : undefined
 }
@@ -107,6 +149,77 @@ export function resolveEncoderBundle(dt: string): EncoderBundleEntry[] {
       ...(enc.provider ? { provider: enc.provider } : {}),
       isDefault: true,
       useAs: item.use_as
+    })
+  }
+  return out
+}
+
+/**
+ * The array-form `requires.encoder` bundle for a diffusion type — one full
+ * EncoderBundleEntry per companion item, each resolved from its OWN `from`
+ * family (the single-file `repo.encoder[from].default`, or the `defaults[]`
+ * item matching the item's `use_as`), stamped with the item's `useAs` as the
+ * CLI flag and the `from` family as its `diffusionType` — the exact per-item
+ * construction the old `resolveRequiredEncoders` performed, only driven by
+ * the companion array (`requiredCompanionsFor`) instead of re-reading the raw
+ * requires block.
+ *
+ * Returns `[]` when the companions do NOT describe a genuine array form — a
+ * single item whose useAs is the kind default ('llm') is semantically the
+ * scalar form and routes through the from-family's NORMAL encoder resolution
+ * instead (which also honors the user's defaultEncoder setting, which the
+ * bundle path bypasses). When that `from` family is a `defaults[]` BUNDLE
+ * family, the normal resolution yields the family's FULL bundle under its own
+ * flags — the same set the main-side fan-out's scalar-encoder rule downloads,
+ * so the renderer and the fan-out stay coherent.
+ */
+export function requiredEncoderBundle(dt: string, hubName?: string): EncoderBundleEntry[] {
+  const comps = requiredCompanionsFor(dt, 'encoder', hubName)
+  if (comps.length <= 1 && comps[0].useAs === COMPANION_USE_AS_DEFAULTS.encoder) return []
+  const appStore = useAppStore()
+  const catalog = appStore.catalog?.entries ?? []
+  const out: EncoderBundleEntry[] = []
+  for (const comp of comps) {
+    const from = comp.from
+    const useAs = comp.useAs
+    const encCfg = appStore.configs?.hub.repo.encoder[from]
+    // The `from` family must declare the file (single-file `default` or a
+    // `defaults[]` bundle). A missing/invalid entry is skipped rather than
+    // crashing the bundle.
+    if (!encCfg || typeof encCfg.url !== 'string' || encCfg.url === '') continue
+    let file: string | undefined
+    if (Array.isArray(encCfg.defaults) && encCfg.defaults.length > 0) {
+      const match = encCfg.defaults.find((d) => d.use_as === useAs) ?? encCfg.defaults[0]
+      file = match.file
+    } else if (typeof encCfg.default === 'string') {
+      file = encCfg.default
+    }
+    if (!file) continue
+    // `file` may be a full URL or a repo-relative path — normalize to
+    // repo-relative the same way `resolveEncoderBundle` / buildCatalog() do.
+    const path = file
+      .replace(/^https?:\/\/[^/]+\/[^/]+\/resolve\/main\//, '')
+      .replace(/^\//, '')
+    const name = path.split('/').pop() ?? path
+    const repoUrl = encCfg.url
+      .replace(/\/(tree|blob)\/[^/]+\/?$/, '')
+      .replace(/\/+$/, '')
+    const url = `${repoUrl}/resolve/main/${path}`
+    const hit =
+      catalog.find((e) => e.type === 'encoder' && e.diffusionType === from && e.url === url) ??
+      catalog.find((e) => e.type === 'encoder' && e.diffusionType === from && e.name === name)
+    out.push({
+      id: `encoder:${from}:${name}`,
+      type: 'encoder',
+      diffusionType: from,
+      name,
+      label: name,
+      url,
+      ...(hit?.size !== undefined ? { size: hit.size } : {}),
+      ...(hit?.quant !== undefined ? { quant: hit.quant } : {}),
+      ...(encCfg.provider ? { provider: encCfg.provider } : {}),
+      isDefault: true,
+      useAs
     })
   }
   return out

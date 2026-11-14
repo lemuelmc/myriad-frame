@@ -1,19 +1,21 @@
 {
-  "updatedOn": "2026-11-09 00:00:00",
-  "diffusion_inference_types": {
-    "image": {"text_input": true, "accepts": ["*.jpg, *.png"]},
-    "video": {"text_input": true, "accepts": ["*.jpg, *.png"]},
-    "text_to_image": {"text_input": true, "accepts": ["*.jpg, *.png"]},
-    "image_unified": {"text_input": true, "accepts": ["*.jpg, *.png"]},
-    "image_edit": {"text_input": true, "accepts": ["*.jpg, *.png"]},
+  "updatedOn": "2026-11-14 00:00:00",
+  "inference_types": {
+    "image": {"text_input": true, "accepts": ["*.jpg, *.jpeg, *.png"]},
+    "video": {"text_input": true, "accepts": ["*.jpg, *.jpeg, *.png"]},
+    "text_to_image": {"text_input": true, "accepts": ["*.jpg, *.jpeg, *.png"]},
+    "image_unified": {"text_input": true, "accepts": ["*.jpg, *.jpeg, *.png"]},
+    "image_edit": {"text_input": true, "accepts": ["*.jpg, *.jpeg, *.png"]},
     "text_to_video": {"text_input": true, "accepts": null},
-    "image_to_video": {"text_input": true, "accepts": ["*.jpg, *.png"]},
+    "image_to_video": {"text_input": true, "accepts": ["*.jpg, *.jpeg, *.png"]},
     "video_to_video": {"text_input": true, "accepts": ["*.mp4, *.mov, *.avi"]},
     "video_all_in_one": {"text_input": true, "accepts": ["*.mp4, *.mov, *.avi"]},
     "text_image_to_video": {"text_input": true, "accepts": ["*.mp4, *.mov, *.avi"]},
-    "audio_to_video": {"text_input": true, "accepts": ["*.jpg, *.png, *.mp3, *.ogg, *.wav, *.aiff, *.flac"]}
+    "audio_to_video": {"text_input": true, "accepts": ["*.jpg, *.jpeg, *.png, *.mp3, *.ogg, *.wav, *.aiff, *.flac"]},
+    "llm": {"text_input": true, "accepts": ["*.jpg, *.jpeg, *.png"]},
+    "glpyh": {"text_input": true, "accepts": ["*.jpg, *.jpeg, *.png"]}
   },
-  "diffusion_models": [
+  "model_families": [
     { "name": "qwen_image_2_1", "label": "Qwen Image 2.1", "type": "image_unified" },
     { "name": "z_image", "label": "Z-Image Turbo", "type": "text_to_image" },
     { "name": "sd3_5", "label": "SD3.5", "type": "text_to_image" },
@@ -33,10 +35,29 @@
     { "name": "wan2_2_i2v", "label": "WAN2.2", "type": "image_to_video" },
     { "name": "wan2_2_vace", "label": "WAN2.2", "type": "video_all_in_one" },
     { "name": "wan2_2_s2v", "label": "WAN2.2", "type": "audio_to_video" },
-    { "name": "ltx_2_5", "label": "LTX 2.5", "type": "text_image_to_video", "runtime": "<= 1025" }
+    { "name": "ltx_2_5", "label": "LTX 2.5", "type": "text_image_to_video", "runtime": "<= 1025" },
+    { "name": "sd1_5", "label": "SD1.5", "type": "text_to_image"},
+    { "name": "chroma", "label": "Chroma", "type": "text_to_image"},
+    { "name": "ernie_image", "label": "ERNIE Image", "type": "text_to_image"},
+    { "name": "mistral_3_3b_instruct_2512", "label": "Mistral-3-3B-Instruct-2512", "type": "llm" },
+    { "name": "highdream_o1_image", "label": "HiDream O1", "type": "image_unified" },
+    { "name": "hunyuan_video_1_5", "label": "Hunyuan Video 1.5", "type": "text_to_video" },
+    { "name": "qwen2_5_vl_7b_instruct", "label": "Qwen2.5-VL-7b-Instruct", "type": "llm"},
+    { "name": "byt5_small_glyphxl", "label": "byt5_small_glyphxl", "type": "glpyh"},
+    { "name": "ideogram_4", "label": "Ideogram 4", "type": "text_to_image" },
+    { "name": "iris_3b", "label": "Iris 3B", "type": "text_to_image" },
+    { "name": "ming_image", "label": "Ming Image", "type": "text_to_image" },
+    { "name": "mini_max_h3", "label": "MiniMax-H3", "type": "video_all_in_one" },
+    { "name": "boogu_image", "label": "Boogu Image", "type": "text_to_image" },
+    { "name": "qwen3_vl_8b_instruct", "label": "Qwen3 VL 8b Instruct", "type": "llm"},
+    { "name": "qwen3_vl_4b_instruct", "label": "Qwen3 VL 4b Instruct", "type": "llm"},
+    { "name": "fibo_2_0", "label": "Fibo 2.0", "type": "text_to_image" }
   ],
   "llm_models": [
     { "name": "gemma_3_1b_it", "label": "Gemma 3 1B IT" }
+  ],
+  "upscaler_model_types": [
+    {"name": "esregan", "label": "ESREGAN"}
   ],
   "providers": [
     {"name": "unsloth", "label": "Unsloth"},
@@ -75,7 +96,35 @@
     {"name": "quant_stack", "label": "QuantStack"},
     {"name": "open_moss_team", "label": "OpenMOSS-Team"},
     {"name": "vantagewithai", "label": "Vantage with AI"},
-    {"name": "lightricks", "label": "Lightricks"}
+    {"name": "lightricks", "label": "Lightricks"},
+    {"name": "exe_ai_harness", "label": "Exe AI"},
+    {"name": "stable_diffusion_v1_5", "label": "Stable Diffusion 1.5"},
+    {"name": "azelus_lightvale", "label": "Azelus Lightvale"},
+    {"name": "cn_signal", "label": "CN_Signal"},
+    {"name": "stable_yogi", "label": "Stable Yogi"},
+    {"name": "artaialchemy", "label": "ArtAIAlchemy"},
+    {"name": "alexds9", "label": "alexds9"},
+    {"name": "_hades_", "label": "_HaDeS_"},
+    {"name": "_yoru_", "label": "_YORU_"},
+    {"name": "lllyasviel", "label": "lllyasviel"},
+    {"name": "Abzaloff", "label": "Abzaloff"},
+    {"name": "silveroxides", "label": "Silveroxides"},
+    {"name": "mradermacher", "label": "team mradermacher"},
+    {"name": "abiray", "label": "Abiray"},
+    {"name": "speridlabs", "label": "Sperid Labs"},
+    {"name": "inclusion_ai", "label": "Inclusion AI"},
+    {"name": "molbal", "label": "molbal"},
+    {"name": "thedeoxen", "label": "The Deoxen"},
+    {"name": "toyxyz", "label": "Toyxyz"},
+    {"name": "instantx", "label": "InstantX"},
+    {"name": "xinsir", "label": "Xinsir"},
+    {"name": "patil", "label": "Patil"},
+    {"name": "tori29umai", "label": "Tori29umai"},
+    {"name": "solictous", "label": "Solictous"},
+    {"name": "ckpt", "label": "Ckpt"},
+    {"name": "alibaba_pai", "label": "Alibaba-pai"},
+    {"name": "webui", "label": "WebUI"},
+    {"name": "thibaud", "label": "Thibaud"}
   ],
   "repo": {
     "vae": {
@@ -115,14 +164,14 @@
         "default": "split_files/vae/qwen_image_vae.safetensors"
       },
       "flux_1_kontext": {
-        "provider": "black_forest_labs",
-        "url": "https://huggingface.co/black-forest-labs/FLUX.1-dev",
+        "provider": "second-state",
+        "url": "https://huggingface.co/second-state/FLUX.1-dev-GGUF",
         "default": "ae.safetensors"
       },
       "flux_1": {
-        "provider": "black_forest_labs",
-        "url": "https://huggingface.co/black-forest-labs/FLUX.1-dev",
-        "default": "ae.safetensors"
+         "provider": "second-state",
+          "url": "https://huggingface.co/second-state/FLUX.1-dev-GGUF",
+          "default": "ae.safetensors"
       },
       "flux_2": {
         "provider": "unsloth",
@@ -153,6 +202,26 @@
         "provider": "unsloth",
         "url": "https://huggingface.co/unsloth/LTX-2.5-GGUF",
         "default": "vae/ltx-2.5-video-vae-conv-bf16.safetensors"
+      },
+      "ernie_image": {
+        "provider": "comfy_org",
+        "url": "https://huggingface.co/Comfy-Org/ERNIE-Image",
+        "default": "vae/flux2-vae.safetensors"
+      },
+      "hunyuan_video_1_5": {
+        "provider": "comfy_org",
+        "url": "https://huggingface.co/Comfy-Org/Hunyuan-Video-1.5",
+        "default": "split_files/vae/hunyuanvideo15_vae_fp16.safetensors"
+      },
+      "ming_image": {
+        "provider": "comfy_org",
+        "url": "https://huggingface.co/Comfy-Org/Ming-Image",
+        "default": "/vae/ming_image_vae_bf16.safetensors"
+      },
+      "mini_max_h3": {
+        "provider": "comfy_org",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3",
+        "default": "/vae/minimax_h3_video_vae_fp16.safetensors"
       }
     },
     "audio_vae": {
@@ -160,6 +229,11 @@
         "provider": "unsloth",
         "url": "https://huggingface.co/unsloth/LTX-2.5-GGUF",
         "default": "vae/ltx-2.5-audio-vae-bf16.safetensors"
+      },
+      "mini_max_h3": {
+        "provider": "comfy_org",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3",
+        "default": "/vae/minimax_h3_audio_vae_fp32.safetensors"
       }
     },
     "encoder": {
@@ -248,6 +322,41 @@
         "provider": "unsloth",
         "url": "https://huggingface.co/unsloth/LTX-2.5-GGUF",
         "default": "text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors"
+      },
+      "mistral_3_3b_instruct_2512": {
+        "provider": "unsloth",
+        "url": "https://huggingface.co/unsloth/Ministral-3-3B-Instruct-2512-GGUF",
+        "default": "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf"
+      },
+      "qwen2_5_vl_7b_instruct": {
+        "provider": "mradermacher",
+        "url": "https://huggingface.co/mradermacher/Qwen2.5-VL-7B-Instruct-GGUF",
+        "default": "Qwen2.5-VL-7B-Instruct.Q4_K_M.gguf"
+      },
+      "byt5_small_glyphxl": {
+        "provider": "comfy_org",
+        "url": "https://huggingface.co/Comfy-Org/Hunyuan-Video-1.5",
+        "default": "split_files/text_encoders/byt5_small_glyphxl_fp16.safetensors"
+      },
+      "qwen3_vl_8b_instruct": {
+        "provider": "unsloth",
+        "url": "https://huggingface.co/unsloth/Qwen3-VL-8B-Instruct-GGUF",
+        "default": "Qwen3-VL-8B-Instruct-Q4_K_M.gguf"
+      },
+      "ming_image": {
+        "provider": "realrebelai",
+        "url": "https://huggingface.co/realrebelai/Ming-Image_GGUFs",
+        "default": "/Text%20Encoders%20(UPDATED)/Ming-Image-0.1-Ling-Mini-2.0-Q4_K_M.gguf"
+      },
+      "mini_max_h3": {
+        "provider": "realrebelai",
+        "url": "https://huggingface.co/realrebelai/MiniMax-H3_GGUFs",
+        "default": "qwen3vl-32B-MiniMax-H3-Q4_K_M.gguf"
+      },
+      "qwen3_vl_4b_instruct": {
+        "provider": "qwen",
+        "url": "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF",
+        "default": "Qwen3VL-4B-Instruct-Q4_K_M.gguf"
       }
     },
     "audio_encoder": {
@@ -262,6 +371,11 @@
         "provider": "open_moss_team",
         "url": "https://huggingface.co/OpenMOSS-Team/MOSS-Image-Base",
         "default": "tokenizer/tokenizer.json"
+      },
+      "ming_image": {
+        "provider": "inclusion_ai",
+        "url": "https://huggingface.co/inclusionAI/Ming-Image-0.1-Design",
+        "default": "/mllm/tokenizer.json"
       }
     },
     "vision": {
@@ -270,6 +384,18 @@
         "label": "Qwen3 VL 8B Instruct",
         "url": "https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF",
         "default": "mmproj-Qwen3VL-8B-Instruct-F16.gguf"
+      },
+      "qwen3_vl_8b_instruct": {
+        "provider": "unsloth",
+        "label": "Unsloth/Qwen3 VL 8b Instruct Vision",
+        "url": "https://huggingface.co/unsloth/Qwen3-VL-8B-Instruct-GGUF",
+        "default": "mmproj-F16.gguf"
+      },
+      "qwen3_vl_4b_instruct": {
+        "provider": "qwen",
+        "label": "Qwen/Qwen3VL-4B-Instruct-F16 Vision",
+        "url": "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF",
+        "default": "mmproj-Qwen3VL-4B-Instruct-F16.gguf"
       }
     },
     "latent_upscaler": {
@@ -285,7 +411,7 @@
         "label": "ENI Pattern",
         "description": "ENI Pattern",
         "triggers": ["Eni Pattern"],
-        "diffustion_types": ["z_image"],
+        "families": ["z_image"],
         "url": "https://civitai.com/models/3031938/eni-pattern-the-clb-author-of-dreams-z-image-turbo-character-lora-v3",
         "path": "/",
         "model_version_ids": [3444534]
@@ -294,7 +420,7 @@
         "provider": "angelomaiota",
         "label": "V67 Beautiful european",
         "description": "Classical European Beauty",
-        "diffustion_types": ["z_image", "krea2"],
+        "families": ["z_image", "krea2"],
         "triggers": [
           "(V67 Beautiful european painting:1.1)",
           "european beauty portrait",
@@ -315,7 +441,7 @@
         "provider": "angelomaiota",
         "label": "V67 Weathered",
         "description": "Transforms scenes into beautifully aged, distressed, and time-worn imagery",
-        "diffustion_types": ["z_image", "krea2"],
+        "families": ["z_image", "krea2"],
         "url": "https://civitai.com/models/3030242/v67-weathered",
         "path": "/",
         "model_version_ids": [3442274]
@@ -347,7 +473,7 @@
           "noir mood",
           "heroic industrial composition"
         ],
-        "diffustion_types": ["z_image", "krea2"],
+        "families": ["z_image", "krea2"],
         "url": "https://civitai.com/models/3029322/v67-dieselpunk",
         "path": "/",
         "model_version_ids": [3440998]
@@ -412,7 +538,7 @@
           "layered",
           "photorealistic costume reference"
         ],
-        "diffustion_types": ["z_image", "krea2"],
+        "families": ["z_image", "krea2"],
         "url": "https://civitai.com/models/3023033/v67-elegant-historical-costumes",
         "path": "/",
         "model_version_ids": [3432812]
@@ -421,7 +547,7 @@
         "provider": "angelomaiota",
         "label": "V67 Isometric",
         "description": "Miniature Diorama Worlds, Orthographic Projection, Clean Stylized 3D",
-        "diffustion_types": ["z_image", "krea2"],
+        "families": ["z_image", "krea2"],
         "url": "https://civitai.com/models/3022874/v67-isometric",
         "path": "/",
         "model_version_ids": [3436751]
@@ -430,7 +556,7 @@
         "provider": "wackiii",
         "label": "Oddling Reverie",
         "description": "Cinematic surrealist LoRA that transforms ordinary subjects into extraordinary visual stories filled with strange little creatures, whimsical environments, and delightfully unexpected moments",
-        "diffustion_types": ["z_image", "krea2", "moss_image"],
+        "families": ["z_image", "krea2", "moss_image"],
         "url": "https://civitai.com/models/3029966/oddling-reverie",
         "path": "/",
         "model_version_ids": [3444945]
@@ -439,7 +565,7 @@
         "provider": "annguyentruongandrew142",
         "label": "Jewelry Macro Ads Turbo V1",
         "description": "A style LoRA designed for luxury jewelry advertising and high-end macro product photography",
-        "diffustion_types": ["z_image"],
+        "families": ["z_image"],
         "url": "https://civitai.com/models/3023397/jewelry-macro-ads-turbo-v1",
         "path": "/",
         "model_version_ids": [3433298]
@@ -448,7 +574,7 @@
         "provider": "darkessence",
         "label": "Oil pastel fantasy",
         "description": "Oil pastel fantasy illustration",
-        "diffustion_types": ["z_image"],
+        "families": ["z_image"],
         "url": "https://civitai.com/models/3023309/oil-pastel-fantasy",
         "path": "/",
         "model_version_ids": [3433176]
@@ -457,7 +583,7 @@
         "provider": "angelomaiota",
         "label": "V67 SDXL Aesthetic",
         "description": "SDXL Aesthetic",
-        "diffustion_types": ["sdxl"],
+        "families": ["sdxl"],
         "url": "https://civitai.com/models/3031183/v67-sdxl-aesthetic",
         "path": "/",
         "model_version_ids": [3443536]
@@ -466,7 +592,7 @@
         "provider": "arrssenne",
         "label": "Roman baths",
         "description": "SDXL Aesthetic",
-        "diffustion_types": ["sdxl"],
+        "families": ["sdxl"],
         "url": "https://civitai.com/models/3030548/roman-baths",
         "path": "/",
         "model_version_ids": [3444230]
@@ -475,7 +601,7 @@
         "provider": "valpat1988108",
         "label": "Aircrayons-style",
         "description": "SDXL Aesthetic",
-        "diffustion_types": ["sdxl"],
+        "families": ["sdxl"],
         "url": "https://civitai.com/models/3029923/aircrayons-style",
         "path": "/",
         "model_version_ids": [3441814]
@@ -484,7 +610,7 @@
         "provider": "theevildarkmage126",
         "label": "DRKM4GE — Chiaroscuro",
         "description": "SDXL Aesthetic: semi-realistic anime aesthetic, dramatic lighting, dimensional shading, intricate materials, and richer surface detail.",
-        "diffustion_types": ["krea2"],
+        "families": ["krea2"],
         "url": "https://civitai.com/models/3032139/drkm4ge-chiaroscuro-or-krea-2",
         "path": "/",
         "model_version_ids": [3444795]
@@ -493,7 +619,7 @@
         "provider": "cyberthron",
         "label": "Dark shadows & low lights - mood helper",
         "description": "Dark shadows & low lights - mood helper",
-        "diffustion_types": ["krea2"],
+        "families": ["krea2"],
         "url": "https://civitai.com/models/3030877/dark-shadows-and-low-lights-mood-helper",
         "path": "/",
         "model_version_ids": [3443088]
@@ -504,7 +630,7 @@
         "description": "Rainy Window",
         "triggers": ["rainy window style"],
         "tags": ["<lora:rainywindow:1.0>"],
-        "diffustion_types": ["krea2"],
+        "families": ["krea2"],
         "url": "https://huggingface.co/krea/Krea-2-LoRA-rainywindow",
         "path": "/"
       },
@@ -514,7 +640,7 @@
         "description": "Sunsetblur",
         "triggers": ["ethereal motion blur style"],
         "tags": ["<lora:sunsetblur:1.0>"],
-        "diffustion_types": ["krea2"],
+        "families": ["krea2"],
         "url": "https://huggingface.co/krea/Krea-2-LoRA-sunsetblur",
         "path": "/"
       },
@@ -524,7 +650,7 @@
         "description": "Darkbrush",
         "triggers": ["monochrome ink wash style"],
         "tags": ["<lora:darkbrush:1.0>"],
-        "diffustion_types": ["krea2"],
+        "families": ["krea2"],
         "url": "https://huggingface.co/krea/Krea-2-LoRA-darkbrush",
         "path": "/"
       },
@@ -532,11 +658,46 @@
         "provider": "unmods",
         "label": "Character Lora",
         "description": "Famouse character LORAs",
-        "diffustion_types": ["krea2"],
+        "families": ["krea2"],
         "url": "https://huggingface.co/UntMods/Krea2_Chars_LoRA",
         "max_page": 10
+      },
+      {
+        "provider": "comfy_org",
+        "label": "Comfy-Org/Hunyuan Video 1.5 4step LoRA",
+        "families": ["hunyuan_video_1_5"],
+        "url": "https://huggingface.co/Comfy-Org/Hunyuan-Video-1.5",
+        "path": "/split_files/loras",
+        "max_page": 1
       }
     ],
+    "pixel_upscaler": {
+      "esregan": [
+        {
+          "provider": "wbruna",
+          "label": "Wagner Bruna/ESREGAN",
+          "description": "Super-Resolution Models",
+          "url": "https://huggingface.co/wbruna/upscalers-sdcpp-gguf",
+          "path": "/",
+          "default": "2x-ESRGAN.gguf"
+        }
+      ]
+    },
+    "adetailer": {
+      "default": {
+        "provider": "exe_ai_harness",
+        "file": "face_yolov8s.safetensors"
+      },
+      "models": [
+        {
+          "provider": "exe_ai_harness",
+          "name": "exe_ai_harness_adetailer_yolov8",
+          "label": "Exe AI/ADetailer YOLOv8",
+          "url": "https://huggingface.co/exe-ai-harness/adetailer-yolov8-safetensors",
+          "path": "/"
+        }
+      ]
+    },
     "llm": {
       "system_prompts": {
         "llm": "You are a master prompt engineer for text-to-image models like Stable Diffusion.\nYour task is to expand the user's short concept into a highly detailed, visually descriptive prompt.\nAdhere to the following rules:\n- Describe the subject, composition, background environment, lighting, camera angle, atmospheric mood, and specific textures.\n- Avoid buzzwords like 'photorealistic', 'hyperrealistic', '4K', or '8K'. Instead, describe real visual elements that imply high quality (e.g., 'captured on 35mm film, shallow depth of field, visible skin pores, volumetric dust particles').\n- Separate key concepts with commas.\n- Output ONLY the final enhanced prompt. Do not include introductions, explanations, conversational text, or markdown code blocks.\n"
@@ -545,7 +706,7 @@
         "unsloth": {
           "llm_type": "gemma_3_1b_it",
           "quant_type": "gguf",
-          "url": "https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/tree/main",
+          "url": "https://huggingface.co/unsloth/gemma-3-1b-it-GGUF",
           "path": "/",
           "catalog": [
             {"name": "unsloth_gemma_3_1b_it_q3_k_m", "label": "Unsloth/Gemma-3 IT @q3km", "items": [{"file": "gemma-3-1b-it-Q3_K_M.gguf"}]},
@@ -573,6 +734,177 @@
         "repeat_penalty": 1.1
       }
     },
+    "ip_adapter": [
+      {
+        "provider": "h94",
+        "label": "xiaohu/SD1.5 IP Adapter",
+        "description": "SD1.5 IP Adapter",
+        "url": "https://huggingface.co/h94/IP-Adapter",
+        "path": "/models",
+        "families": ["sd1_5"]
+      },
+      {
+        "provider": "h94",
+        "label": "xiaohu/SD1.5 IP Adapter",
+        "description": "SD1.5 IP Adapter",
+        "url": "https://huggingface.co/h94/IP-Adapter",
+        "path": "/sdxl_models",
+        "families": ["sdxl"]
+      },
+      {
+        "provider": "h94",
+        "label": "xiaohu/SD1.5 & SDXL IP Face Adapter",
+        "description": "SD1.5 & SDXL IP Face Adapter",
+        "url": "https://huggingface.co/h94/IP-Adapter-FaceID",
+        "path": "/",
+        "families": ["sdxl", "sd1_5"]
+      }
+    ],
+    "clip_vision": [
+      {
+        "provider": "f5aiteam",
+        "label": "F5 AI Team/ComfyUI Clip Vision Models",
+        "description": "CLIP-Vision (ViT-H/14) encoder for IP-Adapter",
+        "url": "https://huggingface.co/f5aiteam/ComfyUI",
+        "path": "/clip_vision",
+        "families": ["sdxl", "sd1_5"]
+      }
+    ],
+    "control_net": [
+      {
+        "provider": "thedeoxen",
+        "label": "The Deoxen/MOSS Image Pose Controlnet",
+        "description": "MOSS Image Pose Controlnet",
+        "url": "https://huggingface.co/thedeoxen/MOSS-Image-pose-controlnet",
+        "path": "/"
+      },
+      {
+        "provider": "thedeoxen",
+        "label": "The Deoxen/MOSS Image Depth Controlnet",
+        "description": "MOSS Image Depth Controlnet",
+        "url": "https://huggingface.co/thedeoxen/MOSS-Image-depth-controlnet",
+        "path": "/"
+      },
+      {
+        "provider": "toyxyz",
+        "label": "Toyxyz/Anima Controlnet LLLite",
+        "description": "Anima Controlnet LLLite",
+        "url": "https://huggingface.co/toyxyz/Anima_ControlNet-LLLite",
+        "path": "/"
+      },
+      {
+        "provider": "thedeoxen",
+        "label": "The Deoxen/MOSS Image Canny Controlnet",
+        "description": "MOSS Image Canny Controlnet",
+        "url": "https://huggingface.co/thedeoxen/MOSS-Image-canny-controlnet",
+        "path": "/"
+      },
+      {
+        "provider": "instantx",
+        "label": "InstantX/FLUX.1-dev Controlnet Union",
+        "description": "FLUX.1-dev Controlnet Union",
+        "url": "https://huggingface.co/InstantX/FLUX.1-dev-Controlnet-Union",
+        "path": "/"
+      },
+      {
+        "provider": "thedeoxen",
+        "label": "The Deoxen/MOSS Image Lineart Controlnet",
+        "description": "MOSS Image Lineart Controlnet",
+        "url": "https://huggingface.co/thedeoxen/MOSS-Image-lineart-controlnet",
+        "path": "/"
+      },
+      {
+        "provider": "xinsir",
+        "label": "Xinsir/Controlnet Openpose Sdxl 1.0",
+        "description": "Controlnet Openpose SDXL 1.0",
+        "url": "https://huggingface.co/xinsir/controlnet-openpose-sdxl-1.0",
+        "path": "/"
+      },
+      {
+        "provider": "patil",
+        "label": "Patil/Krea 2 Depth Controlnet",
+        "description": "Krea 2 Depth Controlnet",
+        "url": "https://huggingface.co/Patil/Krea-2-depth-controlnet",
+        "path": "/"
+      },
+      {
+        "provider": "lllyasviel",
+        "label": "Lllyasviel/SD1.5 ControlNet",
+        "description": "SD1.5 ControlNet",
+        "url": "https://huggingface.co/lllyasviel/ControlNet",
+        "path": "/models"
+      },
+      {
+        "provider": "diffusers",
+        "label": "Diffusers/Controlnet Canny Sdxl 1.0",
+        "description": "Controlnet Canny SDXL 1.0",
+        "url": "https://huggingface.co/diffusers/controlnet-canny-sdxl-1.0",
+        "path": "/"
+      },
+      {
+        "provider": "krea",
+        "label": "Krea/Krea Aesthetic Controlnet",
+        "description": "Krea Aesthetic Controlnet",
+        "url": "https://huggingface.co/krea/aesthetic-controlnet",
+        "path": "/controlnet"
+      },
+      {
+        "provider": "xinsir",
+        "label": "Xinsir/Controlnet Union Sdxl 1.0",
+        "description": "Controlnet Union SDXL 1.0",
+        "url": "https://huggingface.co/xinsir/controlnet-union-sdxl-1.0",
+        "path": "/"
+      },
+      {
+        "provider": "tori29umai",
+        "label": "Tori29umai/Krea2 Controlnet",
+        "description": "Krea2 Controlnet",
+        "url": "https://huggingface.co/tori29umai/krea2-controlnet",
+        "path": "/"
+      },
+      {
+        "provider": "solictous",
+        "label": "Solictous/Z-Image Turbo Fun Controlnet Union 2.1 Gguf",
+        "description": "Z-Image Turbo Fun Controlnet Union 2.1 GGUF",
+        "url": "https://huggingface.co/Solictous/Z-Image-Turbo-Fun-Controlnet-Union-2.1-GGUF",
+        "path": "/"
+      },
+      {
+        "provider": "ckpt",
+        "label": "Ckpt/SD1.5/SDXL ControlNet",
+        "description": "SD1.5/SDXL ControlNet",
+        "url": "https://huggingface.co/ckpt/ControlNet",
+        "path": "/"
+      },
+      {
+        "provider": "alibaba_pai",
+        "label": "Alibaba-pai/Z-Image Turbo Fun Controlnet Union 2.1",
+        "description": "Z-Image Turbo Fun Controlnet Union 2.1",
+        "url": "https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1",
+        "path": "/"
+      },
+      {
+        "provider": "webui",
+        "label": "WebUI/Controlnet Modules Safetensors",
+        "description": "Controlnet Modules Safetensors",
+        "url": "https://huggingface.co/webui/ControlNet-modules-safetensors",
+        "path": "/"
+      },
+      {
+        "provider": "comfyanonymous",
+        "label": "Comfyanonymous/Controlnet V1.1 Fp16 Safetensors",
+        "description": "Controlnet V1.1 Fp16 Safetensors",
+        "url": "https://huggingface.co/comfyanonymous/ControlNet-v1-1_fp16_safetensors",
+        "path": "/"
+      },
+      {
+        "provider": "thibaud",
+        "label": "Thibaud/Controlnet Openpose Sdxl 1.0",
+        "description": "Controlnet Openpose SDXL 1.0",
+        "url": "https://huggingface.co/thibaud/controlnet-openpose-sdxl-1.0",
+        "path": "/"
+      }
+    ],
     "diffusion": [
       {
         "provider": "unsloth",
@@ -581,7 +913,7 @@
         "description": "Official Unsloth quantization of Qwen Image 2.1",
         "inference_type": "image_unified",
         "quant_type": "gguf",
-        "diffusion_type": "qwen_image_2_1",
+        "family": "qwen_image_2_1",
         "url": "https://huggingface.co/unsloth/Qwen-Image-2.1-GGUF"
       },
       {
@@ -591,7 +923,7 @@
         "description": "Community quantization with uncensored finetune",
         "inference_type": "image_unified",
         "quant_type": "gguf",
-        "diffusion_type": "qwen_image_2_1",
+        "family": "qwen_image_2_1",
         "url": "https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-Quantized"
       },
       {
@@ -601,7 +933,7 @@
         "description": "Distilled Z-Image Turbo for fast generation",
         "inference_type": "text_to_image",
         "quant_type": "gguf",
-        "diffusion_type": "z_image",
+        "family": "z_image",
         "url": "https://huggingface.co/leejet/Z-Image-Turbo-GGUF"
       },
       {
@@ -611,7 +943,7 @@
         "description": "Distilled SD3.5 Midum",
         "inference_type": "text_to_image",
         "quant_type": "gguf",
-        "diffusion_type": "sd3_5",
+        "family": "sd3_5",
         "url": "https://huggingface.co/city96/stable-diffusion-3.5-medium-gguf"
       },
       {
@@ -621,7 +953,7 @@
         "description": "Distilled SD3.5 Large",
         "inference_type": "text_to_image",
         "quant_type": "gguf",
-        "diffusion_type": "sd3_5",
+        "family": "sd3_5",
         "url": "https://huggingface.co/city96/stable-diffusion-3.5-large-gguf"
       },
       {
@@ -631,7 +963,7 @@
         "description": "Distilled Krea 2 for fast generation",
         "inference_type": "text_to_image",
         "quant_type": "gguf",
-        "diffusion_type": "krea2",
+        "family": "krea2",
         "url": "https://huggingface.co/realrebelai/KREA-2_GGUFs",
         "path": "/TURBO"
       },
@@ -642,7 +974,7 @@
         "description": "SDXL-1.0 Base model from Stability AI",
         "inference_type": "text_to_image",
         "quant_type": "safetensor",
-        "diffusion_type": "sdxl",
+        "family": "sdxl",
         "url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0",
         "path": "/"
       },
@@ -653,7 +985,7 @@
         "description": "2B-parameter text-to-image model by CircleStone Labs and Comfy Org. Anime/Illustration.",
         "inference_type": "text_to_image",
         "quant_type": "safetensor",
-        "diffusion_type": "anima",
+        "family": "anima",
         "url": "https://huggingface.co/circlestone-labs/Anima",
         "path": "/split_files/diffusion_models"
       },
@@ -664,7 +996,7 @@
         "description": "SDXL finetuned for: Photorealism",
         "inference_type": "text_to_image",
         "quant_type": "safetensor",
-        "diffusion_type": "sdxl",
+        "family": "sdxl",
         "url": "https://huggingface.co/RunDiffusion/Juggernaut-XL-v9",
         "path": "/"
       },
@@ -675,7 +1007,7 @@
         "description": "SDXL finetuned for: Photorealism, improved anatomy and prompt adherence.",
         "inference_type": "text_to_image",
         "quant_type": "safetensor",
-        "diffusion_type": "sdxl",
+        "family": "sdxl",
         "url": "https://huggingface.co/RunDiffusion/Juggernaut-XI-v11",
         "path": "/"
       },
@@ -686,7 +1018,7 @@
         "description": "Image editing model by Qwen",
         "inference_type": "image_edit",
         "quant_type": "gguf",
-        "diffusion_type": "qwen_image_edit",
+        "family": "qwen_image_edit",
         "url": "https://huggingface.co/unsloth/Qwen-Image-Edit-2511-GGUF",
         "path": "/"
       },
@@ -697,7 +1029,7 @@
         "description": "Stylized anime illustrations.",
         "inference_type": "text_to_image",
         "quant_type": "safetensor",
-        "diffusion_type": "sdxl",
+        "family": "sdxl",
         "url": "https://civitai.com/models/124189/anime-illust-diffusion-xl",
         "path": "/"
       },
@@ -708,7 +1040,7 @@
         "description": "Anime Screencap Style Model",
         "inference_type": "text_to_image",
         "quant_type": "safetensor",
-        "diffusion_type": "sdxl",
+        "family": "sdxl",
         "url": "https://civitai.com/models/269232/aam-xl-anime-mix",
         "path": "/"
       },
@@ -719,7 +1051,7 @@
         "description": "Photorealism, clean, coherent and natural.",
         "inference_type": "text_to_image",
         "quant_type": "safetensor",
-        "diffusion_type": "sdxl",
+        "family": "sdxl",
         "url": "https://civitai.com/models/2625788/realismengine-reprise-40",
         "path": "/",
         "model_version_ids": [2948058]
@@ -731,7 +1063,7 @@
         "description": "Photorealism, clean, coherent and natural.",
         "inference_type": "text_to_image",
         "quant_type": "safetensor",
-        "diffusion_type": "z_image",
+        "family": "z_image",
         "url": "https://civitai.com/models/2625788/realismengine-reprise-40",
         "path": "/",
         "model_version_ids": [3053181, 2985425, 2962504]
@@ -743,7 +1075,7 @@
         "description": "Photorealism at CFG 1",
         "inference_type": "text_to_image",
         "quant_type": "safetensor",
-        "diffusion_type": "sdxl",
+        "family": "sdxl",
         "url": "https://civitai.com/models/1855140/pikon-realism",
         "path": "/"
       },
@@ -754,7 +1086,7 @@
         "description": "SD-XL Inpainting 0.1",
         "inference_type": "image_to_image",
         "quant_type": "safetensor",
-        "diffusion_type": "sdxl",
+        "family": "sdxl",
         "url": "https://huggingface.co/diffusers/stable-diffusion-xl-1.0-inpainting-0.1",
         "path": "/unet"
       },
@@ -765,7 +1097,7 @@
         "description": "Inpaint version of HaveallSDXL v1.0 model by Haveall",
         "inference_type": "image_to_image",
         "quant_type": "safetensor",
-        "diffusion_type": "sdxl",
+        "family": "sdxl",
         "url": "https://civitai.com/models/441879/haveallsdxl-inpaint",
         "path": "/",
         "model_version_ids": [492148]
@@ -777,7 +1109,7 @@
         "description": "This is a merge of Hyper3D specifically for inpainting",
         "inference_type": "image_to_image",
         "quant_type": "safetensor",
-        "diffusion_type": "sdxl",
+        "family": "sdxl",
         "url": "https://civitai.com/models/1691927/hyper3d-inpainting-sdxl-or-pony",
         "path": "/",
         "model_version_ids": [1914805]
@@ -789,7 +1121,7 @@
         "description": "This is an inpainting model of the excellent Animagine XL by @CagliostroLab",
         "inference_type": "image_to_image",
         "quant_type": "safetensor",
-        "diffusion_type": "sdxl",
+        "family": "sdxl",
         "url": "https://civitai.com/models/430948/animaginexl-inpainting",
         "path": "/",
         "model_version_ids": [480117]
@@ -801,7 +1133,7 @@
         "description": "This open-source, anime-themed text-to-image model",
         "inference_type": "text_to_image",
         "quant_type": "safetensor",
-        "diffusion_type": "sdxl",
+        "family": "sdxl",
         "url": "https://civitai.com/models/260267/animagine-xl-v31",
         "path": "/",
         "model_version_ids": [403131, 293564, 297102]
@@ -813,7 +1145,7 @@
         "description": "This is an inpainting model of the excellent Juggernaut XL ",
         "inference_type": "image_to_image",
         "quant_type": "safetensor",
-        "diffusion_type": "sdxl",
+        "family": "sdxl",
         "url": "https://civitai.com/models/403361/juggernaut-xl-inpainting",
         "path": "/",
         "model_version_ids": [456538, 449759]
@@ -825,7 +1157,7 @@
         "description": "Flux GGUF quantized files",
         "inference_type": "text_to_image",
         "quant_type": "gguf",
-        "diffusion_type": "flux_1",
+        "family": "flux_1",
         "url": "https://huggingface.co/leejet/FLUX.1-dev-gguf",
         "path": "/"
       },
@@ -836,7 +1168,7 @@
         "description": "Flux GGUF quantized files",
         "inference_type": "text_to_image",
         "quant_type": "gguf",
-        "diffusion_type": "flux_1",
+        "family": "flux_1",
         "url": "https://huggingface.co/leejet/FLUX.1-schnell-gguf",
         "path": "/"
       },
@@ -847,7 +1179,7 @@
         "description": "FLUX.1-Kontext-dev-GGUF",
         "inference_type": "image_edit",
         "quant_type": "gguf",
-        "diffusion_type": "flux_1_kontext",
+        "family": "flux_1_kontext",
         "url": "https://huggingface.co/QuantStack/FLUX.1-Kontext-dev-GGUF",
         "path": "/"
       },
@@ -858,7 +1190,7 @@
         "description": "FLUX.2-dev-GGUF",
         "inference_type": "text_to_image",
         "quant_type": "gguf",
-        "diffusion_type": "flux_2",
+        "family": "flux_2",
         "url": "https://huggingface.co/city96/FLUX.2-dev-gguf",
         "path": "/"
       },
@@ -869,7 +1201,7 @@
         "description": "Flux-3-image-klein GGUF quantized files",
         "inference_type": "text_to_image",
         "quant_type": "gguf",
-        "diffusion_type": "flux_3",
+        "family": "flux_3",
         "url": "https://huggingface.co/leejet/flux-3-image-klein-GGUF",
         "path": "/"
       },
@@ -880,7 +1212,7 @@
         "description": "MOSS-Image-SFT GGUF quantized files",
         "inference_type": "text_to_image",
         "quant_type": "gguf",
-        "diffusion_type": "moss_image",
+        "family": "moss_image",
         "url": "https://huggingface.co/leejet/MOSS-Image-SFT-GGUF",
         "path": "/"
       },
@@ -891,7 +1223,7 @@
         "description": "Text/Image to video",
         "inference_type": "image_to_video",
         "quant_type": "gguf",
-        "diffusion_type": "wan2_2_ti2v",
+        "family": "wan2_2_ti2v",
         "url": "https://huggingface.co/QuantStack/Wan2.2-TI2V-5B-GGUF",
         "path": "/",
         "requires": {
@@ -906,7 +1238,7 @@
         "description": "Text-to-video (14B)(GGUF)",
         "inference_type": "text_to_video",
         "quant_type": "gguf",
-        "diffusion_type": "wan2_2_t2v",
+        "family": "wan2_2_t2v",
         "url": "https://huggingface.co/QuantStack/Wan2.2-T2V-A14B-GGUF",
         "catalog": [
           {"name": "quant_stack_wan2_2_t2v_a14b_q2_k", "label": "QuantStack/Wan2.2-T2V-A14B Q2_K", "items": [{"file": "LowNoise/Wan2.2-T2V-A14B-LowNoise-Q2_K.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q2_K.gguf", "use_as": "high_noise_diffusion_model"}]},
@@ -935,7 +1267,7 @@
         "description": "Image-to-video (14B)(GGUF)",
         "inference_type": "image_to_video",
         "quant_type": "gguf",
-        "diffusion_type": "wan2_2_i2v",
+        "family": "wan2_2_i2v",
         "url": "https://huggingface.co/QuantStack/Wan2.2-I2V-A14B-GGUF",
         "catalog":[
           {"name": "quant_stack_wan2_2_i2v_a14b_q2_k", "label": "QuantStack/Wan2.2-I2V-A14B Q2_K", "items": [{"file": "LowNoise/Wan2.2-I2V-A14B-LowNoise-Q2_K.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-I2V-A14B-HighNoise-Q2_K.gguf", "use_as": "high_noise_diffusion_model"}]},
@@ -962,7 +1294,7 @@
         "description": "Video all in one",
         "inference_type": "video_all_in_one",
         "quant_type": "gguf",
-        "diffusion_type": "wan2_2_vace",
+        "family": "wan2_2_vace",
         "url": "https://huggingface.co/QuantStack/Wan2.2-VACE-Fun-A14B-GGUF",
         "catalog":[
           {"name": "quant_stack_wan2_2_vace_fun_a14b_q3_k_s", "label": "QuantStack/Wan2.2-VACE-Fun-A14B Q3_K_S", "items": [{"file": "LowNoise/Wan2.2-VACE-Fun-A14B-low-noise-Q3_K_S.gguf", "use_as": "diffusion-model"}, {"file": "HighNoise/Wan2.2-VACE-Fun-A14B-high-noise-Q3_K_S.gguf", "use_as": "high_noise_diffusion_model"}]},
@@ -988,7 +1320,7 @@
         "description": "Speech-to-video",
         "inference_type": "audio_to_video",
         "quant_type": "gguf",
-        "diffusion_type": "wan2_2_s2v",
+        "family": "wan2_2_s2v",
         "url": "https://huggingface.co/QuantStack/Wan2.2-S2V-14B-GGUF",
         "path": "/",
         "requires": {
@@ -1004,7 +1336,7 @@
         "description": "LTX-2.5 Dev video generation model.",
         "inference_type": "text_image_to_video",
         "quant_type": "gguf",
-        "diffusion_type": "ltx_2_5",
+        "family": "ltx_2_5",
         "url": "https://huggingface.co/vantagewithai/LTX-2.5-GGUF",
         "path": "/dev"
       },
@@ -1015,9 +1347,347 @@
         "description": "LTX-2.5 Distilled generation model for fast infererence",
         "inference_type": "text_image_to_video",
         "quant_type": "gguf",
-        "diffusion_type": "ltx_2_5",
+        "family": "ltx_2_5",
         "url": "https://huggingface.co/vantagewithai/LTX-2.5-GGUF",
         "path": "/distilled"
+      },
+      {
+        "provider": "stable_diffusion_v1_5",
+        "name": "stable_diffusion_v1_5",
+        "label": "Stable Diffusion 1.5",
+        "description": "Stable Diffusion 1.5 (Mirror)",
+        "inference_type": "text_to_image",
+        "quant_type": "safetensor",
+        "family": "sd1_5",
+        "url": "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5",
+        "path": "/"
+      },
+      {
+        "provider": "azelus_lightvale",
+        "name": "azelus_lightvale/sd1_5_open_solera_anime_mix",
+        "label": "AzelusLightvale/SD1.5 OpenSolera Anime Mix",
+        "description": "SD1.5 OpenSolera Anime Mix",
+        "inference_type": "text_to_image",
+        "quant_type": "safetensor",
+        "family": "sd1_5",
+        "url": "https://civitai.com/models/600637/sd15-opensolera-anime-mix",
+        "path": "/",
+        "model_version_ids": [1224343]
+      },
+      {
+        "provider": "azelus_lightvale",
+        "name": "azelus_lightvale/sd1_5_wormwood_realistic_mix",
+        "label": "AzelusLightvale/SD1.5 Wormwood Realistic Mix",
+        "description": "SD1.5 Wormwood Realistic Mix",
+        "inference_type": "text_to_image",
+        "quant_type": "safetensor",
+        "family": "sd1_5",
+        "url": "https://civitai.com/models/841897/sd15-wormwood-realistic-mix",
+        "path": "/",
+        "model_version_ids": [941900]
+      },
+      {
+        "provider": "cn_signal",
+        "name": "cn_signal/sd1_5_hk",
+        "label": "CN_Signal/SD1.5 HK",
+        "description": "SD1.5 SD15 HK ( Stylized / Realism )",
+        "inference_type": "text_to_image",
+        "quant_type": "safetensor",
+        "family": "sd1_5",
+        "url": "https://civitai.com/models/945366/sd15-hk",
+        "path": "/",
+        "model_version_ids": [1058428]
+      },
+      {
+        "provider": "stable_yogi",
+        "name": "stable_yogi/realism_by_stable_yogi_sd1_5_v9",
+        "label": "Stable Yogi/Realism By Stable Yogi SD1.5 V9",
+        "description": "Realism By Stable Yogi (Pony) SD1.5 V9 — enhanced realism with a natural feel",
+        "inference_type": "text_to_image",
+        "quant_type": "safetensor",
+        "family": "sd1_5",
+        "url": "https://civitai.com/models/166609/realism-by-stable-yogi-pony",
+        "path": "/",
+        "model_version_ids": [1223643]
+      },
+      {
+        "provider": "artaialchemy",
+        "name": "artaialchemy/realism_fusion_v1",
+        "label": "ArtAIAlchemy/Realism Fusion V1.0",
+        "description": "Realism Fusion — semi-realism/realism SD1.5 checkpoint",
+        "inference_type": "text_to_image",
+        "quant_type": "safetensor",
+        "family": "sd1_5",
+        "url": "https://civitai.com/models/128403/realism-fusion",
+        "path": "/",
+        "model_version_ids": [140578]
+      },
+      {
+        "provider": "alexds9",
+        "name": "alexds9/hyper_realism_v3",
+        "label": "alexds9/Hyper Realism V3.0",
+        "description": "Hyper Realism 3.0 — realistic photography SD1.5 checkpoint",
+        "inference_type": "text_to_image",
+        "quant_type": "safetensor",
+        "family": "sd1_5",
+        "url": "https://civitai.com/models/158959/hyper-realism",
+        "path": "/",
+        "model_version_ids": [292213]
+      },
+      {
+        "provider": "_hades_",
+        "name": "_hades_/realism_from_hades_sdxl_v12",
+        "label": "_HaDeS_/Realism from HaDeS XL V12",
+        "description": "Realism from HaDeS XL v12 — ultra-detailed cinematic photorealism SDXL checkpoint",
+        "inference_type": "text_to_image",
+        "quant_type": "safetensor",
+        "family": "sdxl",
+        "url": "https://civitai.com/models/193834/realism-from-hades-xl",
+        "path": "/",
+        "model_version_ids": [2625466]
+      },
+      {
+        "provider": "_yoru_",
+        "name": "_yoru_/yoru_cat_v2024",
+        "label": "_YORU_/YoruCat v2024",
+        "description": "YoruCat v2024 — SD1.5 checkpoint",
+        "inference_type": "text_to_image",
+        "quant_type": "safetensor",
+        "family": "sd1_5",
+        "url": "https://civitai.com/models/167999/yoru-cat",
+        "path": "/",
+        "model_version_ids": [256279]
+      },
+      {
+        "provider": "lllyasviel",
+        "name": "lllyasviel/dreamshaper_xl_126688",
+        "label": "lllyasviel/DreamShaper XL",
+        "description": "DreamShaper XL — SDXL checkpoint for fast, high-quality photoreal and stylized generation",
+        "inference_type": "text_to_image",
+        "quant_type": "safetensor",
+        "family": "sdxl",
+        "url": "https://civitai.com/models/112902/dreamshaper-xl",
+        "path": "/",
+        "model_version_ids": [126688]
+      },
+      {
+        "provider": "Abzaloff",
+        "name": "Abzaloff/dream_art_fusion_v11",
+        "label": "Abzaloff/Dream Art Fusion v1.1",
+        "description": "Dream Art Fusion v1.1 — SDXL 1.0 checkpoint for stylized art and illustration generation",
+        "inference_type": "text_to_image",
+        "quant_type": "safetensor",
+        "family": "sdxl",
+        "url": "https://civitai.com/models/583984/dream-art-fusion",
+        "path": "/",
+        "model_version_ids": [663540]
+      },
+      {
+        "provider": "silveroxides",
+        "name": "silveroxides_chroma_gguf",
+        "label": "Silveroxides/Chroma-GGUF",
+        "description": "Chroma unlocked v4.6 detail-calibrated GGUF",
+        "inference_type": "text_to_image",
+        "quant_type": "gguf",
+        "family": "chroma",
+        "url": "https://huggingface.co/silveroxides/Chroma-GGUF",
+        "path": "/chroma-unlocked-v46-detail-calibrated",
+        "requires": {
+          "vae": { "from": "flux_1" },
+          "encoder": { "from": "flux_1" }
+        }
+      },
+      {
+        "provider": "unsloth",
+        "name": "unsloth_ernie_image_gguf",
+        "label": "Unsloth/ERNIE Image GGUF",
+        "description": "ERNIE Image GGUF quantization by Unsloth",
+        "inference_type": "text_to_image",
+        "quant_type": "gguf",
+        "family": "ernie_image",
+        "url": "https://huggingface.co/unsloth/ERNIE-Image-GGUF",
+        "path": "/",
+        "requires": {
+          "encoder": { "from": "mistral_3_3b_instruct_2512" }
+        }
+      },
+      {
+        "provider": "unsloth",
+        "name": "unsloth_ernie_image_turbo_gguf",
+        "label": "Unsloth/ERNIE Image Turbo GGUF",
+        "description": "ERNIE Image Turbo GGUF quantization by Unsloth",
+        "inference_type": "text_to_image",
+        "quant_type": "gguf",
+        "family": "ernie_image",
+        "url": "https://huggingface.co/unsloth/ERNIE-Image-Turbo-GGUF",
+        "path": "/",
+        "requires": {
+          "encoder": { "from": "mistral_3_3b_instruct_2512" }
+        }
+      },
+      {
+        "provider": "comfy_org",
+        "name": "comfy_org_hidream_o1_image",
+        "label": "Comfy-Org/HiDream O1",
+        "description": "HiDream-O1-Image unified text+image model",
+        "inference_type": "image_unified",
+        "quant_type": "safetensor",
+        "family": "highdream_o1_image",
+        "url": "https://huggingface.co/Comfy-Org/HiDream-O1-Image",
+        "path": "/"
+      },
+      {
+        "provider": "comfy_org",
+        "name": "comfy_org_hunyuan_video_1_5",
+        "label": "Comfy-Org/Hunyuan Video 1.5",
+        "description": "Comfy-Org Hunyuan Video 1.5 diffusion",
+        "inference_type": "text_to_video",
+        "quant_type": "safetensor",
+        "family": "hunyuan_video_1_5",
+        "url": "https://huggingface.co/Comfy-Org/Hunyuan-Video-1.5",
+        "path": "/split_files/diffusion_models",
+        "requires": {
+          "encoder": [
+            {"from": "qwen2_5_vl_7b_instruct", "use_as": "llm"},
+            {"from": "byt5_small_glyphxl", "use_as": "t5xxl"}
+          ]
+        }
+      },
+      {
+        "provider": "leejet",
+        "name": "leejet_ideogram_4_gguf",
+        "label": "leejet/ideogram-4-GGUF",
+        "description": "Ideogram 4 GGUF quantization",
+        "inference_type": "text_to_image",
+        "quant_type": "gguf",
+        "family": "ideogram_4",
+        "url": "https://huggingface.co/leejet/ideogram-4-GGUF",
+        "path": "/",
+        "requires": {
+          "vae": {"from": "flux_2"},
+          "encoder": {"from": "qwen3_vl_8b_instruct"}
+        }
+      },
+      {
+        "provider": "abiray",
+        "name": "abiray_ideogram_4_gguf",
+        "label": "Abiray/ideogram-4-GGUF",
+        "description": "Ideogram 4 GGUF quantization",
+        "inference_type": "text_to_image",
+        "quant_type": "gguf",
+        "family": "ideogram_4",
+        "url": "https://huggingface.co/Abiray/ideogram-4-GGUF",
+        "path": "/",
+        "requires": {
+          "vae": {"from": "flux_2"},
+          "encoder": {"from": "qwen3_vl_8b_instruct"}
+        }
+      },
+      {
+        "provider": "speridlabs",
+        "name": "speridlabs_iris_3b",
+        "label": "Sperid Labs/Iris 3B",
+        "description": "Iris 3B pixel-space flow-matching text-to-image model",
+        "inference_type": "text_to_image",
+        "quant_type": "safetensor",
+        "family": "iris_3b",
+        "url": "https://huggingface.co/speridlabs/iris-3b",
+        "path": "/",
+        "requires": {
+          "encoder": {"from": "krea2"}
+        }
+      },
+      {
+        "provider": "comfy_org",
+        "name": "comfy_org_ming_image",
+        "label": "Comfy-Org/Ming Image",
+        "description": "HuggingFace diffusion model",
+        "inference_type": "text_to_image",
+        "quant_type": "safetensor",
+        "family": "ming_image",
+        "url": "https://huggingface.co/Comfy-Org/Ming-Image",
+        "path": "/diffusion_models"
+      },
+      {
+        "provider": "realrebelai",
+        "name": "realrebelai_ming_image_ggufs",
+        "label": "Real Rebel AI/Ming Image GGUFs",
+        "description": "Ming Image GGUF quantization",
+        "inference_type": "text_to_image",
+        "quant_type": "gguf",
+        "family": "ming_image",
+        "url": "https://huggingface.co/realrebelai/Ming-Image_GGUFs",
+        "path": "/"
+      },
+      {
+        "provider": "leejet",
+        "name": "leejet_minimax_h3_gguf",
+        "label": "leejet/MiniMax-H3-GGUF",
+        "description": "MiniMax-H3 text-to-video GGUF quantization",
+        "inference_type": "text_to_video",
+        "quant_type": "gguf",
+        "family": "mini_max_h3",
+        "url": "https://huggingface.co/leejet/MiniMax-H3-GGUF",
+        "path": "/"
+      },
+      {
+        "provider": "comfy_org",
+        "name": "comfy_org_minimax_h3",
+        "label": "Comfy-Org/MiniMax-H3",
+        "description": "MiniMax-H3 text-to-video diffusion model",
+        "inference_type": "text_to_video",
+        "quant_type": "safetensor",
+        "family": "mini_max_h3",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3",
+        "path": "/diffusion_models"
+      },
+      {
+        "provider": "comfy_org",
+        "name": "comfy_org_boogu_image",
+        "label": "Comfy-Org/Boogu Image",
+        "description": "Boogu Image text-to-image diffusion model",
+        "inference_type": "text_to_image",
+        "quant_type": "safetensor",
+        "family": "boogu_image",
+        "url": "https://huggingface.co/Comfy-Org/Boogu-Image",
+        "path": "/diffusion_models",
+        "requires": {
+          "vae": { "from": "flux_1" },
+          "encoder": { "from": "qwen3_vl_8b_instruct" },
+          "vision": { "from": "qwen3_vl_8b_instruct" }
+        }
+      },
+      {
+        "provider": "comfy_org",
+        "name": "comfy_org_fibo_2_0",
+        "label": "Comfy-Org/Fibo 2.0",
+        "description": "Fibo 2.0 text-to-image diffusion model",
+        "inference_type": "text_to_image",
+        "quant_type": "safetensor",
+        "family": "fibo_2_0",
+        "url": "https://huggingface.co/Comfy-Org/Fibo-2.0",
+        "path": "/diffusion_models",
+        "requires": {
+          "vae": { "from": "flux_2" },
+          "encoder": { "from": "qwen3_vl_4b_instruct" },
+          "vision": { "from": "qwen3_vl_4b_instruct" }
+        }
+      },
+      {
+        "provider": "molbal",
+        "name": "molbal_fibo_2_0_gguf",
+        "label": "molbal/Fibo 2.0 GGUF",
+        "description": "GGUF quantizations of Fibo 2.0 (dev + edit-turbo), text-to-image",
+        "inference_type": "text_to_image",
+        "quant_type": "gguf",
+        "family": "fibo_2_0",
+        "url": "https://huggingface.co/molbal/fibo-2.0-GGUF",
+        "path": "/",
+        "requires": {
+          "vae": { "from": "flux_2" },
+          "encoder": { "from": "qwen3_vl_4b_instruct" },
+          "vision": { "from": "qwen3_vl_4b_instruct" }
+        }
       }
     ]
   }

@@ -15,7 +15,10 @@ import type {
   DownloadsListResult,
   GenProgress,
   GenerationRequest,
+  GenStateInfo,
   HubCatalog,
+  UpscaleRequest,
+  UpscaleResult,
   HubCheckResult,
   InitState,
   InitStatus,
@@ -126,9 +129,10 @@ const api = {
     type: ModelType,
     url: string,
     provider?: string,
-    force?: boolean
+    force?: boolean,
+    family?: string
   ): Promise<string> =>
-    ipcRenderer.invoke('models:download', type, url, provider, force),
+    ipcRenderer.invoke('models:download', type, url, provider, force, family),
   /**
    * Delete ONE installed file. `provider` / `diffusionType` scope the delete
    * to the row's exact directory (list rows); `url` (catalog-entry sites
@@ -154,7 +158,7 @@ const api = {
     url: string,
     provider?: string,
     diffusionType?: string
-  ): Promise<{ ok: boolean; actual: number; expected: number }> =>
+  ): Promise<{ ok: boolean; actual: number; expected: number; exists: boolean }> =>
     ipcRenderer.invoke('models:verify', type, name, url, provider, diffusionType),
 
   // downloads registry
@@ -235,9 +239,13 @@ const api = {
   },
 
   // generation
+  genPreview: (req: GenerationRequest): Promise<{ binary: string; args: string[]; command: string }> => ipcRenderer.invoke('gen:preview', req),
   genStart: (req: GenerationRequest): Promise<string> => ipcRenderer.invoke('gen:start', req),
   genStop: (sessionId: string): Promise<void> => ipcRenderer.invoke('gen:stop', sessionId),
   genIsRunning: (sessionId: string): Promise<boolean> => ipcRenderer.invoke('gen:isRunning', sessionId),
+  genState: (sessionId: string): Promise<GenStateInfo> => ipcRenderer.invoke('gen:state', sessionId),
+  // image upscaler
+  upscaleStart: (req: UpscaleRequest): Promise<UpscaleResult> => ipcRenderer.invoke('upscale:start', req),
 
   // llm (prompt enhancer)
   /** One-shot prompt enhancement through the configured llama.cpp model. */
@@ -263,6 +271,14 @@ const api = {
   /** Pushed when the launch-time update check finds config changes (detect-only). */
   onUpdateAvailable: (cb: (p: ConfigUpdateStatus) => void): void => {
     ipcRenderer.on('updates:available', (_e, p: ConfigUpdateStatus) => cb(p))
+  },
+  /**
+   * Pushed when the launch-time app-version check finds a version strictly
+   * greater than the bundled one (detect-only). The renderer toasts with a
+   * download link.
+   */
+  onAppUpdateAvailable: (cb: (p: boolean) => void): void => {
+    ipcRenderer.on('app:available', (_e, p: boolean) => cb(p))
   },
   onGenProgress: (cb: (p: GenProgress) => void): void => {
     ipcRenderer.on('gen:progress', (_e, p: GenProgress) => cb(p))

@@ -55,6 +55,18 @@ export const THEMES: Record<ThemeKey, ThemeDefinition> = {
     label: 'Christmas',
     css: 'christmas',
     load: eagerCss
+  },
+  highContrast: {
+    key: 'highContrast',
+    label: 'High Contrast',
+    css: 'high-contrast',
+    load: eagerCss
+  },
+  blackAndWhite: {
+    key: 'blackAndWhite',
+    label: 'Black and White',
+    css: 'black-and-white',
+    load: eagerCss
   }
 }
 

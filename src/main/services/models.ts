@@ -5,7 +5,7 @@
  * (commercial or private) provided the license notice and copyright are preserved.
  */
 
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import type { Dirent } from 'node:fs'
 import { join } from 'node:path'
 import type { ModelFile, ModelType } from '@shared/types'
@@ -18,6 +18,8 @@ import {
   catalogMetaForUrl,
   catalogEntriesForLocation,
   catalogBundleForUrl,
+  catalogEntriesForType,
+  requiresCompanionTargets,
   createHubService
 } from './hub'
 import type { CatalogMeta } from './hub'
@@ -46,7 +48,12 @@ export function ensureModelDirs(): void {
     'audio_encoder',
     'audio_vae',
     'latent_upscaler',
-    'llm'
+    'llm',
+    'pixel_upscaler',
+    'adetailer',
+    'ip_adapter',
+    'clip_vision',
+    'control_net'
   ] as const) {
     mkdirSync(join(root, t), { recursive: true })
   }
@@ -73,7 +80,7 @@ export interface ModelsService {
    * `data/models/<type>/` (e.g. 'unsloth' → `data/models/diffusion/unsloth/`).
    * Falls back to the legacy flat layout when omitted.
    */
-  download: (type: ModelType, url: string, onProgress: (downloadedBytes: number, totalBytes: number) => void, provider?: string, force?: boolean) => Promise<string>
+  download: (type: ModelType, url: string, onProgress: (downloadedBytes: number, totalBytes: number) => void, provider?: string, force?: boolean, family?: string) => Promise<string>
   /**
    * Delete ONE installed file when context is supplied; the legacy
    * delete-all-matches sweep only when no context is (no renderer call site
@@ -114,7 +121,11 @@ async function downloadSingleViaSource(
   type: ModelType,
   url: string,
   provider: string,
-  force: boolean
+  force: boolean,
+  /** The REQUESTER's model family — wins over the catalog meta's when present
+   *  (a shared URL can be claimed by several families' rows; the destination
+   *  must be the requester's own slot). */
+  family?: string
 ): Promise<string> {
   // ONE catalog lookup for everything this download needs (model-collision-
   // hardening plan §2.3): the stored-filename override (`meta.name` — for
@@ -126,7 +137,12 @@ async function downloadSingleViaSource(
   // extra plumbing. Undefined fields on a cache miss → the manager falls back
   // to the URL basename and the legacy provider-level dest (the pre-existing
   // behavior; the resolution chain keeps such files reachable).
-  const meta = catalogMetaForUrl(url)
+  // The TYPE-aware meta lookup (hub.ts): hub.json sections can point
+  // different types at the same repo file, and a type-agnostic first match
+  // would hand this download another type's row — mis-deriving the
+  // family-scoped destination and short-circuiting against whatever file
+  // that family happens to hold.
+  const meta = catalogMetaForUrl(url, type)
   const source = resolveSourceForUrl(url, meta)
   if (source) {
     // org/repo slug, derived by the source itself (repoFromUrl — the inverse
@@ -143,7 +159,7 @@ async function downloadSingleViaSource(
       provider,
       force,
       filename: meta?.name,
-      diffusionType: meta?.diffusionType
+      diffusionType: family ?? meta?.diffusionType
       // destPath / onProgress / signal omitted — the default delegation ignores
       // all three (the manager owns progress broadcast + abort; see the
       // source plan §2)
@@ -151,7 +167,7 @@ async function downloadSingleViaSource(
   }
   return downloadModel(type, url, provider, force, {
     filename: meta?.name,
-    diffusionType: meta?.diffusionType
+    diffusionType: family ?? meta?.diffusionType
   })
 }
 
@@ -171,24 +187,63 @@ async function downloadSingleViaSource(
  * the Downloads list and can be retried from there). A single-member bundle
  * (plain entries, or a stale cache) downloads exactly the clicked URL — the
  * pre-existing behavior.
+ *
+ * **Requires fan-out** (diffusion entries only): after the clicked model
+ * finishes, the companions its hub entry's `requires` block declares (VAE /
+ * encoder(s) / vision / tokenizer / audio encoder / audio VAE / latent
+ * upscaler — `requiresCompanionEntries` resolves the exact catalog rows) are
+ * enqueued fire-and-forget with `force=false`, the same semantics as the MoE
+ * fan-out. The renderer composer already downloads the same companion set;
+ * the manager's URL-keyed in-flight map + installed short-circuit dedupe the
+ * double fan-out. `startAllPending()` background retries gain the behavior
+ * for free (they route through here). Boundary: companions the entry does
+ * NOT declare via `requires` (same-family defaults like LTX's audio VAE when
+ * the entry carries no `audio_vae` key) keep the pre-existing renderer-side
+ * downloads only.
  */
 export async function downloadViaSource(
   type: ModelType,
   url: string,
   provider: string,
-  force: boolean
+  force: boolean,
+  /** The REQUESTER's model family — threaded to the destination so a shared
+   *  URL always lands in (and short-circuits against) the requester's own
+   *  family slot; the requires fan-out's companions carry their own. */
+  family?: string
 ): Promise<string> {
   const bundle = catalogBundleForUrl(url)
-  if (bundle.length <= 1) return downloadSingleViaSource(type, url, provider, force)
-  const clicked = bundle.find((e) => e.url === url) ?? bundle[0]
+  const clicked = bundle.find((e) => e.url === url) ?? bundle[0] ?? { url }
   const companions = bundle.filter((e) => e.url !== clicked.url)
-  const result = await downloadSingleViaSource(type, clicked.url, provider, force)
+  const result = await downloadSingleViaSource(type, clicked.url, provider, force, family)
   for (const c of companions) {
     void downloadSingleViaSource(type, c.url, provider, false).catch((err: unknown) => {
       console.warn(
         `[models] bundle companion download failed (${c.name}): ${(err as Error)?.message ?? String(err)}`
       )
     })
+  }
+  // Requires companions (diffusion entries only — the companion types are
+  // never `diffusion`, so this never re-enters the fan-out). The targets are
+  // composed from the FRESH hub config (requiresCompanionTargets), so the
+  // fan-out works even while the cached catalog is stale — exactly when the
+  // companions are new and their catalog rows do not exist yet.
+  if (type === 'diffusion') {
+    const meta = catalogMetaForUrl(url, type)
+    const dt = family ?? meta?.diffusionType
+    if (dt) {
+      // The hub entry `name` (stamped on the catalog row) pins the EXACT hub
+      // entry whose requires block routes the fan-out when a family maps to
+      // several entries; absent → the first family match.
+      for (const t of requiresCompanionTargets(dt, meta?.hubName)) {
+        void downloadSingleViaSource(t.type, t.url, t.provider ?? provider, false, t.family).catch(
+          (err: unknown) => {
+            console.warn(
+              `[models] requires companion download failed (${t.name}): ${(err as Error)?.message ?? String(err)}`
+            )
+          }
+        )
+      }
+    }
   }
   return result
 }
@@ -246,48 +301,44 @@ function ownProvider(provider?: string): string {
 }
 
 /**
- * The 8-step resolution chain (model-collision-hardening plan §3.2). Checks,
- * in order:
+ * The resolution chain (model-collision-hardening plan §3.2, as amended by
+ * the STRICT per-family companion decision — the requires-downloader work).
+ * A model resolves ONLY from its OWN configured family's slot: there is
+ * deliberately NO cross-family sweep, because a same-basename file under
+ * ANOTHER family's directory belongs to THAT family's configuration —
+ * serving it cross-family (even for a byte-identical URL) misrepresents the
+ * on-disk layout and breaks the moment the other family's config changes.
+ * A family whose own slot is empty re-downloads its own copy (selection
+ * watcher, launch companion check, download fan-out, gen:start self-heal).
+ * Checks, in order:
  *
  * 1. `models/<type>/<family>/<provider ?? 'default'>/<name>` — the exact
  *    family-scoped placement new downloads use (ungated)
  * 2. `models/<type>/<family>/<P>/<name>` — sorted provider dirs within the
  *    requested family (URL-gated)
- * 3. `models/<type>/<F>/<provider>/<name>` — cross-family sweep, requested
- *    provider only (URL-gated) — serves shared-URL cross-family files
- * 4. `models/<type>/<provider>/<name>` — legacy per-provider, requested
+ * 3. `models/<type>/<provider>/<name>` — legacy per-provider, requested
  *    provider (ungated)
- * 5. `models/<type>/<F>/<P>/<name>` — cross-family sweep, ANY provider
- *    (URL-gated) — must come AFTER step 4 so a wrong-family file can never
- *    shadow the correct legacy same-provider file
- * 6. `models/<type>/<P>/<name>` — sorted legacy provider dirs, any provider
- *    (ungated) — deliberately NOT gated: the renamed-provider promise (the
- *    migration §5) depends on the legacy any-provider sweep staying
- *    permissive
- * 7. `models/<type>/<F>/<name>` — family-root strays (loose files inside a
- *    family dir), any family (ungated) — operationally the same check as
- *    step 6 (a file directly inside a depth-1 dir), kept as a conceptual
- *    step
- * 8. `models/<type>/<name>` — legacy flat (basename-normalized, ungated)
+ * 4. `models/<type>/<P>/<name>` + `models/<type>/<F>/<name>` — legacy
+ *    any-provider sweep + family-root strays (ungated — the permanent legacy
+ *    safety net for pre-family layouts; depth-1 dirs only)
+ * 5. `models/<type>/<name>` — legacy flat (basename-normalized, ungated)
  *
- * **URL gate (steps 2 / 3 / 5)**: a candidate whose location is not the
- * requester's own (family, provider) slot is accepted only when `expectUrl`
- * is undefined (legacy callers — permissive) OR the cached catalog contains
- * an entry at the candidate's exact location `(type, candidateFamily,
- * candidateProvider, basename)` whose `url === expectUrl`. Without the gate,
- * family B's gen:start could silently load family A's same-provider
- * same-basename file downloaded from a DIFFERENT URL — the exact
- * mis-resolution class the plan exists to kill. A gated-out candidate falls
- * through; if nothing resolves the request fails loudly and the user
- * downloads the picked variant.
+ * **URL gate (step 2)**: a candidate from a provider dir other than the
+ * requester's own is accepted only when `expectUrl` is undefined (legacy
+ * callers — permissive) OR the cached catalog contains an entry at the
+ * candidate's exact location `(type, family, provider, basename)` whose
+ * `url === expectUrl`. Without the gate, a same-basename file downloaded
+ * from a DIFFERENT URL could be served silently — the mis-resolution class
+ * the plan exists to kill. A gated-out candidate falls through; if nothing
+ * resolves, the caller fails loudly (or the self-heal downloads the file).
  *
  * `name` may be a slashed CATALOG name (`sub/dir/file.gguf`) — matched by its
  * '/'-only basename in every step, since stored names are basenames after
  * downloads.ts's basename-normalized storage.
  *
- * Steps 1–3 and 7 need a family context; with `diffusionType` undefined
- * (legacy callers) the chain degenerates to steps 4 / 5 / 6+7 / 8 — the
- * pre-change behavior plus a URL-gated family-depth sweep.
+ * Steps 1–2 need a family context; with `diffusionType` undefined (legacy
+ * callers) the chain degenerates to steps 3 / 4 / 5 — the pre-family
+ * behavior.
  */
 function pathFor(
   type: ModelType,
@@ -304,10 +355,21 @@ function pathFor(
 
   /** The URL gate: open when expectUrl is absent, else the cached catalog
    * must hold an entry at the candidate's exact location carrying that URL. */
+  // ONE catalog parse per pathFor call: the gate may be consulted many times
+  // inside the sweeps (one call per candidate), and each
+  // catalogEntriesForLocation call would re-parse the whole catalog file.
+  // The pre-parsed rows feed both gate clauses below (the location-exact
+  // filter matches catalogEntriesForLocation's semantics).
+  const gateRows = expectUrl !== undefined ? catalogEntriesForType(type) : []
   const gate = (candidateFamily: string, candidateProvider: string): boolean => {
     if (expectUrl === undefined) return true
-    return catalogEntriesForLocation(type, candidateFamily, candidateProvider, base).some(
-      (e) => e.url === expectUrl
+    const wantProv = candidateProvider && candidateProvider.trim() !== '' ? candidateProvider : 'default'
+    return gateRows.some(
+      (e) =>
+        e.diffusionType === candidateFamily &&
+        (e.provider ?? 'default') === wantProv &&
+        (e.name.split('/').pop() ?? e.name) === base &&
+        e.url === expectUrl
     )
   }
   /** Sorted subdirectory names of `parent` (empty when unreadable/absent). */
@@ -332,39 +394,23 @@ function pathFor(
       const c = join(dir, family, p, base)
       if (existsSync(c) && gate(family, p)) return c
     }
-    // 3. cross-family sweep, requested provider only (URL-gated) — shared-URL
-    // files store under the FIRST catalog family (§2.3); the other families
-    // resolve them here.
-    for (const f of subdirs(dir)) {
-      if (f === family) continue
-      const c = join(dir, f, prov, base)
-      if (existsSync(c) && gate(f, prov)) return c
-    }
   }
-  // 4. legacy per-provider, requested provider (ungated — the requester's own
-  // legacy-depth slot)
+  // 3. legacy per-provider, requested provider (ungated — the requester's own
+  //    legacy-depth slot)
   const ownLegacy = join(dir, prov, base)
   if (existsSync(ownLegacy)) return ownLegacy
-  // 5. cross-family sweep, ANY provider (URL-gated) — after step 4, so a
-  // wrong-family file cannot shadow the correct legacy same-provider file.
-  for (const f of subdirs(dir)) {
-    if (family !== undefined && f === family) continue
-    for (const p of subdirs(join(dir, f))) {
-      const c = join(dir, f, p, base)
-      if (existsSync(c) && gate(f, p)) return c
-    }
-  }
   if (existsSync(dir)) {
-    // 6 + 7. legacy any-provider sweep + family-root strays (ungated — the
+    // 4. legacy any-provider sweep + family-root strays (ungated — the
     // permanent legacy safety net): a file directly inside a depth-1 dir is
     // either a legacy-provider file or a family-root stray; both rank after
-    // every context-ful match and before flat.
+    // every context-ful match and before flat. Depth-1 ONLY — a depth-2
+    // file belongs to its own family's slot and is never served cross-family.
     for (const d of subdirs(dir)) {
       const c = join(dir, d, base)
       if (existsSync(c)) return c
     }
   }
-  // 8. legacy flat (basename-normalized) — also the not-found fallback path.
+  // 5. legacy flat (basename-normalized) — also the not-found fallback path.
   return join(dir, base)
 }
 
@@ -472,15 +518,18 @@ export function createModelsService(): ModelsService {
     url: string,
     _onProgress: (downloadedBytes: number, totalBytes: number) => void,
     provider = 'default',
-    force = false
+    force = false,
+    family?: string
   ): Promise<string> {
     // Route through the source-aware chokepoint: the resolved model source
     // (stamped CatalogEntry.source hint first, then URL-host match) owns the
     // download; a URL with no matching source falls through to the plain
     // manager call (a strict superset of the pre-source behavior). The
     // manager remains the sole source of model progress (models.ts does not
-    // broadcast).
-    return downloadViaSource(type, url, provider, force)
+    // broadcast). `family` — the requester's own family — threads through so
+    // a shared URL always lands in (and short-circuits against) the
+    // requester's own family slot.
+    return downloadViaSource(type, url, provider, force, family)
   }
 
   /**
@@ -573,13 +622,12 @@ export function createModelsService(): ModelsService {
  *    under the `default` provider dir) → collect the distinct families (and
  *    URLs):
  *    - 0 matches (manually placed / unknown) → leave in place.
- *    - 1 family → rename to `models/<type>/<family>/<provider || 'default'>/<name>`
- *      (skip when the destination already exists — the legacy copy then
- *      stays in place, shadowed by the family copy at resolution step 1; a
- *      harmless disk duplicate, never deleted).
- *    - ≥2 families, all matching entries share one URL (byte-identical
- *      file, e.g. flux_1 vs flux_1_kontext ae.safetensors) → move to the
- *      first family; the resolution chain serves the others.
+ *    - every matching family gets a COPY at
+ *      `models/<type>/<family>/<provider || 'default'>/<name>` (a family
+ *      whose destination already exists is skipped); the legacy original is
+ *      removed once every family is served — the STRICT resolution has no
+ *      cross-family sweep, so each family's slot must hold its own file
+ *      (requires-downloader decision).
  *    - ≥2 families with different URLs (genuinely ambiguous) → leave in
  *      place + warn; the legacy fallback keeps it resolving.
  * 3. Log a summary.
@@ -605,7 +653,8 @@ export function migrateModelLayout(): void {
     'audio_encoder',
     'audio_vae',
     'latent_upscaler',
-    'llm'
+    'llm',
+    'pixel_upscaler'
   ] as const) {
     const dir = modelsDir(type)
     if (!existsSync(dir)) continue
@@ -667,27 +716,38 @@ export function migrateModelLayout(): void {
         unmatched++
         continue
       }
-      let family: string
-      if (families.length === 1 || urls.size === 1) {
-        // Single family — or several families sharing ONE url (a
-        // byte-identical file): move to the first family; the resolution
-        // chain's cross-family sweep serves the others.
-        family = families[0]
-      } else {
+      if (families.length > 1 && urls.size > 1) {
         console.warn(
           `[migration] ambiguous file left in place (matches ${families.length} families with different URLs): ${c.path}`
         )
         ambiguous++
         continue
       }
-      const dest = join(dir, family, wantProv, base)
-      if (existsSync(dest)) continue // family copy already present — legacy copy stays, shadowed
-      try {
-        mkdirSync(join(dir, family, wantProv), { recursive: true })
-        renameSync(c.path, dest)
-        moved++
-      } catch (e) {
-        console.warn(`[migration] rename failed for ${c.path} → ${dest}: ${(e as Error).message}`)
+      // STRICT per-family slots (requires-downloader decision — the
+      // resolution has no cross-family sweep): materialize a copy into EVERY
+      // matching family's slot (one legacy file feeds all families without a
+      // re-download), then remove the legacy original once every family is
+      // served. A family whose dest already exists is skipped.
+      let failures = 0
+      for (const family of families) {
+        const dest = join(dir, family, wantProv, base)
+        if (existsSync(dest)) continue // family copy already present
+        try {
+          mkdirSync(join(dir, family, wantProv), { recursive: true })
+          copyFileSync(c.path, dest)
+          moved++
+        } catch (e) {
+          console.warn(`[migration] copy failed for ${c.path} → ${dest}: ${(e as Error).message}`)
+          failures++
+        }
+      }
+      if (failures === 0) {
+        try {
+          rmSync(c.path, { force: true })
+        } catch {
+          /* the legacy original stays when it cannot be removed — harmless */
+        }
+      } else {
         unmatched++
       }
     }

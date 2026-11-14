@@ -12,6 +12,9 @@ import type { LogLevel } from '@shared/types'
 import './styles/theme.css'
 import './styles/halloween.css'
 import './styles/christmas.css'
+import './styles/high-contrast.css'
+import './styles/black-and-white.css'
+import './styles/accessibility.css'
 
 // ---------- renderer log forwarding (see plans/logging.md) ----------
 // Renderer console output and uncaught errors are forwarded to the main

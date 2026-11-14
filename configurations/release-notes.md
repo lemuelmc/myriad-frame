@@ -1,20 +1,38 @@
 # Release Notes
 
-## v0.2.1
+## v0.2.2
 
-This version adds an AI prompt enhancer and a built-in image editor. You can now have a local language model rewrite your prompt into something richer with one click, and resize or crop images right before adding them to a session — without ever touching the original file.
+This version adds two new ways to steer image generation — Control Net conditioning and IP-Adapter image prompts — along with an ESRGAN image upscaler, an ADetailer detail-repair pass, a large wave of new model families (SD 1.5, Chroma, HiDream O1, Boogu Image, MiniMax-H3 video, and more), and quality-of-life improvements like session search, accessibility settings, and inline model downloads in the upscale dialog.
 
 ### Added
 
-- **Enhance prompts with AI** — a new Enhance button in the chat composer rewrites your current prompt into a richer, more detailed one using a local AI language model. The model and its runtime download automatically on first launch, and you can manage the model catalog, system prompt, and inference settings in Settings (Language Models and Language Inference). While an enhancement runs, the button pulses — click it again to cancel.
-- **Resize and crop before adding** — when you add input or reference images, you can now edit them first in a full-screen editor: crop to any region, zoom, rotate, and pan (middle-click), pick a resolution preset, or set a custom size. Your original file is never modified, and multi-image picks are processed one at a time (Save & Next / Skip).
+- **Control Net support** — attach control images to a generation so pose, edges, or other structural cues steer the result. ControlNet models are downloadable from the Hub (Settings → Models).
+- **IP-Adapter** — condition a generation on one of your reference images so its subject and style influence the output, with adjustable strength.
+- **Image upscaler (ESRGAN)** — upscale generated images in-app with an ESRGAN model. The Upscale dialog has inline download buttons so you can fetch upscaler models without leaving it.
+- **ADetailer repair pass** — an optional YOLOv8 object-detector pass that re-renders detected faces and bodies to fix common detail artifacts. Toggle it from the composer and sampling settings, with detector options in a dedicated dialog.
+- **New diffusion types** — SD 1.5, Chroma, HiDream O1 (image_unified), Boogu Image, and Ming Image are now available as generation families, each with their own sampling defaults and resolutions.
+- **MiniMax-H3 video family** — the MiniMax-H3 video + stereo-audio model family is in the catalog, including repeatable reference audio/video channels for Ref2VA prompts.
+- **New models in the Hub** — Ideogram 4, Iris 3B, Fibo 2.0 (Dev / Edit Turbo), Qwen3 VL 4B Instruct encoder/vision, Hunyuan Video 1.5, Qwen2.5-VL/byn5 glyph encoders, ERNIE Image, Mistral-3-3B-Instruct, Abiray/ideogram-4-GGUF, and nine CivitAI models.
+- **Accessibility settings** — a new Settings section with font and icon size controls plus additional themes.
+- **Session search** — a search box in the Sidebar filters your sessions; the Settings dialog also gained its own search.
+- **Extra sd-cli arguments** — the sampling dialog has a session-only free-form row for passing extra sd-cli arguments, and model entries support a free-form model-args override.
 
 ### Improved
 
-- **Latest sd-cli runtime** — the bundled generation runtime is updated to the newest stable-diffusion.cpp builds (1054–1056).
-- **LTX-2.5 GGUF models** — the Vantage with AI LTX-2.5 GGUF models are now correctly listed as video generation models in the catalog.
-- **Enhance button feedback** — the busy indicator now uses a calmer pulse animation instead of a spinner.
+- **Latest sd-cli runtime** — new stable-diffusion.cpp runtime releases are available for download from Settings → Runtime.
+- **Performance backend defaults** — the Performance settings' backend option now supports a custom default value.
+- **Busy state across session switches** — each session now tracks its own generation busy state, so switching sessions no longer sticks or drops the in-progress indicator.
+- **Generation time and resolution on preview** — image previews show total generation time, and both chat previews and the lightbox display the image's resolution.
+- **Audio / latent upscaler sections** — model management surfaces audio and latent-upscaler model sections when the hub config declares them.
+- **Multi-encoder families** — model families that require more than one text encoder are now supported (array-form `requires.encoder`).
+- **Hub scan progress** — model dialogs show progress while the hub catalog is being scanned.
+- **Toolbar icons** — toolbar buttons now use semantic SVG icons.
 
 ### Fixed
 
-- **Prompt box sizing** — the composer text box now resizes correctly when the prompt is changed by the app (for example, after using Enhance), so the full text is no longer clipped.
+- **Overlay search clear buttons** — the clear buttons in overlay search inputs now sit inside the input itself, with accessibility fixes.
+- **Prompt box during enhancement** — the prompt text area is disabled while an AI enhancement runs, so edits can't be lost mid-run.
+- **Adetailer dialog layout** — checkbox labels in the ADetailer dialog no longer wrap awkwardly.
+- **Upscale dialog layering** — raised the Upscale dialog's z-index so it stays above other overlays.
+
+

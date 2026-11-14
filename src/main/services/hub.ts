@@ -7,7 +7,8 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { CatalogEntry, HubCatalog, ModelType } from '@shared/types'
+import type { CatalogEntry, CompanionKind, HubCatalog, ModelType } from '@shared/types'
+import { COMPANION_USE_AS_DEFAULTS } from '@shared/types'
 import { loadApplicationConfig, loadHubConfig } from './config'
 import { headSize } from './download'
 // Importing './sources' runs sources/index.ts's module-scope registerSources()
@@ -22,21 +23,70 @@ function catalogPath(): string {
   return join(dataRoot(), 'cache', 'hub-catalog.json')
 }
 
+/** The companion kinds a diffusion `requires` block may declare, in stamp order. */
+const COMPANION_KINDS: CompanionKind[] = [
+  'vae',
+  'encoder',
+  'audio_encoder',
+  'vision',
+  'tokenizer',
+  'audio_vae',
+  'latent_upscaler'
+]
+
 /**
  * Extract the resolved `requires` from-family names off a hub diffusion
  * entry (defensively shape-checked — the bundled config is loaded without
  * validation). Undefined when the entry carries no usable requires block.
+ *
+ * EVERY kind accepts BOTH the scalar `{ from }` form (one companion file
+ * under the kind's default CLI flag) and the array `{ from, use_as }[]` form
+ * (one companion file per item, each from a possibly different family, each
+ * emitted under its own `--<use_as>` flag). Stamping: a single item whose
+ * `use_as` is absent or the kind default collapses to the plain `string`
+ * scalar (tidy caches, backward compatible); custom-`use_as` single items and
+ * all multi-item arrays stamp as `{ from, useAs }[]` so a custom flag can
+ * never be lost.
  */
 function requiresFrom(d: {
-  requires?: Partial<Record<'vae' | 'encoder' | 'audio_encoder', { from: string }>>
+  requires?: {
+    vae?:             { from: string } | { from: string; use_as: string }[]
+    encoder?:         { from: string } | { from: string; use_as: string }[]
+    audio_encoder?:   { from: string } | { from: string; use_as: string }[]
+    vision?:          { from: string } | { from: string; use_as: string }[]
+    tokenizer?:       { from: string } | { from: string; use_as: string }[]
+    audio_vae?:       { from: string } | { from: string; use_as: string }[]
+    latent_upscaler?: { from: string } | { from: string; use_as: string }[]
+  }
 }): CatalogEntry['requires'] {
   const r = d.requires
   const out: NonNullable<CatalogEntry['requires']> = {}
   if (r && typeof r === 'object') {
-    if (typeof r.vae?.from === 'string' && r.vae.from !== '') out.vae = r.vae.from
-    if (typeof r.encoder?.from === 'string' && r.encoder.from !== '') out.encoder = r.encoder.from
-    if (typeof r.audio_encoder?.from === 'string' && r.audio_encoder.from !== '') {
-      out.audio_encoder = r.audio_encoder.from
+    for (const kind of COMPANION_KINDS) {
+      const raw = r[kind]
+      if (!raw) continue
+      const items = (Array.isArray(raw) ? raw : [raw]) as {
+        from?: unknown
+        use_as?: unknown
+      }[]
+      const resolved: { from: string; useAs: string }[] = []
+      for (const it of items) {
+        if (it && typeof it === 'object' && typeof it.from === 'string' && it.from !== '') {
+          resolved.push({
+            from: it.from,
+            useAs:
+              typeof it.use_as === 'string' && it.use_as !== ''
+                ? it.use_as
+                : COMPANION_USE_AS_DEFAULTS[kind]
+          })
+        }
+      }
+      if (resolved.length === 0) continue
+      if (resolved.length === 1 && resolved[0].useAs === COMPANION_USE_AS_DEFAULTS[kind]) {
+        out[kind] = resolved[0].from
+      } else {
+        out[kind] = resolved
+      }
     }
   }
   return Object.keys(out).length > 0 ? out : undefined
@@ -53,7 +103,7 @@ function quantFromName(name: string): string | undefined {
  * - encoder: repo tree (gguf files) + the configured default file (single-file
  *   `default`) or the configured `defaults[]` bundle files (SD3.5-style
  *   multi-encoder; bundle entries carry the `use_as` flag name as `useAs`)
- * - lora: repo tree (gguf/safetensors files), one entry per `diffustion_types`
+ * - lora: repo tree (gguf/safetensors files), one entry per `families`
  *   member (a LoRA may serve several diffusion types); no `default` concept
  * - vae: direct file URL from hub.json
  * - vision: repo tree (.gguf files) + the configured default file
@@ -65,8 +115,17 @@ function quantFromName(name: string): string | undefined {
  *   default-file-only shape as tokenizer)
  * - latent_upscaler: ONLY the configured default file (LTX 2.5 hires fix;
  *   same default-file-only shape as tokenizer)
- *
- * The nine loops own the catalog SHAPE (entry fields, name/label policy,
+* - pixel_upscaler: GROUP → ARRAY map (group key = the catalog family) —
+*   every scanned .gguf file of each repo entry is a row, with the
+*   configured `default` file stamped isDefault (ESRGAN models for
+*   `sd-cli -M upscale`); a failing scan still emits the default-only entry
+* - ip_adapter: repo tree (safetensors files), one entry per `families`
+*   member (same shape/lenience as the lora loop — adapter weights may
+*   serve several diffusion types from one URL)
+* - clip_vision: repo tree (safetensors files), one entry per `families`
+*   member (same shape/lenience as the lora loop)
+*
+* The twelve loops own the catalog SHAPE (entry fields, name/label policy,
  * default synthesis); the model SOURCE owns the TRANSPORT (repo listing API,
  * URL grammar — see `sources/`). Dispatch happens before each loop's scan
  * try/catch: an unknown source is a dispatch miss → warn + skip (uniformly
@@ -164,15 +223,19 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
           // primary slot.
           const useAs = f.use_as === 'high_noise_diffusion_model' ? 'high_noise_diffusion_model' : 'diffusion-model'
           entries.push({
-            id: `diffusion:${d.diffusion_type}:${name}`,
+            id: `diffusion:${d.family}:${name}`,
             type: 'diffusion' as ModelType,
-            diffusionType: d.diffusion_type,
+            diffusionType: d.family,
             name,
             label: item.label ? `${item.label} (${useAs === 'high_noise_diffusion_model' ? 'high noise' : 'low noise'})` : name,
             url: source.resolveUrl(repo, path),
             quant: quantFromName(name),
             repo,
             provider: d.provider,
+            // The hub entry's own `name` (e.g. comfy_org_boogu_image) — the
+            // key a session saves as `diffusionName` so the entry's hub
+            // configuration (requires block…) is lookup-precise.
+            hubName: d.name,
             source: source.name,
             useAs,
             groupId: item.name,
@@ -225,9 +288,9 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
         // Root-only files carry no slash, so the basename equals f.path there.
         const name = folder !== undefined ? (f.path.split('/').pop() ?? f.path) : f.path
         entries.push({
-          id: `diffusion:${d.diffusion_type}:${f.path}`,
+          id: `diffusion:${d.family}:${f.path}`,
           type: 'diffusion' as ModelType,
-          diffusionType: d.diffusion_type,
+          diffusionType: d.family,
           name,
           label: name,
           url: source.resolveUrl(repo, f.path),
@@ -235,6 +298,9 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
           quant: quantFromName(f.path),
           repo: repo,
           provider: d.provider,
+          // The hub entry's own `name` (e.g. comfy_org_boogu_image) — the key
+          // a session saves as `diffusionName`.
+          hubName: d.name,
           // download-time routing key + provenance (see CatalogEntry.source)
           source: source.name,
           // requires from-families (WAN VAE/encoder/audio-encoder routing)
@@ -566,8 +632,111 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
     dispatchedEntries++
   }
 
+  // pixel_upscaler (optional map of GROUP → ARRAY; ESRGAN models for
+  // `sd-cli -M upscale`) — UNLIKE audio_vae/latent_upscaler, EVERY scanned
+  // .gguf file of each repo entry is a catalog row (the Settings → Upscaler
+  // browser offers the repo's other upscalers too). The group key (e.g.
+  // 'esregan') is the catalog family (diffusionType) — the family-scoped
+  // destination dir. `default` names the file that MUST be present on first
+  // launch (the background ensure in index.ts) — stamped isDefault on the
+  // matching row. Lenient by design: a failing scan warns + still emits the
+  // DEFAULT-ONLY entry (best-effort headSize) so the first-launch
+  // auto-download can always resolve its target; a group whose every entry
+  // fails contributes nothing and never fails the build.
+  for (const [group, ups] of Object.entries(hub.repo.pixel_upscaler ?? {})) {
+    if (!Array.isArray(ups)) continue
+    for (const up of ups) {
+      if (up === null || typeof up !== 'object') continue
+      // Same path normalization as the diffusion loop:
+      // - "/TURBO" -> "TURBO" — that folder's direct children
+      // - "/", "./" (or a bare ".") -> root-only scan — direct children of
+      //   the repo root, no recursion
+      // - absent/empty -> whole-repo recursive scan
+      const raw = typeof up.path === 'string' ? up.path.trim() : ''
+      const normalized = raw.replace(/^(?:\.\/|\/)+/, '').replace(/\/+$/, '')
+      const rootOnly = raw !== '' && (normalized === '' || normalized === '.')
+      const folder = rootOnly ? '' : normalized || undefined
+      onProgress?.(`Scanning ${up.url}`)
+      eligibleEntries++
+      const source = getSourceForEntry(up.url, up.source ?? up.domain)
+      if (!source) {
+        console.warn(`[hub] pixel_upscaler entry "${group}" (${up.url}): no model source for this URL's host — skipping`)
+        continue
+      }
+      const repo = source.repoFromUrl(up.url)
+      // `default` may be a full URL or a repo-relative path — normalize through the source
+      const defaultPath = source.normalizeFilePath?.(up.default) ?? up.default
+      const defaultName = defaultPath.split('/').pop() ?? defaultPath
+      const defaultUrl = source.resolveUrl(repo, defaultPath)
+      const fallbackEntry = (size: number): CatalogEntry => ({
+        id: `pixel_upscaler:${group}:${defaultName}`,
+        type: 'pixel_upscaler' as ModelType,
+        diffusionType: group,
+        name: defaultName,
+        label: up.label ?? defaultName,
+        url: defaultUrl,
+        size,
+        quant: quantFromName(defaultName),
+        repo,
+        source: source.name,
+        // provider selects the per-provider download subdirectory
+        ...(up.provider ? { provider: up.provider } : {}),
+        ...(up.description ? { description: up.description } : {}),
+        isDefault: true
+      })
+      try {
+        const files = await source.listFiles(repo, folder)
+        const seen = new Set<string>()
+        for (const f of files) {
+          if (!f.path.toLowerCase().endsWith('.gguf')) continue
+          seen.add(f.path)
+          // The on-disk name is ALWAYS a single basename (the single-segment
+          // storage rule — downloads.ts basename-normalizes anyway); the id
+          // keeps the full repo path so a whole-repo scan with same-basename
+          // files in different folders stays collision-free.
+          const name = f.path.split('/').pop() ?? f.path
+          entries.push({
+            id: `pixel_upscaler:${group}:${f.path}`,
+            type: 'pixel_upscaler' as ModelType,
+            diffusionType: group,
+            name,
+            label: name,
+            url: source.resolveUrl(repo, f.path),
+            size: f.size,
+            quant: quantFromName(f.path),
+            repo,
+            source: source.name,
+            // the configured default file may already be in the repo tree —
+            // flag it so consumers can resolve it without a separate entry
+            ...(f.path === defaultPath ? { isDefault: true } : {}),
+            ...(up.provider ? { provider: up.provider } : {}),
+            ...(up.description ? { description: up.description } : {})
+          })
+          dispatchedEntries++
+        }
+        // ensure the configured default is present
+        if (!seen.has(defaultPath)) {
+          const size = await headSize(defaultUrl)
+          entries.push(fallbackEntry(size))
+          dispatchedEntries++
+        }
+      } catch (e) {
+        // Lenient by design (see the loop comment): a failing scan warns +
+        // still emits the DEFAULT-ONLY entry (best-effort headSize — a HEAD
+        // failure degrades the size to 0, never failing the build).
+        console.warn(
+          `[hub] pixel_upscaler entry "${group}" (${up.url}) scan failed (${(e as Error).message}); emitting the default file only`
+        )
+        onProgress?.(`Scan failed for ${up.url} — emitting the default file only`)
+        const size = await headSize(defaultUrl).catch(() => 0)
+        entries.push(fallbackEntry(size))
+        dispatchedEntries++
+      }
+    }
+  }
+
   // lora (optional array; each entry may serve MULTIPLE diffusion types — one
-  // catalog entry per `diffustion_types` member, so the per-type LoRA lists in
+  // catalog entry per `families` member, so the per-type LoRA lists in
   // the renderer are exact while the download manager's dedupe-by-URL keeps a
   // shared file to a single fetch). Scan semantics are ALWAYS lenient: a
   // failing LoRA repo warns and contributes no rows, it never fails the whole
@@ -595,13 +764,13 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
       typeof l.max_page === 'number' && Number.isFinite(l.max_page) && l.max_page >= 1
         ? Math.floor(l.max_page)
         : undefined
-    // `diffustion_types` drives the per-type expansion — defensively
+    // `families` drives the per-type expansion — defensively
     // shape-checked for the same unvalidated-bundled-config reason.
-    const types = Array.isArray(l.diffustion_types)
-      ? l.diffustion_types.filter((t) => typeof t === 'string' && t !== '')
+    const types = Array.isArray(l.families)
+      ? l.families.filter((t) => typeof t === 'string' && t !== '')
       : []
     if (types.length === 0) {
-      console.warn(`[hub] lora entry "${l.label ?? l.url}" has no usable diffustion_types; skipping`)
+      console.warn(`[hub] lora entry "${l.label ?? l.url}" has no usable families; skipping`)
       continue
     }
     onProgress?.(`Scanning ${l.url}`)
@@ -666,6 +835,223 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
     }
   }
 
+  // ip_adapter (optional array; same shape/lenience as the lora loop — one
+  // adapter weight URL may serve several diffusion types; family-scoped
+  // destination is exempted in the download pipeline so one fetch writes a
+  // single file resolvable from any family).
+  for (const e of hub.repo.ip_adapter ?? []) {
+    const raw = typeof e.path === 'string' ? e.path.trim() : ''
+    const normalized = raw.replace(/^(?:\.\/|\/)+/, '').replace(/\/+$/, '')
+    const rootOnly = raw !== '' && (normalized === '' || normalized === '.')
+    const folder = rootOnly ? '' : normalized || undefined
+    const versionIds = Array.isArray(e.model_version_ids)
+      ? e.model_version_ids.filter((n) => typeof n === 'number' && Number.isFinite(n))
+      : []
+    const maxPage =
+      typeof e.max_page === 'number' && Number.isFinite(e.max_page) && e.max_page >= 1
+        ? Math.floor(e.max_page)
+        : undefined
+    const families = Array.isArray(e.families)
+      ? e.families.filter((t) => typeof t === 'string' && t !== '')
+      : []
+    if (families.length === 0) {
+      console.warn(`[hub] ip_adapter entry "${e.label ?? e.url}" has no usable families; skipping`)
+      continue
+    }
+    onProgress?.(`Scanning ${e.url}`)
+    eligibleEntries++
+    const source = getSourceForEntry(e.url, e.source ?? e.domain)
+    if (!source) {
+      console.warn(`[hub] ip_adapter entry "${e.label}" (${e.url}): no model source for this URL's host — skipping`)
+      continue
+    }
+    const repo = source.repoFromUrl(e.url)
+    let scanned: RepoFile[]
+    try {
+      scanned = await source.listFiles(
+        repo,
+        folder,
+        versionIds.length > 0 || maxPage !== undefined ? { versionIds, maxPage } : undefined
+      )
+    } catch (scanErr) {
+      console.warn(
+        `[hub] ip_adapter entry "${e.label}" (${e.url}) scan failed (${(scanErr as Error).message}); contributing no rows`
+      )
+      onProgress?.(`Scan failed for ${e.url} — skipping`)
+      continue
+    }
+    if ((folder !== undefined || versionIds.length > 0) && scanned.length === 0) {
+      const scope = rootOnly ? 'repo root' : folder !== undefined ? `path "/${folder}"` : 'repo'
+      const versionsNote = versionIds.length > 0 ? ` (version filter: ${versionIds.join(', ')})` : ''
+      console.warn(`[hub] ip_adapter entry "${e.label}" ${scope}${versionsNote} matched no files`)
+      onProgress?.(`No files in ${e.url}${versionsNote}`)
+    }
+    for (const f of scanned) {
+      const ext = f.path.toLowerCase()
+      if (!ext.endsWith('.gguf') && !ext.endsWith('.safetensors')) continue
+      const name = f.path.split('/').pop() ?? f.path
+      for (const family of families) {
+        entries.push({
+          id: `ip_adapter:${family}:${f.path}`,
+          type: 'ip_adapter' as ModelType,
+          diffusionType: family,
+          name,
+          label: e.label ?? name,
+          url: source.resolveUrl(repo, f.path),
+          size: f.size,
+          quant: quantFromName(f.path),
+          repo,
+          provider: e.provider,
+          source: source.name,
+          ...(e.description ? { description: e.description } : {})
+        })
+        dispatchedEntries++
+      }
+    }
+  }
+
+  // clip_vision (optional array; same shape/lenience as the lora loop — one
+  // CLIP-Vision URL may serve several diffusion types; family-scoped
+  // destination is exempted in the download pipeline).
+  for (const e of hub.repo.clip_vision ?? []) {
+    const raw = typeof e.path === 'string' ? e.path.trim() : ''
+    const normalized = raw.replace(/^(?:\.\/|\/)+/, '').replace(/\/+$/, '')
+    const rootOnly = raw !== '' && (normalized === '' || normalized === '.')
+    const folder = rootOnly ? '' : normalized || undefined
+    const versionIds = Array.isArray(e.model_version_ids)
+      ? e.model_version_ids.filter((n) => typeof n === 'number' && Number.isFinite(n))
+      : []
+    const maxPage =
+      typeof e.max_page === 'number' && Number.isFinite(e.max_page) && e.max_page >= 1
+        ? Math.floor(e.max_page)
+        : undefined
+    const families = Array.isArray(e.families)
+      ? e.families.filter((t) => typeof t === 'string' && t !== '')
+      : []
+    if (families.length === 0) {
+      console.warn(`[hub] clip_vision entry "${e.label ?? e.url}" has no usable families; skipping`)
+      continue
+    }
+    onProgress?.(`Scanning ${e.url}`)
+    eligibleEntries++
+    const source = getSourceForEntry(e.url, e.source ?? e.domain)
+    if (!source) {
+      console.warn(`[hub] clip_vision entry "${e.label}" (${e.url}): no model source for this URL's host — skipping`)
+      continue
+    }
+    const repo = source.repoFromUrl(e.url)
+    let scanned: RepoFile[]
+    try {
+      scanned = await source.listFiles(
+        repo,
+        folder,
+        versionIds.length > 0 || maxPage !== undefined ? { versionIds, maxPage } : undefined
+      )
+    } catch (scanErr) {
+      console.warn(
+        `[hub] clip_vision entry "${e.label}" (${e.url}) scan failed (${(scanErr as Error).message}); contributing no rows`
+      )
+      onProgress?.(`Scan failed for ${e.url} — skipping`)
+      continue
+    }
+    if ((folder !== undefined || versionIds.length > 0) && scanned.length === 0) {
+      const scope = rootOnly ? 'repo root' : folder !== undefined ? `path "/${folder}"` : 'repo'
+      const versionsNote = versionIds.length > 0 ? ` (version filter: ${versionIds.join(', ')})` : ''
+      console.warn(`[hub] clip_vision entry "${e.label}" ${scope}${versionsNote} matched no files`)
+      onProgress?.(`No files in ${e.url}${versionsNote}`)
+    }
+    for (const f of scanned) {
+      const ext = f.path.toLowerCase()
+      if (!ext.endsWith('.gguf') && !ext.endsWith('.safetensors')) continue
+      const name = f.path.split('/').pop() ?? f.path
+      for (const family of families) {
+        entries.push({
+          id: `clip_vision:${family}:${f.path}`,
+          type: 'clip_vision' as ModelType,
+          diffusionType: family,
+          name,
+          label: e.label ?? name,
+          url: source.resolveUrl(repo, f.path),
+          size: f.size,
+          quant: quantFromName(f.path),
+          repo,
+          provider: e.provider,
+          source: source.name,
+          ...(e.description ? { description: e.description } : {})
+        })
+        dispatchedEntries++
+      }
+    }
+  }
+
+  // control_net (optional array; LoRA-style global — one control net URL may
+  // serve several diffusion types, so NO family expansion: each scanned file
+  // emits a single entry with `diffusionType: ''` (the empty sentinel that
+  // `modelDestDir()` treats as "no family" → provider-level dest). Unlike the
+  // ip_adapter / clip_vision loops, missing `families` is NOT an error —
+  // control_net entries legitimately have none.
+  for (const e of hub.repo.control_net ?? []) {
+    const raw = typeof e.path === 'string' ? e.path.trim() : ''
+    const normalized = raw.replace(/^(?:\.\/|\/)+/, '').replace(/\/+$/, '')
+    const rootOnly = raw !== '' && (normalized === '' || normalized === '.')
+    const folder = rootOnly ? '' : normalized || undefined
+    const versionIds = Array.isArray(e.model_version_ids)
+      ? e.model_version_ids.filter((n) => typeof n === 'number' && Number.isFinite(n))
+      : []
+    const maxPage =
+      typeof e.max_page === 'number' && Number.isFinite(e.max_page) && e.max_page >= 1
+        ? Math.floor(e.max_page)
+        : undefined
+    onProgress?.(`Scanning ${e.url}`)
+    eligibleEntries++
+    const source = getSourceForEntry(e.url, e.source ?? e.domain)
+    if (!source) {
+      console.warn(`[hub] control_net entry "${e.label}" (${e.url}): no model source for this URL's host — skipping`)
+      continue
+    }
+    const repo = source.repoFromUrl(e.url)
+    let scanned: RepoFile[]
+    try {
+      scanned = await source.listFiles(
+        repo,
+        folder,
+        versionIds.length > 0 || maxPage !== undefined ? { versionIds, maxPage } : undefined
+      )
+    } catch (scanErr) {
+      console.warn(
+        `[hub] control_net entry "${e.label}" (${e.url}) scan failed (${(scanErr as Error).message}); contributing no rows`
+      )
+      onProgress?.(`Scan failed for ${e.url} — skipping`)
+      continue
+    }
+    if ((folder !== undefined || versionIds.length > 0) && scanned.length === 0) {
+      const scope = rootOnly ? 'repo root' : folder !== undefined ? `path "/${folder}"` : 'repo'
+      const versionsNote = versionIds.length > 0 ? ` (version filter: ${versionIds.join(', ')})` : ''
+      console.warn(`[hub] control_net entry "${e.label}" ${scope}${versionsNote} matched no files`)
+      onProgress?.(`No files in ${e.url}${versionsNote}`)
+    }
+    for (const f of scanned) {
+      const ext = f.path.toLowerCase()
+      if (!ext.endsWith('.gguf') && !ext.endsWith('.safetensors')) continue
+      const name = f.path.split('/').pop() ?? f.path
+      entries.push({
+        id: `control_net:${e.provider}:${f.path}`,
+        type: 'control_net' as ModelType,
+        diffusionType: '',
+        name,
+        label: e.label ?? name,
+        url: source.resolveUrl(repo, f.path),
+        size: f.size,
+        quant: quantFromName(f.path),
+        repo,
+        provider: e.provider,
+        source: source.name,
+        ...(e.description ? { description: e.description } : {})
+      })
+      dispatchedEntries++
+    }
+  }
+
   // llm (optional map; the LLM prompt enhancer) — an EXPLICIT file list per
   // provider entry: one catalog entry per provider × catalog item ×
   // items[].file. NO repo scan, NO headSize (the diffusion `catalog[]`
@@ -727,6 +1113,108 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
             ...(item.name === defaultModel && provider === defaultProvider ? { isDefault: true } : {})
           })
           dispatchedEntries++
+        }
+      }
+    }
+  }
+
+  // adetailer (YOLOv8 object detector models — single family, no diffusion-type
+  // variation). DEFAULT-FILE-ONLY loop (same shape as tokenizer/audio_encoder):
+  // one catalog entry per scanned file when `repo.adetailer.models` is present
+  // (explicit file lists via repo scan); when only `default` is present, emit
+  // a single default-only entry. Lenient: scan failure warns + skips, never
+  // fails the build. Family = 'adetailer'; destination:
+  // `data/models/adetailer/<provider>/<name>`.
+  const adetailerSection = hub.repo.adetailer
+  if (adetailerSection) {
+    const adDefault = adetailerSection.default
+    const adModels = adetailerSection.models
+    // Case 1: explicit models array — scan each repo.
+    if (adModels && adModels.length > 0) {
+      for (const entry of adModels) {
+        if (typeof entry.url !== 'string' || entry.url === '') {
+          console.warn(`[hub] adetailer entry "${entry.label}" has no url; skipping`)
+          continue
+        }
+        eligibleEntries++
+        const source = getSourceForEntry(entry.url, entry.source ?? entry.domain)
+        if (!source) {
+          console.warn(`[hub] adetailer entry "${entry.label}" (${entry.url}): no model source for this URL's host — skipping`)
+          continue
+        }
+        const repo = source.repoFromUrl(entry.url)
+        // Normalize the optional path restriction (same grammar as diffusion entries).
+        const raw = typeof entry.path === 'string' ? entry.path.trim() : ''
+        const normalized = raw.replace(/^(?:\.\/|\/)+/, '').replace(/\/+$/, '')
+        const rootOnly = raw !== '' && (normalized === '' || normalized === '.')
+        const folder = rootOnly ? '' : normalized || undefined
+        onProgress?.(`Scanning adetailer ${entry.url}`)
+        let scanned: RepoFile[]
+        try {
+          // Adetailer entries have no model_version_ids filter — always undefined.
+          scanned = await source.listFiles(repo, folder)
+        } catch (e) {
+          console.warn(
+            `[hub] adetailer entry "${entry.label}" scan failed (${(e as Error).message}); contributing no rows`
+          )
+          onProgress?.(`Scan failed for adetailer ${entry.url} — skipping`)
+          continue
+        }
+        for (const f of scanned) {
+          const ext = f.path.toLowerCase()
+          if (ext.endsWith('.gguf') || ext.endsWith('.safetensors')) {
+            const name = folder !== undefined ? (f.path.split('/').pop() ?? f.path) : f.path
+            entries.push({
+              id: `adetailer:${name}:${f.path}`,
+              type: 'adetailer' as ModelType,
+              diffusionType: 'adetailer',
+              name,
+              label: entry.label ?? name,
+              url: source.resolveUrl(repo, f.path),
+              size: f.size,
+              quant: quantFromName(f.path),
+              repo,
+              provider: entry.provider,
+              source: source.name,
+              ...(entry.description ? { description: entry.description } : {})
+            })
+            dispatchedEntries++
+          }
+        }
+      }
+    }
+    // Case 2: default-only — resolve the default file and emit one entry.
+    if (adDefault && typeof adDefault === 'object') {
+      const def = adDefault as { provider?: string; file: string }
+      if (typeof def.file === 'string' && def.file !== '') {
+        // Try to resolve a URL if we have a default provider and a matching model entry.
+        // Otherwise, fall back to scanning the first model repo (or skip if no models).
+        const firstModel = adModels?.[0]
+        if (firstModel && typeof firstModel.url === 'string' && firstModel.url !== '') {
+          eligibleEntries++
+          const source = getSourceForEntry(firstModel.url, firstModel.source ?? firstModel.domain)
+          if (source) {
+            const repo = source.repoFromUrl(firstModel.url)
+            const defaultPath = source.normalizeFilePath?.(def.file) ?? def.file
+            const name = defaultPath.split('/').pop() ?? defaultPath
+            const url = source.resolveUrl(repo, defaultPath)
+            const size = await headSize(url)
+            entries.push({
+              id: `adetailer:${name}:${defaultPath}`,
+              type: 'adetailer' as ModelType,
+              diffusionType: 'adetailer',
+              name,
+              label: name,
+              url,
+              size,
+              quant: quantFromName(name),
+              repo,
+              provider: def.provider ?? firstModel.provider,
+              source: source.name,
+              isDefault: true
+            })
+            dispatchedEntries++
+          }
         }
       }
     }
@@ -827,8 +1315,15 @@ export function catalogSourceForUrl(url: string): string | undefined {
  * behind `catalogSourceForUrl` (the routing hint) and `catalogNameForUrl`
  * (the stored-filename override). One parse, two consumers, so the two
  * lookups can never disagree about WHICH entry a URL belongs to.
+ *
+ * `type` narrows the match to the requesting model type when given: hub.json
+ * sections can point DIFFERENT types at the SAME repo file (an encoder and a
+ * vision section sharing one mmproj GGUF URL), and a type-agnostic first
+ * match would hand a vision download the encoder row's family — mis-deriving
+ * the family-scoped destination and short-circuiting against whatever file
+ * the encoder row's family happens to hold.
  */
-function catalogEntryForUrl(url: string): CatalogEntry | undefined {
+function catalogEntryForUrl(url: string, type?: ModelType): CatalogEntry | undefined {
   const p = catalogPath()
   if (!existsSync(p)) return undefined
   let catalog: HubCatalog
@@ -837,7 +1332,7 @@ function catalogEntryForUrl(url: string): CatalogEntry | undefined {
   } catch {
     return undefined
   }
-  return catalog.entries?.find((e) => e.url === url)
+  return catalog.entries?.find((e) => e.url === url && (type === undefined || e.type === type))
 }
 
 /**
@@ -870,12 +1365,14 @@ export interface CatalogMeta {
   source?: string
   name?: string
   diffusionType?: string
+  /** the hub diffusion entry's `name` (e.g. comfy_org_boogu_image) */
+  hubName?: string
 }
 
-export function catalogMetaForUrl(url: string): CatalogMeta | undefined {
-  const e = catalogEntryForUrl(url)
+export function catalogMetaForUrl(url: string, type?: ModelType): CatalogMeta | undefined {
+  const e = catalogEntryForUrl(url, type)
   if (!e) return undefined
-  return { source: e.source, name: e.name, diffusionType: e.diffusionType }
+  return { source: e.source, name: e.name, diffusionType: e.diffusionType, hubName: e.hubName }
 }
 
 /**
@@ -982,6 +1479,150 @@ export function catalogBundleForUrl(url: string): CatalogEntry[] {
       x.diffusionType === clicked.diffusionType &&
       x.groupId === clicked.groupId
   )
+}
+
+/**
+ * One downloadable companion target composed from the FRESH hub config —
+ * the download URL, the stored file basename and the section's provider.
+ * This is the same URL composition buildCatalog's default-file synthesis
+ * uses, so a fresh catalog's rows and these targets are byte-identical —
+ * but the targets resolve even when the CACHED CATALOG is stale (the rows
+ * for a newly added companion family only exist after a rescan, while the
+ * fresh config is always current).
+ */
+export interface CompanionTarget {
+  type: ModelType
+  url: string
+  name: string
+  provider?: string
+  /** The CONFIGURED family these targets belong to (the `requires` item's
+   *  `from`) — the requester's own slot the download must land in. */
+  family: string
+}
+
+/**
+ * The download target(s) for ONE companion kind + family: the hub section's
+ * default file (every `defaults[]` file for an encoder bundle family), with
+ * the URL composed through the section's model source. The legacy plain-URL
+ * string form of `repo.vae` is honored (the URL IS the file — no source
+ * dispatch, the same permissive degradation buildCatalog's vae loop uses).
+ * Empty when the family declares no section, no usable URL, or no default
+ * file — never throws.
+ */
+export function companionTargetsFor(kind: CompanionKind, family: string): CompanionTarget[] {
+  const hubRepo = loadHubConfig().repo
+  // Every section entry shares the { url, provider?, source?, domain? } shape;
+  // `default` (all) and `defaults[]` (encoder only) select the files.
+  interface Section {
+    url?: unknown
+    provider?: unknown
+    source?: unknown
+    domain?: unknown
+    default?: unknown
+    defaults?: unknown
+  }
+  let sectionObj: Section | undefined
+  let legacyUrl: string | undefined
+  switch (kind) {
+    case 'vae': {
+      const v = hubRepo.vae?.[family]
+      if (typeof v === 'string') legacyUrl = v
+      else sectionObj = v as Section | undefined
+      break
+    }
+    case 'encoder':
+      sectionObj = hubRepo.encoder?.[family] as Section | undefined
+      break
+    case 'audio_encoder':
+      sectionObj = hubRepo.audio_encoder?.[family] as Section | undefined
+      break
+    case 'vision':
+      sectionObj = hubRepo.vision?.[family] as Section | undefined
+      break
+    case 'tokenizer':
+      sectionObj = hubRepo.tokenizer?.[family] as Section | undefined
+      break
+    case 'audio_vae':
+      sectionObj = hubRepo.audio_vae?.[family] as Section | undefined
+      break
+    case 'latent_upscaler':
+      sectionObj = hubRepo.latent_upscaler?.[family] as Section | undefined
+      break
+  }
+  if (legacyUrl !== undefined) {
+    return [{ type: kind, url: legacyUrl, name: legacyUrl.split('/').pop() ?? legacyUrl, family }]
+  }
+  const so = sectionObj
+  const url = typeof so?.url === 'string' && so.url !== '' ? so.url : undefined
+  if (!url || !so) return []
+  const provider = typeof so.provider === 'string' ? so.provider : undefined
+  const sourceName = typeof so.source === 'string' ? so.source : undefined
+  const domain = typeof so.domain === 'string' ? so.domain : undefined
+  const defaultsArr = Array.isArray(so.defaults) ? (so.defaults as { file?: unknown }[]) : undefined
+  const files: string[] =
+    kind === 'encoder' && defaultsArr !== undefined && defaultsArr.length > 0
+      ? defaultsArr.map((d) => (typeof d?.file === 'string' ? d.file : '')).filter((f) => f !== '')
+      : typeof so.default === 'string' && so.default !== ''
+        ? [so.default]
+        : []
+  if (files.length === 0) return []
+  const source = getSourceForEntry(url, sourceName ?? domain)
+  if (!source) {
+    console.warn(
+      `[hub] companion section "${kind}/${family}" (${url}): no model source for this URL's host — skipping`
+    )
+    return []
+  }
+  const slug = source.repoFromUrl(url)
+  const out: CompanionTarget[] = []
+  for (const f of files) {
+    const p = source.normalizeFilePath?.(f) ?? f
+    out.push({
+      type: kind,
+      url: source.resolveUrl(slug, p),
+      name: p.split('/').pop() ?? p,
+      family,
+      ...(provider !== undefined ? { provider } : {})
+    })
+  }
+  return out
+}
+
+/**
+ * The `requires` companion download targets for a diffusion type — EVERY
+ * file the entry's `requires` block declares (all kinds, scalar-or-array),
+ * deduped by URL. Read entirely from the FRESH hub config, so the download
+ * fan-out in models.ts's `downloadViaSource` works even while the cached
+ * catalog is stale (a catalog-rows lookup would degrade to nothing exactly
+ * when the companions are new). Consumed by models.ts.
+ */
+export function requiresCompanionTargets(diffusionType: string, hubName?: string): CompanionTarget[] {
+  const pool = loadHubConfig().repo.diffusion
+  // A family may map to SEVERAL hub entries (multiple providers); the hub
+  // entry `name` pins the exact entry when present, falling back to the first
+  // family match (the pre-hubName behavior).
+  const entry =
+    (hubName ? pool.find((d) => d.family === diffusionType && d.name === hubName) : undefined) ??
+    pool.find((d) => d.family === diffusionType)
+  const r = entry?.requires
+  if (!r || typeof r !== 'object') return []
+  const out: CompanionTarget[] = []
+  const seen = new Set<string>()
+  for (const kind of COMPANION_KINDS) {
+    const raw = r[kind]
+    if (!raw) continue
+    const items = (Array.isArray(raw) ? raw : [raw]) as { from?: unknown }[]
+    for (const item of items) {
+      const from = typeof item.from === 'string' && item.from !== '' ? item.from : undefined
+      if (!from) continue
+      for (const t of companionTargetsFor(kind, from)) {
+        if (seen.has(t.url)) continue
+        seen.add(t.url)
+        out.push(t)
+      }
+    }
+  }
+  return out
 }
 
 /**

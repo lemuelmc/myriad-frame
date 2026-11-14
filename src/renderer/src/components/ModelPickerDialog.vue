@@ -111,7 +111,7 @@ function baseName(name: string): string {
 
 /**
  * Access badge for the row's diffusion family, from the FRESH hub config
- * (`diffusion_models[].access` via accessForFamily()): 'Auth' when downloads
+ * (`model_families[].access` via accessForFamily()): 'Auth' when downloads
  * need an API token, 'Gated' when a token AND accepting the terms/license on
  * the model page are required, null when freely downloadable. Rendered in
  * the same accent style as the CivitAI source badge — which is suppressed

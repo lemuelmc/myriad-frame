@@ -25,10 +25,10 @@
     </a>
     <div class="links" id="nav-links">
       <a class="hide-sm" href="#features">Features</a>
-      <a class="hide-sm" href="#models">Models</a>
-      <a class="hide-sm" href="#how">How it works</a>
       <a class="hide-sm" href="#video">Video Demo</a>
       <a class="hide-sm" href="#screenshots">Screenshots</a>
+      <a class="hide-sm" href="#models">Models</a>
+      <a class="hide-sm" href="#how">How it works</a>
       <a class="hide-sm" href="#install">Install</a>
       <a class="btn-gh" href="https://github.com/lemuelmc/myriad-frame" rel="noopener" target="_blank" aria-label="GitHub repository">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.37.5 0 5.87 0 12.5c0 5.3 3.44 9.8 8.21 11.39.6.11.82-.26.82-.58v-2.02c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.5.99.1-.78.42-1.3.76-1.6-2.67-.3-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.11-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6.01 0c2.29-1.55 3.3-1.23 3.3-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.6-2.81 5.62-5.49 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.22.7.83.58A12 12 0 0 0 24 12.5C24 5.87 18.63.5 12 .5z"/></svg>
@@ -105,6 +105,21 @@
           <p>Paint a mask over an image to regenerate regions, or expand the frame outward — all with an in-canvas editor, no external image tools required.</p>
         </div>
         <div class="card reveal">
+          <div class="icon">🔍</div>
+          <h3>Image upscaler</h3>
+          <p>Enlarge any output with a local ESRGAN model. A fullscreen before/after compare and tile-based processing for large images, saved as a new PNG.</p>
+        </div>
+        <div class="card reveal">
+          <div class="icon">🎯</div>
+          <h3>ADetailer repair pass</h3>
+          <p>Automatically repair faces and hands. A YOLOv8 detector scans each output and repaints detected regions — no manual masking, with per-session model and options.</p>
+        </div>
+        <div class="card reveal">
+          <div class="icon">🕸️</div>
+          <h3>Control Net</h3>
+          <p>Guide generation from a control image — pose, depth, canny, lineart and more. Per-session strength, works alongside references and image input.</p>
+        </div>
+        <div class="card reveal">
           <div class="icon">🔌</div>
           <h3>LoRA support</h3>
           <p>Browse, download, and apply LoRA adapters per generation with a management UI and per-session apply mode.</p>
@@ -128,19 +143,77 @@
     </div>
   </section>
 
+  <!-- Video -->
+  <section id="video">
+    <div class="wrap">
+      <div class="center">
+        <span class="eyebrow">Video demo</span>
+        <h2>Inpainting workflow</h2>
+        <p class="lead">Paint a mask over an image and regenerate the masked region — no external editors.</p>
+      </div>
+      <div class="video-wrap reveal">
+        <video controls preload="metadata">
+          <source src="assets/inpainting-20261101.mp4" type="video/mp4" />
+          Your browser does not support the video tag.
+        </video>
+      </div>
+    </div>
+  </section>
+
+  <!-- Screenshots -->
+  <section id="screenshots">
+    <div class="wrap">
+      <div class="center">
+        <span class="eyebrow">Screenshots</span>
+        <h2>Take a look</h2>
+        <p class="lead">A focused, dark-first workspace built for model-heavy workflows.</p>
+      </div>
+      <div class="coverflow" role="region" aria-label="Screenshots gallery" aria-roledescription="carousel">
+        <div class="coverflow-stage">
+          <div class="coverflow-track" id="coverflow-track">
+            <figure class="cf-item reveal" data-index="0"><img src="assets/improved_model_selector.png" alt="Model picker dialog" loading="lazy" /><figcaption>Model picker</figcaption></figure>
+            <figure class="cf-item reveal" data-index="1"><img src="assets/improved_model_management.png" alt="Model management dialog" loading="lazy" /><figcaption>Model management</figcaption></figure>
+            <figure class="cf-item reveal" data-index="2"><img src="assets/improved_sampling_settings.png" alt="Improved sampling settings" loading="lazy" /><figcaption>Improved sampling settings</figcaption></figure>
+            <figure class="cf-item reveal" data-index="3"><img src="assets/negative_override.png" alt="Negative prompt override" loading="lazy" /><figcaption>Negative prompt override</figcaption></figure>
+            <figure class="cf-item reveal" data-index="4"><img src="assets/appearance_settings.png" alt="Appearance settings" loading="lazy" /><figcaption>Appearance settings</figcaption></figure>
+            <figure class="cf-item reveal" data-index="5"><img src="assets/unified_resolution_selector.png" alt="Unified resolution selector" loading="lazy" /><figcaption>Resolution selector</figcaption></figure>
+            <figure class="cf-item reveal" data-index="6"><img src="assets/qwen_image_2_1_gen.png" alt="Qwen Image 2.1 generation" loading="lazy" /><figcaption>Qwen Image 2.1 — generation</figcaption></figure>
+            <figure class="cf-item reveal" data-index="7"><img src="assets/qwen_image_2_1_edit.png" alt="Qwen Image 2.1 editing" loading="lazy" /><figcaption>Qwen Image 2.1 — editing</figcaption></figure>
+            <figure class="cf-item reveal" data-index="8"><img src="assets/krea_2.png" alt="Krea 2 Turbo generation" loading="lazy" /><figcaption>Krea 2 — generation</figcaption></figure>
+            <figure class="cf-item reveal" data-index="9"><img src="assets/crop_and_resize_1.png" alt="Resize and crop editor — crop only" loading="lazy" /><figcaption>Resize & crop — crop only</figcaption></figure>
+            <figure class="cf-item reveal" data-index="10"><img src="assets/crop_and_resize_2.png" alt="Resize and crop editor — custom size" loading="lazy" /><figcaption>Resize & crop — custom size</figcaption></figure>
+            <figure class="cf-item reveal" data-index="11"><img src="assets/improved_chat_session.png" alt="Chat session with generated image" loading="lazy" /><figcaption>Chat session</figcaption></figure>
+            <figure class="cf-item reveal" data-index="12"><img src="assets/sampling_override.png" alt="Session sampling override dialog" loading="lazy" /><figcaption>Session sampling override</figcaption></figure>
+            <figure class="cf-item reveal" data-index="13"><img src="assets/performance_settings.png" alt="Performance settings" loading="lazy" /><figcaption>Performance settings</figcaption></figure>
+            <figure class="cf-item reveal" data-index="14"><img src="assets/upscaler_in_action.png" alt="Image upscale dialog" loading="lazy" /><figcaption>Image upscaler</figcaption></figure>
+            <figure class="cf-item reveal" data-index="15"><img src="assets/control_net_settings.png" alt="Control Net dialog" loading="lazy" /><figcaption>Control Net</figcaption></figure>
+            <figure class="cf-item reveal" data-index="16"><img src="assets/control_net_test.png" alt="Control Net generation result" loading="lazy" /><figcaption>Control Net — result</figcaption></figure>
+            <figure class="cf-item reveal" data-index="17"><img src="assets/ip_adapter_settings.png" alt="IP Adapter dialog" loading="lazy" /><figcaption>IP Adapter</figcaption></figure>
+            <figure class="cf-item reveal" data-index="18"><img src="assets/adetailer_support.png" alt="ADetailer dialog" loading="lazy" /><figcaption>ADetailer</figcaption></figure>
+          </div>
+        </div>
+        <div class="coverflow-controls">
+          <button class="cf-nav" type="button" aria-label="Previous screenshot" data-dir="-1">‹</button>
+          <div class="cf-dots" id="cf-dots" role="tablist" aria-label="Screenshot list"></div>
+          <button class="cf-nav" type="button" aria-label="Next screenshot" data-dir="1">›</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- Model families -->
   <section id="models">
     <div class="wrap">
       <div class="center">
         <span class="eyebrow">Model families</span>
-        <h2>Fourteen model families, one catalog</h2>
+        <h2>Twenty-five model families, one catalog</h2>
         <p class="lead">From Flux and SDXL to WAN and LTX — every family ships as quantized GGUF weights with its own VAE and text encoder(s), browsable and downloadable without leaving the app.</p>
       </div>
       <div class="fam-groups">
         <div class="fam-group reveal">
           <div class="fam-group-head">
             <h3>Image models</h3>
-            <span class="fam-count">12 families</span>
+            <span class="fam-count">21 families</span>
           </div>
           <div class="fam-grid">
             <div class="fam">
@@ -148,6 +221,12 @@
               <h4>Qwen Image 2.1</h4>
               <p>Alibaba's unified text-to-image and editing model — up to 7 reference images, image-to-image, and flow-shift control.</p>
               <div class="fam-tags"><span class="fam-tag">References ×7</span><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Unified</span>
+              <h4>HiDream O1</h4>
+              <p>Alibaba's HiDream O1 unified text-and-image model for generation and editing in a single checkpoint.</p>
+              <div class="fam-tags"><span class="fam-tag">References</span><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
             </div>
             <div class="fam">
               <span class="fam-type">Text to image</span>
@@ -172,6 +251,12 @@
               <h4>SDXL-1.0</h4>
               <p>The classic SDXL checkpoint, loaded all-in-one with its VAE baked in.</p>
               <div class="fam-tags"><span class="fam-tag">All-in-one</span><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Text to image</span>
+              <h4>SD1.5</h4>
+              <p>The versatile Stable Diffusion 1.5 checkpoint with a large ecosystem of community finetunes and LoRAs.</p>
+              <div class="fam-tags"><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
             </div>
             <div class="fam">
               <span class="fam-type">Text to image</span>
@@ -211,6 +296,48 @@
             </div>
             <div class="fam">
               <span class="fam-type">Text to image</span>
+              <h4>Ideogram 4</h4>
+              <p>Ideogram 4 with a FLUX.2 VAE and Qwen3-VL 8B encoder — strong text-in-image rendering.</p>
+              <div class="fam-tags"><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Text to image</span>
+              <h4>Iris 3B</h4>
+              <p>Sperid Labs' compact pixel-space flow-matching model with a Krea 2 encoder.</p>
+              <div class="fam-tags"><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Text to image</span>
+              <h4>Ming Image</h4>
+              <p>Comfy-Org's Ming Image model with a dedicated text encoder and tokenizer.</p>
+              <div class="fam-tags"><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Text to image</span>
+              <h4>ERNIE Image</h4>
+              <p>Alibaba's ERNIE Image model, quantized by Unsloth, paired with a Mistral text encoder.</p>
+              <div class="fam-tags"><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Text to image</span>
+              <h4>Chroma</h4>
+              <p>Chroma unlocked — a detail-calibrated GGUF built on a FLUX VAE and text encoder.</p>
+              <div class="fam-tags"><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Text to image</span>
+              <h4>Boogu Image</h4>
+              <p>Boogu Image — a FLUX.2-based model with a Qwen3-VL 8B vision encoder for prompt-aware editing.</p>
+              <div class="fam-tags"><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Text to image</span>
+              <h4>Fibo 2.0</h4>
+              <p>Fibo 2.0 — a FLUX.2-based model with a Qwen3-VL 4B vision encoder and an mmproj for editing.</p>
+              <div class="fam-tags"><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type">Text to image</span>
               <h4>Moss Image</h4>
               <p>OpenMOSS's MOSS-Image model with a dedicated tokenizer.</p>
               <div class="fam-tags"><span class="fam-tag">Inpaint</span><span class="fam-tag">Paint</span></div>
@@ -220,7 +347,7 @@
         <div class="fam-group reveal">
           <div class="fam-group-head">
             <h3>Video models</h3>
-            <span class="fam-count">2 families</span>
+            <span class="fam-count">5 families</span>
           </div>
           <div class="fam-grid">
             <div class="fam">
@@ -229,11 +356,29 @@
               <p>MoE high/low-noise expert pairs across text-to-video, image-to-video, VACE video-to-video with control video, and audio-driven S2V.</p>
               <div class="fam-tags"><span class="fam-tag">T2V</span><span class="fam-tag">I2V</span><span class="fam-tag">VACE</span><span class="fam-tag">S2V</span></div>
             </div>
+            <!-- <div class="fam">
+              <span class="fam-type video">Video suite</span>
+              <h4>WAN2.1</h4>
+              <p>The original Wan video model — text-to-video and image-to-video with a dedicated VAE and text encoder.</p>
+              <div class="fam-tags"><span class="fam-tag">T2V</span><span class="fam-tag">I2V</span></div>
+            </div> -->
             <div class="fam">
               <span class="fam-type video">Text/image to video</span>
               <h4>LTX 2.5</h4>
               <p>Lightricks LTX-2.5 with a native audio track and a 2× spatial latent upscaler for hires fixes.</p>
               <div class="fam-tags"><span class="fam-tag">Audio</span><span class="fam-tag">I2V</span><span class="fam-tag">Hires fix</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type video">Text to video</span>
+              <h4>Hunyuan Video 1.5</h4>
+              <p>Alibaba's Hunyuan Video 1.5 with a Qwen2.5-VL and T5 text encoder stack.</p>
+              <div class="fam-tags"><span class="fam-tag">T2V</span></div>
+            </div>
+            <div class="fam">
+              <span class="fam-type video">Video suite</span>
+              <h4>MiniMax-H3</h4>
+              <p>MiniMax-H3 — a text-to-video model with stereo audio and a multi-component weight stack.</p>
+              <div class="fam-tags"><span class="fam-tag">T2V</span><span class="fam-tag">Audio</span></div>
             </div>
           </div>
         </div>
@@ -275,48 +420,6 @@
           <p>Click any output to open a fullscreen lightbox. Regenerate, edit, or save.</p>
         </div>
       </div>
-    </div>
-  </section>
-
-  <!-- Video -->
-  <section id="video">
-    <div class="wrap">
-      <div class="center">
-        <span class="eyebrow">Video demo</span>
-        <h2>Inpainting workflow</h2>
-        <p class="lead">Paint a mask over an image and regenerate the masked region — no external editors.</p>
-      </div>
-      <div class="video-wrap reveal">
-        <video controls preload="metadata">
-          <source src="assets/inpainting-20261101.mp4" type="video/mp4" />
-          Your browser does not support the video tag.
-        </video>
-      </div>
-    </div>
-  </section>
-
-  <!-- Screenshots -->
-  <section id="screenshots">
-    <div class="wrap">
-      <div class="center">
-        <span class="eyebrow">Screenshots</span>
-        <h2>Take a look</h2>
-        <p class="lead">A focused, dark-first workspace built for model-heavy workflows.</p>
-      </div>
-      <div class="gallery">
-        <figure class="reveal"><img src="assets/improved_model_selector.png" alt="Model picker dialog" loading="lazy" /><figcaption>Model picker</figcaption></figure>
-        <figure class="reveal"><img src="assets/improved_model_management.png" alt="Model management dialog" loading="lazy" /><figcaption>Model management</figcaption></figure>
-        <figure class="reveal"><img src="assets/sampling_settings.png" alt="Sampling settings" loading="lazy" /><figcaption>Sampling settings</figcaption></figure>
-        <figure class="reveal"><img src="assets/improved_sampling_settings.png" alt="Improved sampling settings" loading="lazy" /><figcaption>Improved sampling settings</figcaption></figure>
-        <figure class="reveal"><img src="assets/negative_override.png" alt="Negative prompt override" loading="lazy" /><figcaption>Negative prompt override</figcaption></figure>
-        <figure class="reveal"><img src="assets/appearance_settings.png" alt="Appearance settings" loading="lazy" /><figcaption>Appearance settings</figcaption></figure>
-        <figure class="reveal"><img src="assets/unified_resolution_selector.png" alt="Unified resolution selector" loading="lazy" /><figcaption>Resolution selector</figcaption></figure>
-        <figure class="reveal"><img src="assets/qwen_image_2_1_gen.png" alt="Qwen Image 2.1 generation" loading="lazy" /><figcaption>Qwen Image 2.1 — generation</figcaption></figure>
-        <figure class="reveal"><img src="assets/qwen_image_2_1_edit.png" alt="Qwen Image 2.1 editing" loading="lazy" /><figcaption>Qwen Image 2.1 — editing</figcaption></figure>
-        <figure class="reveal"><img src="assets/krea_2.png" alt="Krea 2 Turbo generation" loading="lazy" /><figcaption>Krea 2 — generation</figcaption></figure>
-        <figure class="reveal"><img src="assets/crop_and_resize_1.png" alt="Resize and crop editor — crop only" loading="lazy" /><figcaption>Resize & crop — crop only</figcaption></figure>
-        <figure class="reveal"><img src="assets/crop_and_resize_2.png" alt="Resize and crop editor — custom size" loading="lazy" /><figcaption>Resize & crop — custom size</figcaption></figure>
-       </div>
     </div>
   </section>
 
@@ -427,6 +530,6 @@ npm run build</pre>
     </div>
   </footer>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=2"></script>
 </body>
 </html>

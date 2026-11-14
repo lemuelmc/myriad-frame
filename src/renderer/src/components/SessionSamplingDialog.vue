@@ -14,6 +14,7 @@ import {
   applySamplingOverrides,
   isValidSeed
 } from '@shared/types'
+import { FALLBACK_SAMPLING } from '@shared/types'
 import type { SamplingDefaults, SessionSamplingOverride } from '@shared/types'
 import { useAppStore } from '../stores/app'
 import { useSettingsStore } from '../stores/settings'
@@ -32,16 +33,25 @@ const diffusionType = computed(() => appStore.configs?.sampling ? Object.keys(ap
 // settings per-type overrides, then the session override — all through the
 // shared flat-scalar-into-descriptor merge.
 const merged = computed<SamplingDefaults | null>(() => {
-  const dt = sessionsStore.active?.inputs?.diffusionType ?? diffusionType.value
-  const base = appStore.configs?.sampling[dt]
-  if (!base) return null
+  // The saved family (the NEW `family` key) wins; the legacy `diffusionType`
+  // key and then the live composer selection follow.
+  const dt =
+    sessionsStore.active?.inputs?.family ??
+    sessionsStore.active?.inputs?.diffusionType ??
+    diffusionType.value
+  // Complete the configured entry over the shared fallback — an entry may
+  // predate a descriptor key (boogu_image lacks `control_video`) and the
+  // dialog's row gates read the descriptors directly.
+  const cfg = appStore.configs
+  if (!cfg) return null
+  const base = { ...FALLBACK_SAMPLING, ...(cfg.sampling[dt] ?? {}) }
   const global = settingsStore.samplingFor(dt, base)
   return applySamplingOverrides(global, sessionsStore.active?.inputs?.sampling)
 })
 
 // Row visibility: the descriptor's `show` flag gates the session-override row
 // (defaults still apply even when the row is hidden).
-const show = (key: 'steps' | 'high_steps' | 'cfg' | 'high_cfg' | 'strength' | 'sampler' | 'high_sampler' | 'scheduler' | 'flow_shift' | 'frames' | 'frame_rate' | 'upscale' | 'upscaler_steps'): boolean =>
+const show = (key: 'steps' | 'high_steps' | 'cfg' | 'high_cfg' | 'strength' | 'sampler' | 'high_sampler' | 'scheduler' | 'flow_shift' | 'frames' | 'frame_rate' | 'upscale' | 'upscaler_steps' | 'model_args'): boolean =>
   merged.value?.[key]?.show ?? true
 
 const draft = reactive<SessionSamplingOverride>({
@@ -58,7 +68,9 @@ const draft = reactive<SessionSamplingOverride>({
   frame_rate: null,
   seed: null,
   upscale: false,
-  upscaler_steps: null
+  upscaler_steps: null,
+  modelArgs: '',
+  args: ''
 })
 
 // ---------- seed ----------
@@ -110,6 +122,12 @@ function save(): void {
   out.upscaler_steps = nz(draft.upscaler_steps)
   out.sampler = draft.sampler || null
   out.high_sampler = draft.high_sampler || null
+  // Model args: '' / null ⇒ no flag (the session stores null and main omits
+  // --model-args at spawn); a non-empty trimmed string is preserved.
+  out.modelArgs = (draft.modelArgs?.trim() || null)
+  // Universal args: '' / null ⇒ nothing appended at spawn; a non-empty
+  // trimmed string is preserved (main splits it into tokens).
+  out.args = (draft.args?.trim() || null)
   const s = out.seed
   if (typeof s === 'number' && Number.isFinite(s) && s >= 0) {
     // Clamp positives into sd-cli's 32-bit range rather than discarding the
@@ -165,6 +183,12 @@ onMounted(async () => {
     // omitted).
     draft.upscale = m.upscale?.default ?? false
     draft.upscaler_steps = m.upscaler_steps?.default ?? null
+    // Model args: the merged descriptor default (a concrete string or null);
+    // null ⇒ an empty field (empty = explicit "none": no --model-args flag).
+    draft.modelArgs = m.model_args?.default ?? ''
+    // Universal args: session-only (never a sampling.json field) — prefill
+    // from the saved session override; absent ⇒ an empty field.
+    draft.args = sessionsStore.active?.inputs?.sampling?.args ?? ''
     // Seed is session-only (never a sampling.json field): a valid stored
     // integer prefills fixed; anything else is random. Assign draft.seed and
     // lastFixed BEFORE the seedMode assignment — Vue watchers flush
@@ -265,6 +289,11 @@ function reset(): void {
           <input v-model.number="draft.upscaler_steps" type="number" min="0" step="1" placeholder="(reuse steps)" />
         </label>
         <p v-if="show('upscaler_steps')" class="faint">Upscaler steps: empty or 0 = reuse the main steps count for the refine pass.</p>
+        <label v-if="show('model_args')" class="kv-row">
+          <span>Model Args</span>
+          <input v-model="draft.modelArgs" type="text" placeholder="(none)" />
+        </label>
+        <p v-if="show('model_args')" class="faint">Model args: free-form key=value list passed as --model-args (e.g. chroma_use_dit_mask). Empty = no flag.</p>
         <label class="kv-row">
           <span>Seed</span>
           <input
@@ -289,6 +318,14 @@ function reset(): void {
           >🎲</button>
         </label>
         <p class="faint">Seed: random = a new seed every generation; fixed = reuse this seed (dice rerolls it).</p>
+        <!-- Universal args — the very last row: a free-form sd-cli CLI string
+             appended after every app-emitted flag (user args win on
+             duplicates), for flags the UI does not expose yet. -->
+        <label class="kv-row">
+          <span>Args</span>
+          <input v-model="draft.args" type="text" placeholder="(none)" />
+        </label>
+        <p class="faint">Args: free-form sd-cli arguments appended to every generation (e.g. --flow-match on --cfg-rescale 0.7). Empty = none.</p>
       </div>
 
       <footer class="dialog-footer">

@@ -1,6 +1,6 @@
 {
   "name": "myriad_frame",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Myriad Frame - an Electron front-end for sd-cli (stable-diffusion.cpp)",
   "main": "./out/main/index.js",
   "author": "Myriad Frame",
@@ -38,6 +38,8 @@
     "vue-tsc": "^2.1.10"
   },
   "allowScripts": {
-    "electron@33.4.11": true
+    "electron@33.4.11": true,
+    "esbuild@0.21.5": true,
+    "vue-demi@0.14.10": true
   }
 }

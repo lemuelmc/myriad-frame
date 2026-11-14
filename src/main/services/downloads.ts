@@ -183,12 +183,12 @@ function modelDestDir(type: ModelType, provider: string, diffusionType?: string)
   // (SD3.5 vs Flux clip_l, SDXL vs Z-Image jrd_2212) can never share or
   // overwrite one on-disk file. `lora` is exempt IN CODE, not just in prose
   // (§2.2): one LoRA URL serves several diffusion types (the catalog expands
-  // one entry per `diffustion_types` member), so nesting per family would
+  // one entry per `families` member), so nesting per family would
   // fork the join-by-URL into re-download loops — LoRA keeps
   // lora/<provider>/<name>. An unknown family (catalog miss) degrades to the
   // legacy provider-level dest; the resolution chain keeps such files
   // reachable and the next catalog rebuild + re-download heals placement.
-  if (diffusionType !== undefined && diffusionType.trim() !== '' && type !== 'lora') {
+  if (diffusionType !== undefined && diffusionType.trim() !== '' && type !== 'lora' && type !== 'ip_adapter' && type !== 'clip_vision' && type !== 'control_net') {
     return join(dataRoot(), 'models', type, diffusionType, provider)
   }
   return join(dataRoot(), 'models', type, provider)

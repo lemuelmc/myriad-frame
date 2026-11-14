@@ -37,7 +37,7 @@ const hubProviders = computed(() => appStore.configs?.hub.providers ?? [])
 
 // ---------- diffusion-type filter ----------
 // Distinct diffusion types that have lora entries in the catalog. An entry
-// appears under EVERY type in its hub.json `diffustion_types` (the catalog
+// appears under EVERY type in its hub.json `families` (the catalog
 // loop expands one row per member), so filtering by the selected type is an
 // exact per-type list.
 const loraTypes = computed(() =>
@@ -164,6 +164,9 @@ onMounted(async () => {
       </button>
     </div>
     <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p>
+    <div v-if="appStore.catalogScanning" class="progress indeterminate">
+      <div class="progress-fill"></div>
+    </div>
 
     <label class="muted type-label">Diffusion type</label>
     <select v-model="selectedType" title="Filter LoRAs by diffusion type">

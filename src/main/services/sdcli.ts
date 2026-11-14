@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
 import type { GenerationRequest, LoraApplyMode, PerformanceSettings } from '@shared/types'
 import { isValidSeed } from '@shared/types'
+import { createSettingsService } from './settings'
 
 export interface SdCliPaths {
   model: string
@@ -24,22 +25,24 @@ export interface SdCliPaths {
    * flags (a single-expert model never gets stray high-noise flags).
    */
   highNoiseModel?: string
-  vae?: string
-  encoder?: string
-  /** encoder bundle (SD3.5-style): each file + the CLI flag it is passed under */
-  encoders?: { path: string; useAs: string }[]
-  vision?: string
-  /** tokenizer file (e.g. tokenizer.json) — emitted as `--tokenizer` when set */
-  tokenizer?: string
-  /** wav2vec2 audio encoder — emitted as `--audio-encoder` (Wan2.2 S2V) */
-  audioEncoder?: string
-  /** LTX audio VAE — emitted as `--audio-vae` (LTX 2.5 audio track) */
-  audioVae?: string
-  /** ABSOLUTE path of the resolved latent-upscaler model file (LTX 2.5 hires
-   *  fix). buildArgs derives `--hires-upscalers-dir` (dirname) and
+  /**
+   * Companion model paths, each as `{ path, useAs }[]` where `useAs` names
+   * the CLI flag the file is passed under at spawn (e.g. 'vae' → `--vae`,
+   * 'llm' → `--llm`, 't5xxl' → `--t5xxl`). One item per companion file;
+   * gen:start resolves the array from the hub `requires` block (or the
+   * request) and buildArgs emits one flag per item.
+   */
+  vae?: { path: string; useAs: string }[]
+  encoder?: { path: string; useAs: string }[]
+  audioEncoder?: { path: string; useAs: string }[]
+  vision?: { path: string; useAs: string }[]
+  tokenizer?: { path: string; useAs: string }[]
+  audioVae?: { path: string; useAs: string }[]
+  /** ABSOLUTE paths of the resolved latent-upscaler model files (LTX 2.5
+   *  hires fix). buildArgs derives `--hires-upscalers-dir` (dirname) and
    *  `--hires-upscaler` (basename minus extension — man.txt:167 wants a
-   *  NAME, no path, no extension) from it. */
-  latentUpscaler?: string
+   *  NAME, no path, no extension) from each. */
+  latentUpscaler?: { path: string; useAs: string }[]
   /** init image — emitted as `--init-img` when set; sourced from the
    *  input-image channel or the previous image chained "As input"
    *  (see gen:start) */
@@ -55,8 +58,33 @@ export interface SdCliPaths {
    * merge.
    */
   lora?: { dir: string; mode: Exclude<LoraApplyMode, 'off'> }
-  references: string[]
-  output: string
+ /**
+  * ADetailer (YOLOv8 object detector) settings resolved from the session by
+  * gen:start and emitted as --ad-model / --ad-prompt / --ad-negative-prompt
+  * / --extra-ad-args. `undefined` disables the pass entirely; an object with
+  * an empty `model` string is never produced by gen:start.
+  */
+ adetailer?: {
+   model: string
+   options: Record<string, number | string>
+   adPrompt?: string
+   adNegativePrompt?: string
+ }
+ /** Per-session IP-Adapter config; omitted when the session's apply switch is off */
+ ipAdapter?: {
+   clipVision: string
+   model: string
+   image: string
+   strength?: number
+ }
+ /** Per-session Control Net config; omitted when the session's apply switch is off */
+ controlNet?: {
+   model: string
+   image: string
+   strength?: number
+ }
+ references: string[]
+ output: string
 }
 
 /**
@@ -67,10 +95,10 @@ export interface SdCliPaths {
  * .cached/docs/sd-cli/ltx2.md):
  * the diffusion weights go to `--diffusion-model` (or to `--model` when the
  * diffusion type is `all_in_one` — a full checkpoint that already contains
- * conditioners and VAE, so the standalone `--vae` override is skipped), the
- * text encoder to
- * `--llm` (single-file) or to one `--<use_as>` flag per bundle file
- *  (SD3.5-style multi-encoder: `--clip_g`, `--clip_l`, `--t5xxl`), the vision
+ * conditioners and VAE, so the standalone `--vae` override is skipped), and
+ * every companion file to one `--<use_as>` flag per resolved item (the flag
+ * name flows from hub.json `use_as` / the kind default — `--vae`, `--llm`,
+ * SD3.5-style multi-encoder `--clip_g`/`--clip_l`/`--t5xxl`), the vision
  *  (mmproj) model to `--llm_vision` (this build has no `--mmproj` flag), the
  *  tokenizer file to `--tokenizer` (when the diffusion type declares one),
  *  the wav2vec2 audio encoder to `--audio-encoder` (Wan2.2 S2V), the LTX
@@ -181,39 +209,37 @@ export function buildArgs(req: GenerationRequest, p: SdCliPaths): string[] {
   // Negative prompt — emitted only when non-empty (sd-cli default is "").
   const neg = req.negativePrompt?.trim()
   if (neg) args.push('--negative-prompt', quotePrompt(neg))
-  // Standalone VAE override — skipped for 'all_in_one' types: a full
-  // checkpoint carries its own VAE inside the file.
-  if (p.vae && p.modelBehavior !== 'all_in_one') args.push('--vae', p.vae)
-  // Encoder bundle: each file under its own `--<useAs>` flag (the flag name
-  // flows from hub.json `use_as`; sanitize by trimming and stripping leading
-  // dashes, skipping empty results). XOR guard — when a bundle is present the
-  // legacy single `--llm` emission is skipped, so a malformed request can
-  // never emit both.
-  if (p.encoders && p.encoders.length > 0) {
-    for (const enc of p.encoders) {
-      const flag = enc.useAs.trim().replace(/^-+/, '')
+  // Arbitrary model args — free-form key=value list (`--model-args`); empty/
+  // omitted ⇒ no flag (sd-cli default).
+  const modelArgs = req.modelArgs?.trim()
+  if (modelArgs) args.push('--model-args', modelArgs)
+  // Unified companion emission — one `--<useAs> <path>` per item of every
+  // companion array (the flag name flows from the resolution site: hub.json
+  // `use_as` / the kind default; sanitized by trimming and stripping leading
+  // dashes, skipping empty results). VAE is skipped for 'all_in_one' types: a
+  // full checkpoint carries its own VAE inside the file. The legacy
+  // single-`--llm` / bundle XOR guard is dissolved by the unified shape —
+  // gen:start emits exactly one array per companion kind.
+  const companions: {
+    key: 'vae' | 'encoder' | 'audioEncoder' | 'vision' | 'tokenizer' | 'audioVae'
+    items?: { path: string; useAs: string }[]
+  }[] = [
+    { key: 'vae', items: p.vae },
+    { key: 'encoder', items: p.encoder },
+    { key: 'audioEncoder', items: p.audioEncoder },
+    { key: 'vision', items: p.vision },
+    { key: 'tokenizer', items: p.tokenizer },
+    { key: 'audioVae', items: p.audioVae }
+  ]
+  for (const c of companions) {
+    if (!c.items || c.items.length === 0) continue
+    if (c.key === 'vae' && p.modelBehavior === 'all_in_one') continue
+    for (const item of c.items) {
+      const flag = item.useAs.trim().replace(/^-+/, '')
       if (!flag) continue
-      args.push(`--${flag}`, enc.path)
+      args.push(`--${flag}`, item.path)
     }
-  } else if (p.encoder) {
-    args.push('--llm', p.encoder)
   }
-  // Vision (mmproj) model — the projection model that bridges the diffusion
-  // transformer to the text encoder. Only emitted when the diffusion_type
-  // declares a `vision` dependency in hub.json. Note: this sd-cli build
-  // exposes it as `--llm_vision` (there is no `--mmproj` flag).
-  if (p.vision) args.push('--llm_vision', p.vision)
-  // Tokenizer — emitted only when the diffusion type declares a tokenizer
-  // dependency in hub.json (single tokenizer.json path form; the
-  // comma-separated assignment form is not used by the app).
-  if (p.tokenizer) args.push('--tokenizer', p.tokenizer)
-  // Audio encoder — emitted only when the diffusion type resolves one
-  // (Wan2.2 S2V's wav2vec2).
-  if (p.audioEncoder) args.push('--audio-encoder', p.audioEncoder)
-  // Audio VAE — emitted only when the diffusion type resolves one (LTX 2.5
-  // generates video WITH an audio track; man.txt:55 "path to standalone LTX
-  // audio vae model").
-  if (p.audioVae) args.push('--audio-vae', p.audioVae)
   // LoRA — emitted only when the session enabled it. 'off' (or absent) emits
   // NEITHER flag, so sd-cli's own defaults apply untouched. LoRA SELECTION is
   // prompt-driven: the user's prompt carries <lora:filename:weight> tags that
@@ -241,6 +267,12 @@ export function buildArgs(req: GenerationRequest, p: SdCliPaths): string[] {
   if (req.endImagePath) args.push('--end-img', req.endImagePath)
   if (req.audioPath) args.push('--audio', req.audioPath)
   if (req.controlVideoPath) args.push('--control-video', req.controlVideoPath)
+  // Repeatable reference channels (MiniMax-H3 Ref2VA) — one flag per path;
+  // main only sets the arrays for a type whose sampling.json channel allows
+  // it (same convention as --ref-image above). --ref-video takes a frames
+  // DIRECTORY at 24 fps, not a media file (man.txt:278).
+  for (const p2 of req.audioReferencePaths ?? []) args.push('--ref-audio', p2)
+  for (const p2 of req.videoReferencePaths ?? []) args.push('--ref-video', p2)
   // Highres fix (LTX spatial-latent upscale) — all flags gated on the merged
   // `upscale` sampling value. `--hires-steps` emits only for a positive value
   // (0/null ⇒ sd-cli default 0 = reuse `--steps`). When a latent-upscaler
@@ -256,9 +288,9 @@ export function buildArgs(req: GenerationRequest, p: SdCliPaths): string[] {
     if (typeof req.upscalerSteps === 'number' && Number.isFinite(req.upscalerSteps) && req.upscalerSteps > 0) {
       args.push('--hires-steps', String(req.upscalerSteps))
     }
-    if (p.latentUpscaler) {
-      args.push('--hires-upscalers-dir', dirname(p.latentUpscaler))
-      args.push('--hires-upscaler', basename(p.latentUpscaler, extname(p.latentUpscaler)))
+    for (const lu of p.latentUpscaler ?? []) {
+      args.push('--hires-upscalers-dir', dirname(lu.path))
+      args.push('--hires-upscaler', basename(lu.path, extname(lu.path)))
     }
   }
 
@@ -271,7 +303,86 @@ export function buildArgs(req: GenerationRequest, p: SdCliPaths): string[] {
     args.push('--diffusion-fa')
   }
  
+  // ADetailer (YOLOv8 object detector repair pass) — emitted when adetailer is
+  // set. Flags: --ad-model, --ad-prompt, --ad-negative-prompt, --extra-ad-args.
+  // The settings are resolved by gen:start and carried on paths.adetailer (not
+  // req.adetailer), so the prompt overrides below read from the same object.
+  if (p.adetailer) {
+    args.push('--ad-model', p.adetailer.model)
+    // Optional ADetailer prompt overrides (quoted like the main prompt).
+    if (p.adetailer.adPrompt?.trim()) {
+      args.push('--ad-prompt', quotePrompt(p.adetailer.adPrompt.trim()))
+    }
+    if (p.adetailer.adNegativePrompt?.trim()) {
+      args.push('--ad-negative-prompt', quotePrompt(p.adetailer.adNegativePrompt.trim()))
+    }
+    // Build --extra-ad-args from p.adetailer.options.
+    const opts = p.adetailer.options
+    const parts: string[] = []
+    if (typeof opts?.inputSize === 'number') parts.push(`input_size=${opts.inputSize}`)
+    if (typeof opts?.confidence === 'number') parts.push(`confidence=${opts.confidence}`)
+    if (typeof opts?.nms === 'number') parts.push(`nms=${opts.nms}`)
+    if (typeof opts?.maxDetections === 'number') parts.push(`max_detections=${opts.maxDetections}`)
+    if (typeof opts?.maskKLargest === 'number') parts.push(`mask_k_largest=${opts.maskKLargest}`)
+    if (opts?.maskFilterMethod) parts.push(`mask_filter_method=${opts.maskFilterMethod}`)
+    if (typeof opts?.maskMinRatio === 'number') parts.push(`mask_min_ratio=${opts.maskMinRatio}`)
+    if (typeof opts?.maskMaxRatio === 'number') parts.push(`mask_max_ratio=${opts.maskMaxRatio}`)
+    if (typeof opts?.dilateErode === 'number') parts.push(`dilate_erode=${opts.dilateErode}`)
+    if (typeof opts?.offsetX === 'number') parts.push(`x_offset=${opts.offsetX}`)
+    if (typeof opts?.offsetY === 'number') parts.push(`y_offset=${opts.offsetY}`)
+    if (opts?.maskMode) parts.push(`mask_mode=${opts.maskMode}`)
+    if (opts?.mergeMasks) parts.push(`merge_masks=${opts.mergeMasks}`)
+    if (opts?.invertMask) parts.push(`invert_mask=${opts.invertMask}`)
+    if (typeof opts?.maskBlur === 'number') parts.push(`mask_blur=${opts.maskBlur}`)
+    if (typeof opts?.inpaintPadding === 'number') parts.push(`inpaint_padding=${opts.inpaintPadding}`)
+    if (opts?.inpaintOnlyMasked) parts.push(`inpaint_only_masked=${opts.inpaintOnlyMasked}`)
+    if (typeof opts?.inpaintWidth === 'number') parts.push(`inpaint_width=${opts.inpaintWidth}`)
+    if (typeof opts?.inpaintHeight === 'number') parts.push(`inpaint_height=${opts.inpaintHeight}`)
+    if (typeof opts?.denoisingStrength === 'number') parts.push(`denoising_strength=${opts.denoisingStrength}`)
+    if (opts?.sortBy) parts.push(`sort_by=${opts.sortBy}`)
+    if (typeof opts?.detailSteps === 'number') parts.push(`steps=${opts.detailSteps}`)
+    if (typeof opts?.detailCfg === 'number') parts.push(`cfg_scale=${opts.detailCfg}`)
+    if (opts?.detailSampler) parts.push(`sample_method=${opts.detailSampler}`)
+    if (opts?.detailScheduler) parts.push(`scheduler=${opts.detailScheduler}`)
+    if (typeof opts?.clipSkip === 'number') parts.push(`clip_skip=${opts.clipSkip}`)
+    if (parts.length > 0) args.push('--extra-ad-args', parts.join(','))
+  }
+
+  // IP Adapter (CLIP-Vision encoder + adapter weight + reference image).
+  // Order mirrors the verified examples in .cached/docs/sd-cli/ip_adapter.md:
+  // --clip_vision first, then the adapter trio.
+  if (p.ipAdapter) {
+    args.push('--clip_vision', p.ipAdapter.clipVision)
+    args.push('--ip-adapter', p.ipAdapter.model)
+    args.push('--ip-adapter-image', p.ipAdapter.image)
+    if (typeof p.ipAdapter.strength === 'number' && Number.isFinite(p.ipAdapter.strength) && p.ipAdapter.strength >= 0) {
+      args.push('--ip-adapter-strength', String(p.ipAdapter.strength))
+    }
+  }
+
+  // Control Net (control net model + control image). Independent of IP Adapter —
+  // both may be active in one generation (verified in .cached/docs/sd-cli/ip_adapter.md:86).
+  if (p.controlNet) {
+    args.push('--control-net', p.controlNet.model)
+    args.push('--control-image', p.controlNet.image)
+    if (typeof p.controlNet.strength === 'number' && Number.isFinite(p.controlNet.strength) && p.controlNet.strength >= 0) {
+      args.push('--control-strength', String(p.controlNet.strength))
+    }
+  }
+
   pushPerformanceArgs(args, req.performance)
+
+  // Universal args — a free-form sd-cli CLI string from the session's sampling
+  // override (the dialog's "Args" row). Parsed into whitespace-separated
+  // tokens and appended AFTER every app-emitted flag (before --output), so a
+  // flag the user typed wins over the app's own emission of the same flag.
+  // Empty/omitted ⇒ nothing appended.
+  const extraArgs = req.args?.trim()
+  if (extraArgs) {
+    for (const token of extraArgs.split(/\s+/)) {
+      if (token) args.push(token)
+    }
+  }
 
   args.push('--output', p.output)
   return args
@@ -409,6 +520,7 @@ export interface SdCliService {
 }
 
 export function createSdCliService(): SdCliService {
+  const settings = createSettingsService()
   function generate(
     binary: string,
     req: GenerationRequest,
@@ -416,7 +528,17 @@ export function createSdCliService(): SdCliService {
     cb: GenCallbacks
   ): RunningGen {
     const args = buildArgs(req, paths)
-    // issues can be diagnosed from the main-process console.
+    // Debug aid (Settings → Application → Debug): log the full command line
+    // and parameters so generation issues can be diagnosed from the
+    // main-process console. Args containing whitespace are wrapped in double
+    // quotes — except ones that already start and end with a quote (the
+    // prompt is pre-wrapped by buildArgs()), so the logged line can be
+    // pasted back into a shell as-is.
+    if (settings.get().debug) {
+      const quoteArg = (a: string): string =>
+        /\s/.test(a) && !(a.startsWith('"') && a.endsWith('"')) ? `"${a}"` : a
+      console.log(`[sd-cli] ${[binary, ...args.map(quoteArg)].join(' ')}`)
+    }
     const child = spawn(binary, args, {
       cwd: dataRoot(),
       env: { ...process.env },

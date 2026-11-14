@@ -20,6 +20,7 @@ import extractZip from 'extract-zip'
 import { loadFfmpegConfig } from './config'
 import { dataRoot } from './data'
 import { downloadFile } from './download'
+import { createSettingsService } from './settings'
 
 /**
  * ffmpeg bundling + AVI → MP4 conversion (plans/ffmpeg-video-conversion.md).
@@ -228,6 +229,18 @@ async function installFfmpeg(
 export async function convertToMp4(input: string): Promise<string> {
   const binary = await ensureFfmpeg()
   const output = input.slice(0, input.length - 4) + '.mp4'
+
+  // Debug aid (Settings → Application → Debug): log the full command line so
+  // ffmpeg conversion issues can be diagnosed from the main-process console.
+  if (createSettingsService().get().debug) {
+    const quoteArg = (a: string): string =>
+      /\s/.test(a) && !(a.startsWith('"') && a.endsWith('"')) ? `"${a}"` : a
+    console.log(`[ffmpeg] ${[binary, ...[
+      '-y', '-i', input, '-c:v', 'libx264', '-preset', 'veryfast',
+      '-crf', '18', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', output
+    ].map(quoteArg)].join(' ')}`)
+  }
+
   await new Promise<void>((resolve, reject) => {
     const child = spawn(
       binary,

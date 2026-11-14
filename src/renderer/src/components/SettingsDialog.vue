@@ -26,7 +26,7 @@ import {
 import { useAppStore } from '../stores/app'
 import { defaultPerformance, useSettingsStore, type ModelDownloadState } from '../stores/settings'
 import { baseName, matchesSearch, normalizeForSearch, providerLabel } from '../search'
-import { accessForFamily, requiredFamilyFor, resolveEncoderBundle } from '../deps'
+import { accessForFamily, requiredCompanionsFor, requiredEncoderBundle, resolveEncoderBundle } from '../deps'
 import { toast } from '../toast'
 import { confirm } from '../confirm'
 import { listThemes } from '../theme'
@@ -41,7 +41,7 @@ const emit = defineEmits<{ close: [] }>()
 const appStore = useAppStore()
 const settingsStore = useSettingsStore() 
 
-type Section = 'appearance' | 'about' | 'release-notes' | 'models' | 'vae' | 'encoder' | 'vision' | 'tokenizer' | 'audio_encoder' | 'audio_vae' | 'latent_upscaler' | 'lora' | 'llm_models' | 'llm_inference' | 'sampling' | 'runtime' | 'performance' | 'downloads' | 'tokens' | 'logs'
+type Section = 'appearance' | 'about' | 'release-notes' | 'models' | 'vae' | 'encoder' | 'vision' | 'tokenizer' | 'audio_encoder' | 'audio_vae' | 'latent_upscaler' | 'lora' | 'adetailer' | 'llm_models' | 'llm_inference' | 'sampling' | 'runtime' | 'performance' | 'downloads' | 'tokens' | 'logs' | 'upscaler' | 'accessibility' | 'application'
 const section = ref<Section>('appearance')  // default to appearance instead of 'about'
 
 const sections: { id: Section; label: string }[] = [
@@ -56,21 +56,88 @@ const sections: { id: Section; label: string }[] = [
   { id: 'audio_vae', label: 'Audio VAE' },
   { id: 'latent_upscaler', label: 'Latent Upscaler' },
   { id: 'lora', label: 'LoRA' },
+  { id: 'adetailer', label: 'ADetailer' },
   { id: 'llm_models', label: 'Language Models' },
   { id: 'llm_inference', label: 'Language Inference' },
   { id: 'sampling', label: 'Sampling' },
   { id: 'performance', label: 'Performance' },
   { id: 'runtime', label: 'Runtime' },
   { id: 'downloads', label: 'Downloads' },
+  { id: 'upscaler', label: 'Upscaler' },
   { id: 'tokens', label: 'Tokens' },
   { id: 'appearance', label: 'Appearance' },
+  { id: 'accessibility', label: 'Accessibility' },
+  { id: 'application', label: 'Application' },
   { id: 'logs', label: 'Logs' }
 ]
+
+// ---------- sidebar search ----------
+const sidebarSearchInput = ref<HTMLInputElement | null>(null)
+const sidebarQuery = ref('')
+const sidebarNeedle = computed(() => normalizeForSearch(sidebarQuery.value).trim())
+const visibleSections = computed(() => {
+  const needle = sidebarNeedle.value
+  if (!needle) return sections
+  return sections.filter((s) => {
+    const labelWords = normalizeForSearch(s.label).split(' ').filter(Boolean)
+    const needles = needle.split(/\s+/).filter(Boolean)
+    return needles.every((n) => labelWords.some((w) => w.startsWith(n)))
+  })
+})
+function onSidebarSearchKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape') {
+    sidebarQuery.value = ''
+    ;(e.currentTarget as HTMLInputElement).blur()
+  }
+}
+function clearSidebarSearch(): void {
+  sidebarQuery.value = ''
+  sidebarSearchInput.value?.focus()
+}
+watch(section, (id) => {
+  const visible = visibleSections.value
+  if (visible.some((s) => s.id === id)) return
+  nextTick(() => {
+    const btn = document.querySelector(
+      `.dialog-nav button[data-section-id="${id}"]`
+    ) as HTMLElement | null
+    btn?.scrollIntoView({ block: 'nearest' })
+  })
+})
 
 /** Persist + apply the chosen theme. `settingsStore.theme` already reflects the
  * selection via v-model; this validates, applies, and persists the choice. */
 function onThemeChange(): void {
   void settingsStore.setTheme(settingsStore.theme)
+}
+
+// ---------- Accessibility ----------
+const FONT_SIZE_OPTIONS = ['small', 'medium', 'large', 'extra-large'] as const
+
+/** Map fontSize enum to slider index (0-3). */
+const fontSliderValue = computed(() =>
+  FONT_SIZE_OPTIONS.indexOf(settingsStore.fontSize as 'small' | 'medium' | 'large' | 'extra-large')
+)
+
+/** Persist + apply accessibility settings on change. */
+function onAccessibilityChange(): void {
+  void settingsStore.save({ fontSize: settingsStore.fontSize, iconSize: settingsStore.iconSize })
+}
+
+// ---------- application ----------
+const debugEnabled = ref<boolean>(settingsStore.settings.debug ?? false)
+/** Persist the debug toggle. Main reads the same settings.json key to gate the
+ * full command-line logging for sd-cli, upscaling, ffmpeg and llama-cli. */
+function saveDebug(): void {
+  void settingsStore.save({ debug: debugEnabled.value })
+}
+
+/** Slider handler: map numeric value back to string enum and save. */
+function onFontSliderChange(): void {
+  const idx = Number((document.querySelector('input[type="range"]') as HTMLInputElement)?.value ?? 1)
+  const size = FONT_SIZE_OPTIONS[Math.min(3, Math.max(0, idx))] as 'small' | 'medium' | 'large' | 'extra-large'
+  settingsStore.fontSize = size
+  void settingsStore.save({ fontSize: size, iconSize: settingsStore.iconSize })
 }
 
 // ---------- release notes ----------
@@ -231,7 +298,7 @@ function groupMembers(e: CatalogEntry): CatalogEntry[] {
 async function downloadEntry(e: CatalogEntry): Promise<void> {
   try {
     const group = groupMembers(e)
-    for (const m of group) await settingsStore.downloadModel('diffusion', m.url, m.provider)
+    for (const m of group) await settingsStore.downloadModel('diffusion', m.url, m.provider, false, m.diffusionType)
     toast(
       group.length > 1 ? `Downloaded ${e.name} (+${group.length - 1} MoE companion)` : `Downloaded ${e.name}`,
       'ok'
@@ -248,7 +315,7 @@ async function downloadEntry(e: CatalogEntry): Promise<void> {
 async function redownloadEntry(e: CatalogEntry): Promise<void> {
   try {
     const group = groupMembers(e)
-    for (const m of group) await settingsStore.downloadModel('diffusion', m.url, m.provider, true)
+    for (const m of group) await settingsStore.downloadModel('diffusion', m.url, m.provider, true, m.diffusionType)
     toast(
       group.length > 1 ? `Redownloaded ${e.name} (+${group.length - 1} MoE companion)` : `Redownloaded ${e.name}`,
       'ok'
@@ -296,7 +363,7 @@ function diffusionTypeForName(name: string): string | undefined {
 }
 /**
  * Access badge for a hub entry's diffusion family, from the FRESH hub config
- * (`diffusion_models[].access` via accessForFamily()): 'Auth' when downloads
+ * (`model_families[].access` via accessForFamily()): 'Auth' when downloads
  * need an API token, 'Gated' when a token AND accepting the terms/license on
  * the model page are required, null when freely downloadable. Rendered in
  * the same accent style as the CivitAI source badge — which is suppressed
@@ -322,19 +389,30 @@ function defaultDepEntry(type: ModelType, dt: string): CatalogEntry | undefined 
   return entries.find((e) => e.isDefault) ?? entries[0]
 }
 function dependencyEntries(dt: string): CatalogEntry[] {
-  // `requires` blocks route the VAE / encoder / audio-encoder dependencies to
-  // a DIFFERENT diffusion family (wan2_2_t2v uses the wan2_1 VAE + encoder;
-  // S2V adds the wan2_2 audio encoder). Absent → the diffusion type itself.
-  const vaeFamily = requiredFamilyFor(dt, 'vae')
-  const encFamily = requiredFamilyFor(dt, 'encoder')
-  const audFamily = requiredFamilyFor(dt, 'audio_encoder')
+  // `requires` blocks route the companion dependencies to a DIFFERENT
+  // diffusion family (wan2_2_t2v uses the wan2_1 VAE + encoder; S2V adds the
+  // wan2_2 audio encoder). The companion arrays are NEVER empty — an
+  // undeclared kind falls back to the diffusion type itself under the kind's
+  // default CLI flag.
+  const vaeFamily = requiredCompanionsFor(dt, 'vae')[0].from
+  const encFamily = requiredCompanionsFor(dt, 'encoder')[0].from
+  const audFamily = requiredCompanionsFor(dt, 'audio_encoder')[0].from
+  const visFamily = requiredCompanionsFor(dt, 'vision')[0].from
+  const tokFamily = requiredCompanionsFor(dt, 'tokenizer')[0].from
+  const avFamily = requiredCompanionsFor(dt, 'audio_vae')[0].from
+  const luFamily = requiredCompanionsFor(dt, 'latent_upscaler')[0].from
   const v = defaultDepEntry('vae', vaeFamily)
   // Encoder slot: a bundle diffusion type (`defaults[]`, SD3.5-style)
   // downloads the whole bundle. Prefer the config-resolved bundle — a
   // catalog-only lookup leaves bundle types with zero dependency entries
   // whenever the cached catalog is stale — then every `isDefault` encoder
   // entry from the catalog, then the plain single-entry fallback.
-  const bundle = resolveEncoderBundle(encFamily)
+  // Array-form `requires.encoder` (hub.json, e.g. hunyuan_video_1_5) resolves
+  // each text encoder from its own `from` family with its own `use_as` — the
+  // fresh-config source of truth — and takes precedence over the SD3.5
+  // `defaults[]` bundle and the single-file chain.
+  const requiredBundle = requiredEncoderBundle(dt)
+  const bundle = requiredBundle.length ? requiredBundle : resolveEncoderBundle(encFamily)
   let enc: CatalogEntry[]
   if (bundle.length) {
     enc = bundle
@@ -346,14 +424,15 @@ function dependencyEntries(dt: string): CatalogEntry[] {
       ? marked
       : [defaultDepEntry('encoder', encFamily)].filter((x): x is CatalogEntry => Boolean(x))
   }
-  const vis = defaultDepEntry('vision', dt)
-  const tok = defaultDepEntry('tokenizer', dt)
+  const vis = defaultDepEntry('vision', visFamily)
+  const tok = defaultDepEntry('tokenizer', tokFamily)
   const aud = defaultDepEntry('audio_encoder', audFamily)
-  // LTX 2.5 companions — resolved from the diffusion type ITSELF (no
-  // `requires` indirection), so the per-family dependency bundle surfaced in
-  // the Models section includes the audio VAE and the latent upscaler too.
-  const av = defaultDepEntry('audio_vae', dt)
-  const lu = defaultDepEntry('latent_upscaler', dt)
+  // LTX 2.5 companions — resolved from the companion family (the hub entry's
+  // `requires.audio_vae` / `requires.latent_upscaler.from` when declared, else
+  // the diffusion type itself), so the per-family dependency bundle surfaced
+  // in the Models section includes the audio VAE and the latent upscaler too.
+  const av = defaultDepEntry('audio_vae', avFamily)
+  const lu = defaultDepEntry('latent_upscaler', luFamily)
   return [v, ...enc, vis, tok, aud, av, lu].filter((x): x is CatalogEntry => Boolean(x))
 }
 const depDownloads = computed(() => {
@@ -400,7 +479,7 @@ async function downloadDependencies(f: ModelFile): Promise<void> {
     if (!installed) {
       missing++
       try {
-        await settingsStore.downloadModel(e.type, e.url, e.provider)
+        await settingsStore.downloadModel(e.type, e.url, e.provider, false, e.diffusionType)
         toast(`Downloaded ${e.name}`, 'ok')
       } catch (err) {
         if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
@@ -476,7 +555,7 @@ async function setDefaultEncoder(name: string): Promise<void> {
 }
 async function downloadEncoder(e: CatalogEntry): Promise<void> {
   try {
-    await settingsStore.downloadModel('encoder', e.url, e.provider)
+    await settingsStore.downloadModel('encoder', e.url, e.provider, false, e.diffusionType)
     toast(`Downloaded ${e.name}`, 'ok')
   } catch (err) {
     if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
@@ -528,7 +607,7 @@ async function setDefaultVision(name: string): Promise<void> {
 }
 async function downloadVision(e: CatalogEntry): Promise<void> {
   try {
-    await settingsStore.downloadModel('vision', e.url, e.provider)
+    await settingsStore.downloadModel('vision', e.url, e.provider, false, e.diffusionType)
     toast(`Downloaded ${e.name}`, 'ok')
   } catch (err) {
     if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
@@ -585,7 +664,7 @@ async function setDefaultTokenizer(name: string): Promise<void> {
 }
 async function downloadTokenizer(e: CatalogEntry): Promise<void> {
   try {
-    await settingsStore.downloadModel('tokenizer', e.url, e.provider)
+    await settingsStore.downloadModel('tokenizer', e.url, e.provider, false, e.diffusionType)
     toast(`Downloaded ${e.name}`, 'ok')
   } catch (err) {
     if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
@@ -610,13 +689,13 @@ const audioEncoderEntries = computed(() =>
   (appStore.catalog?.entries ?? []).filter(
     (e) =>
       e.type === 'audio_encoder' &&
-      e.diffusionType === requiredFamilyFor(audioEncoderType.value, 'audio_encoder')
+      e.diffusionType === requiredCompanionsFor(audioEncoderType.value, 'audio_encoder')[0].from
   )
 )
 const audioEncoderInstalledNames = computed(() => new Set(audioEncoderFiles.value.map((f) => f.name)))
 async function downloadAudioEncoder(e: CatalogEntry): Promise<void> {
   try {
-    await settingsStore.downloadModel('audio_encoder', e.url, e.provider)
+    await settingsStore.downloadModel('audio_encoder', e.url, e.provider, false, e.diffusionType)
     toast(`Downloaded ${e.name}`, 'ok')
   } catch (err) {
     if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
@@ -640,6 +719,48 @@ async function setDefaultAudioEncoder(name: string): Promise<void> {
   else delete map[audioEncoderType.value]
   await settingsStore.save({ defaultAudioEncoder: map })
 }
+/**
+ * Section visibility gate — mirrors visionHasEntries/tokenizerHasEntries, but
+ * also honors the FRESH hub config: the section renders whenever the catalog
+ * holds ANY audio-encoder entry OR the hub declares any audio encoder. Gating
+ * on the SELECTED type's entries instead hid the whole section: the default
+ * selection is the first catalog family (which has no audio encoder) and the
+ * type dropdown lives INSIDE the section, so it was unreachable (blank) —
+ * reading as "missing download/model management". A stale catalog cache (no
+ * audio_encoder rows yet) no longer hides the section either — the empty
+ * state + Refresh hub button take over.
+ */
+function audioEncoderHasEntries(): boolean {
+  return (
+    (appStore.catalog?.entries ?? []).some((e) => e.type === 'audio_encoder') ||
+    Object.keys(appStore.configs?.hub.repo.audio_encoder ?? {}).length > 0
+  )
+}
+/**
+ * Diffusion types whose REQUIRED audio-encoder family has catalog entries —
+ * drives the dropdown default below so the section opens on a type that
+ * actually lists the wav2vec2 entry (e.g. wan2_2_s2v → wan2_2) instead of an
+ * empty list for an unrelated family.
+ */
+const audioEncoderTypes = computed(() =>
+  diffusionTypes.value.filter((t) =>
+    (appStore.catalog?.entries ?? []).some(
+      (e) => e.type === 'audio_encoder' && e.diffusionType === requiredCompanionsFor(t, 'audio_encoder')[0].from
+     )
+  )
+)
+// Keep the selection resolvable: fix an empty/stale selection once entries
+// arrive (the catalog loads async) or when it stops resolving (hub rescan);
+// never fight a still-valid user choice. Falls back to the first diffusion
+// type so the dropdown always shows something (the empty state explains).
+watch(
+  audioEncoderTypes,
+  (types) => {
+    if (audioEncoderType.value && types.includes(audioEncoderType.value)) return
+    audioEncoderType.value = types[0] ?? diffusionTypes.value[0] ?? ''
+  },
+  { immediate: true }
+)
 
 // ---------- audio vae (LTX 2.5 audio track) ----------
 // The type dropdown lists diffusion types; the entries resolve from the
@@ -662,7 +783,7 @@ async function setDefaultAudioVae(name: string): Promise<void> {
 }
 async function downloadAudioVae(e: CatalogEntry): Promise<void> {
   try {
-    await settingsStore.downloadModel('audio_vae', e.url, e.provider)
+    await settingsStore.downloadModel('audio_vae', e.url, e.provider, false, e.diffusionType)
     toast(`Downloaded ${e.name}`, 'ok')
   } catch (err) {
     if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
@@ -676,6 +797,37 @@ async function removeAudioVae(f: ModelFile): Promise<void> {
   if (!ok) return
   await settingsStore.removeModel('audio_vae', f.name, f.provider, f.diffusionType)
 }
+/**
+ * Section visibility gate — mirrors visionHasEntries/tokenizerHasEntries, but
+ * also honors the FRESH hub config: the section renders whenever the catalog
+ * holds ANY audio-VAE entry OR the hub declares any audio VAE. Gating on the
+ * SELECTED type's entries instead hid the whole section (the type dropdown
+ * lives inside it), reading as "missing download/model management" for every
+ * diffusion type but ltx_2_5. A stale catalog cache (no audio_vae rows yet)
+ * no longer hides the section either — the empty state + Refresh hub button
+ * take over.
+ */
+function audioVaeHasEntries(): boolean {
+  return (
+    (appStore.catalog?.entries ?? []).some((e) => e.type === 'audio_vae') ||
+    Object.keys(appStore.configs?.hub.repo.audio_vae ?? {}).length > 0
+  )
+}
+/** Diffusion types that have audio-VAE catalog entries (drives the dropdown default). */
+const audioVaeTypes = computed(() =>
+  diffusionTypes.value.filter((t) =>
+    (appStore.catalog?.entries ?? []).some((e) => e.type === 'audio_vae' && e.diffusionType === t)
+  )
+)
+// Keep the selection resolvable — same semantics as the audio-encoder watcher.
+watch(
+  audioVaeTypes,
+  (types) => {
+    if (audioVaeType.value && types.includes(audioVaeType.value)) return
+    audioVaeType.value = types[0] ?? diffusionTypes.value[0] ?? ''
+  },
+  { immediate: true }
+)
 
 // ---------- latent upscaler (LTX 2.5 hires fix) ----------
 // Same shape as the audio VAE section: the entries resolve from the diffusion
@@ -697,7 +849,7 @@ async function setDefaultLatentUpscaler(name: string): Promise<void> {
 }
 async function downloadLatentUpscaler(e: CatalogEntry): Promise<void> {
   try {
-    await settingsStore.downloadModel('latent_upscaler', e.url, e.provider)
+    await settingsStore.downloadModel('latent_upscaler', e.url, e.provider, false, e.diffusionType)
     toast(`Downloaded ${e.name}`, 'ok')
   } catch (err) {
     if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
@@ -711,6 +863,122 @@ async function removeLatentUpscaler(f: ModelFile): Promise<void> {
   if (!ok) return
   await settingsStore.removeModel('latent_upscaler', f.name, f.provider, f.diffusionType)
 }
+/**
+ * Section visibility gate — mirrors visionHasEntries/tokenizerHasEntries, but
+ * also honors the FRESH hub config: the section renders whenever the catalog
+ * holds ANY latent-upscaler entry OR the hub declares any latent upscaler.
+ * Gating on the SELECTED type's entries instead hid the whole section (the
+ * type dropdown lives inside it), reading as "missing download/model
+ * management" for every diffusion type but ltx_2_5. A stale catalog cache (no
+ * latent_upscaler rows yet) no longer hides the section either — the empty
+ * state + Refresh hub button take over.
+ */
+function latentUpscalerHasEntries(): boolean {
+  return (
+    (appStore.catalog?.entries ?? []).some((e) => e.type === 'latent_upscaler') ||
+    Object.keys(appStore.configs?.hub.repo.latent_upscaler ?? {}).length > 0
+  )
+}
+/** Diffusion types that have latent-upscaler catalog entries (drives the dropdown default). */
+const latentUpscalerTypes = computed(() =>
+  diffusionTypes.value.filter((t) =>
+    (appStore.catalog?.entries ?? []).some((e) => e.type === 'latent_upscaler' && e.diffusionType === t)
+  )
+)
+// Keep the selection resolvable — same semantics as the audio-encoder watcher.
+watch(
+  latentUpscalerTypes,
+  (types) => {
+    if (latentUpscalerType.value && types.includes(latentUpscalerType.value)) return
+    latentUpscalerType.value = types[0] ?? diffusionTypes.value[0] ?? ''
+  },
+  { immediate: true }
+)
+
+// ---------- pixel upscaler (image upscale via `sd-cli -M upscale`) ----------
+// The hub config is a map of GROUP → ARRAY of entries; the group key (e.g.
+// 'esregan') is the catalog diffusionType ("family") used for the
+// family-scoped on-disk layout. NO default-picker — the default is
+// hub-config-driven (the isDefault stamp), not user-picked.
+const upscalerGroups = computed(() =>
+  [
+    ...new Set(
+      (appStore.catalog?.entries ?? [])
+        .filter((e) => e.type === 'pixel_upscaler')
+        .map((e) => e.diffusionType ?? '')
+    )
+  ].filter(Boolean)
+)
+const upscalerGroup = ref('')
+const upscalerFiles = computed(() => settingsStore.modelLists.pixel_upscaler ?? [])
+const upscalerEntries = computed(() =>
+  (appStore.catalog?.entries ?? []).filter(
+    (e) => e.type === 'pixel_upscaler' && e.diffusionType === upscalerGroup.value
+  )
+)
+const upscalerInstalledNames = computed(() => new Set(upscalerFiles.value.map((f) => baseName(f.name))))
+async function downloadUpscaler(e: CatalogEntry): Promise<void> {
+  try {
+    await settingsStore.downloadModel('pixel_upscaler', e.url, e.provider, false, e.diffusionType)
+    toast(`Downloaded ${e.name}`, 'ok')
+  } catch (err) {
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
+  }
+}
+function upscalerDlState(e: CatalogEntry) {
+  return settingsStore.modelDownloads[`pixel_upscaler:${e.url}`]
+}
+async function removeUpscaler(f: ModelFile): Promise<void> {
+  const ok = await confirm(`Delete ${f.name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
+  if (!ok) return
+  await settingsStore.removeModel('pixel_upscaler', f.name, f.provider, f.diffusionType)
+}
+
+// Keep the selected group valid as the catalog changes: default to the first
+// group when the current selection is empty or no longer exists.
+watch(
+  upscalerGroups,
+  (groups) => {
+    if (!groups.includes(upscalerGroup.value)) upscalerGroup.value = groups[0] ?? ''
+  },
+  { immediate: true }
+)
+
+// ---------- adetailer (YOLOv8 object detector repair pass) ----------
+const adetailerFiles = computed(() => settingsStore.modelLists['adetailer'] ?? [])
+const adetailerEntries = computed(() =>
+  (appStore.catalog?.entries ?? []).filter((e) => e.type === 'adetailer')
+)
+const adetailerInstalledNames = computed(() => new Set(adetailerFiles.value.map((f) => f.name)))
+const defaultAdetailer = computed(() => settingsStore.settings.adetailerDefault ?? '')
+async function setDefaultAdetailer(name: string): Promise<void> {
+  await settingsStore.save({ adetailerDefault: name || undefined })
+}
+async function downloadAdetailer(e: CatalogEntry): Promise<void> {
+  try {
+    await settingsStore.downloadModel('adetailer', e.url, e.provider, false, e.diffusionType)
+    toast(`Downloaded ${e.name}`, 'ok')
+  } catch (err) {
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
+  }
+}
+function adetailerDlState(e: CatalogEntry) {
+  return settingsStore.modelDownloads[`adetailer:${e.url}`]
+}
+async function removeAdetailer(f: ModelFile): Promise<void> {
+  const ok = await confirm(`Delete ${f.name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
+  if (!ok) return
+  await settingsStore.removeModel('adetailer', f.name, f.provider, f.diffusionType)
+}
+async function redownloadAdetailer(e: CatalogEntry): Promise<void> {
+  try {
+    await settingsStore.downloadModel('adetailer', e.url, e.provider, true, e.diffusionType)
+    toast(`Redownloaded ${e.name}`, 'ok')
+  } catch (err) {
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
+  }
+}
+
 function tokenizerDlState(e: CatalogEntry) {
   return settingsStore.modelDownloads[`tokenizer:${e.url}`]
 }
@@ -1100,7 +1368,7 @@ async function saveLlm(patch: Partial<LlmSettings>): Promise<void> {
 
 async function downloadLlm(e: CatalogEntry): Promise<void> {
   try {
-    await settingsStore.downloadModel('llm', e.url, e.provider)
+    await settingsStore.downloadModel('llm', e.url, e.provider, false, e.diffusionType)
     toast(`Downloaded ${e.name}`, 'ok')
   } catch (err) {
     if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
@@ -1231,6 +1499,7 @@ onMounted(async () => {
   await settingsStore.listModels('audio_encoder')
   await settingsStore.listModels('audio_vae')
   await settingsStore.listModels('latent_upscaler')
+  await settingsStore.listModels('pixel_upscaler')
   await settingsStore.listModels('llm')
   void settingsStore.loadLlmStatus()
   loadOverride()
@@ -1246,15 +1515,37 @@ onMounted(async () => {
       </header>
       <div class="dialog-body">
         <nav class="dialog-nav">
+          <div class="sidebar-search-wrap">
+            <input
+              ref="sidebarSearchInput"
+              v-model="sidebarQuery"
+              class="sidebar-search"
+              type="text"
+              placeholder="Search settings…"
+              autocomplete="off"
+              @keydown="onSidebarSearchKeydown"
+            />
+            <button
+              v-if="sidebarQuery"
+              class="sidebar-search-clear"
+              type="button"
+              title="Clear search"
+              aria-label="Clear search"
+              @click="clearSidebarSearch"
+            >
+              ×
+            </button>
+          </div>
           <button
-            v-for="s in sections"
+            v-for="s in visibleSections"
             :key="s.id"
             :class="{ active: section === s.id }"
+            :data-section-id="s.id"
             @click="section = s.id"
           >
             {{ s.label }}
           </button>
-        </nav> 
+        </nav>
 
         <div class="dialog-content">
           <section v-if="section === 'about'">
@@ -1298,7 +1589,10 @@ onMounted(async () => {
                 </button>
               </div>
             </div>
-            <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p> 
+            <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p>
+            <div v-if="appStore.catalogScanning" class="progress indeterminate">
+              <div class="progress-fill"></div>
+            </div>
 
             <input
               v-model="modelQuery"
@@ -1451,7 +1745,10 @@ onMounted(async () => {
                 {{ appStore.catalogScanning ? 'Scanning…' : 'Refresh hub' }}
               </button>
             </div>
-            <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p> 
+            <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p>
+            <div v-if="appStore.catalogScanning" class="progress indeterminate">
+              <div class="progress-fill"></div>
+            </div>
 
             <label class="muted">Diffusion type</label>
             <select v-model="encoderType">
@@ -1539,7 +1836,10 @@ onMounted(async () => {
                 {{ appStore.catalogScanning ? 'Scanning…' : 'Refresh hub' }}
               </button>
             </div>
-            <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p> 
+            <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p>
+            <div v-if="appStore.catalogScanning" class="progress indeterminate">
+              <div class="progress-fill"></div>
+            </div>
 
             <p class="muted">
               The vision (mmproj) model bridges the diffusion transformer to the text encoder. Only present for
@@ -1628,6 +1928,9 @@ onMounted(async () => {
               </button>
             </div>
             <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p>
+            <div v-if="appStore.catalogScanning" class="progress indeterminate">
+              <div class="progress-fill"></div>
+            </div>
 
             <p class="muted">
               The tokenizer (tokenizer.json) converts prompts into model tokens. Only present for
@@ -1707,7 +2010,7 @@ onMounted(async () => {
               <li v-else-if="!filteredTokenizerEntries.length" class="muted">No tokenizers match "{{ tokenizerQuery }}"</li>
             </ul>
           </section>
-          <section v-if="section === 'audio_encoder' && audioEncoderEntries.length">
+          <section v-if="section === 'audio_encoder' && audioEncoderHasEntries()">
             <div class="section-head">
               <h3>Audio Encoder</h3>
               <button :disabled="appStore.catalogScanning" @click="refreshHub()">
@@ -1715,6 +2018,9 @@ onMounted(async () => {
               </button>
             </div>
             <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p>
+            <div v-if="appStore.catalogScanning" class="progress indeterminate">
+              <div class="progress-fill"></div>
+            </div>
 
             <p class="muted">
               The wav2vec2 audio encoder drives Wan2.2 S2V (speech-to-video). Only present for
@@ -1779,7 +2085,7 @@ onMounted(async () => {
               <li v-if="!audioEncoderEntries.length" class="muted">No audio encoder entries for this diffusion type.</li>
             </ul>
           </section>
-          <section v-if="section === 'audio_vae' && audioVaeEntries.length">
+          <section v-if="section === 'audio_vae' && audioVaeHasEntries()">
             <div class="section-head">
               <h3>Audio VAE</h3>
               <button :disabled="appStore.catalogScanning" @click="refreshHub()">
@@ -1787,6 +2093,9 @@ onMounted(async () => {
               </button>
             </div>
             <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p>
+            <div v-if="appStore.catalogScanning" class="progress indeterminate">
+              <div class="progress-fill"></div>
+            </div>
 
             <p class="muted">
               The audio VAE decodes the generated audio track (LTX 2.5 generates video WITH sound).
@@ -1851,7 +2160,7 @@ onMounted(async () => {
               <li v-if="!audioVaeEntries.length" class="muted">No audio VAE entries for this diffusion type.</li>
             </ul>
           </section>
-          <section v-if="section === 'latent_upscaler' && latentUpscalerEntries.length">
+          <section v-if="section === 'latent_upscaler' && latentUpscalerHasEntries()">
             <div class="section-head">
               <h3>Latent Upscaler</h3>
               <button :disabled="appStore.catalogScanning" @click="refreshHub()">
@@ -1859,6 +2168,9 @@ onMounted(async () => {
               </button>
             </div>
             <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p>
+            <div v-if="appStore.catalogScanning" class="progress indeterminate">
+              <div class="progress-fill"></div>
+            </div>
 
             <p class="muted">
               The latent upscaler drives the highres fix second pass (LTX 2.5 spatial latent
@@ -1926,6 +2238,74 @@ onMounted(async () => {
           <section v-if="section === 'lora'">
             <LoraBrowser />
           </section>
+          <section v-if="section === 'adetailer'">
+            <div class="section-head">
+              <h3>ADetailer</h3>
+              <button :disabled="appStore.catalogScanning" @click="refreshHub()">
+                {{ appStore.catalogScanning ? 'Scanning…' : 'Refresh hub' }}
+              </button>
+            </div>
+            <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p>
+            <div v-if="appStore.catalogScanning" class="progress indeterminate">
+              <div class="progress-fill"></div>
+            </div>
+
+            <p class="muted">
+              YOLOv8 object detector models for ADetailer — runs a detail pass on detected
+              objects after image generation. The hub default downloads automatically on
+              first launch.
+            </p>
+
+            <h4>Installed</h4>
+            <ul class="file-list">
+              <li v-for="f in adetailerFiles" :key="rowKey(f)">
+                <span class="mono">{{ f.name }}</span>
+                <span class="faint">{{ fmtBytes(f.size) }}</span>
+                <span v-if="rowContext(f)" class="faint">{{ rowContext(f) }}</span>
+                <button class="icon danger" title="Delete" @click="removeAdetailer(f)">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14" />
+                  </svg>
+                </button>
+              </li>
+              <li v-if="!adetailerFiles.length" class="muted">No ADetailer models downloaded yet.</li>
+            </ul>
+
+            <h4>Available from hub</h4>
+            <ul class="file-list">
+              <li v-for="e in adetailerEntries" :key="e.id" class="dl-item">
+                <div class="dl-item-top">
+                  <span class="mono">{{ e.name }}</span>
+                  <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
+                  <span v-if="e.isDefault" class="tag default-tag">Default</span>
+                  <template v-if="adetailerInstalledNames.has(baseName(e.name))">
+                    <span class="ok-tag">installed</span>
+                    <button class="set-default" :class="{ active: defaultAdetailer === e.name }"
+                            @click="setDefaultAdetailer(e.name)">
+                      {{ defaultAdetailer === e.name ? 'Default' : 'Set default' }}
+                    </button>
+                    <button class="icon" title="Force redownload" :disabled="!!adetailerDlState(e)" @click="redownloadAdetailer(e)">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 2v6h-6M3 22v-6h6" />
+                        <path d="M21 13A9 9 0 0 0 5.2 7.2M3 11a9 9 0 0 0 15.8 5.8" />
+                      </svg>
+                    </button>
+                  </template>
+                  <template v-else>
+                    <button v-if="adetailerDlState(e)" class="dl-btn" disabled>Downloading…</button>
+                    <button v-else class="dl-btn" @click="downloadAdetailer(e)">Download</button>
+                  </template>
+                </div>
+                <DownloadProgress
+                  v-if="adetailerDlState(e)"
+                  class="grow"
+                  :downloaded-bytes="adetailerDlState(e)!.downloadedBytes"
+                  :total-bytes="adetailerDlState(e)!.totalBytes"
+                />
+              </li>
+              <li v-if="!adetailerEntries.length" class="muted">No ADetailer entries available.</li>
+            </ul>
+          </section>
           <section v-if="section === 'llm_models'">
             <div class="section-head">
               <h3>Language Models</h3>
@@ -1934,6 +2314,9 @@ onMounted(async () => {
               </button>
             </div>
             <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p>
+            <div v-if="appStore.catalogScanning" class="progress indeterminate">
+              <div class="progress-fill"></div>
+            </div>
 
             <h4>llama.cpp runtime</h4>
             <p class="muted">
@@ -2522,6 +2905,76 @@ onMounted(async () => {
               </li>
             </ul>
           </section>
+          <section v-if="section === 'upscaler'">
+            <div class="section-head">
+              <h3>Upscaler</h3>
+              <button :disabled="appStore.catalogScanning" @click="refreshHub()">
+                {{ appStore.catalogScanning ? 'Scanning…' : 'Refresh hub' }}
+              </button>
+            </div>
+            <p v-if="appStore.catalogScanning" class="muted">{{ appStore.catalogMessage || 'Scanning model hub…' }}</p>
+            <div v-if="appStore.catalogScanning" class="progress indeterminate">
+              <div class="progress-fill"></div>
+            </div>
+
+            <p class="muted">
+              Pixel upscaler models (ESRGAN) for the image Upscale button — run through
+              <span class="mono">sd-cli -M upscale</span>. The hub default downloads automatically on
+              first launch.
+            </p>
+
+            <label v-if="upscalerGroups.length" class="muted">Group</label>
+            <select v-if="upscalerGroups.length" v-model="upscalerGroup">
+              <option v-for="g in upscalerGroups" :key="g" :value="g">{{ g }}</option>
+            </select>
+
+            <h4>Installed</h4>
+            <ul class="file-list">
+              <li v-for="f in upscalerFiles" :key="rowKey(f)">
+                <span class="mono">{{ f.name }}</span>
+                <span class="faint">{{ fmtBytes(f.size) }}</span>
+                <span v-if="rowContext(f)" class="faint">{{ rowContext(f) }}</span>
+                <button class="icon danger" title="Delete" @click="removeUpscaler(f)">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14" />
+                  </svg>
+                </button>
+              </li>
+              <li v-if="!upscalerFiles.length" class="muted">No upscaler models downloaded yet.</li>
+            </ul>
+
+            <h4>Available from hub</h4>
+            <ul class="file-list">
+              <li v-for="e in upscalerEntries" :key="e.id" class="dl-item">
+                <div class="dl-item-top">
+                  <span class="mono">{{ e.name }}</span>
+                  <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
+                  <span v-if="e.isDefault" class="tag default-tag">Default</span>
+                  <template v-if="upscalerInstalledNames.has(baseName(e.name))">
+                    <span class="ok-tag">installed</span>
+                  </template>
+                  <template v-else>
+                    <button
+                      v-if="upscalerDlState(e)"
+                      class="dl-btn"
+                      disabled
+                      :title="`${upscalerDlState(e)!.downloadedBytes} / ${upscalerDlState(e)!.totalBytes} downloaded`"
+                    >
+                      Downloading…
+                    </button>
+                    <button v-else class="dl-btn" @click="downloadUpscaler(e)">Download</button>
+                  </template>
+                </div>
+                <DownloadProgress
+                  v-if="upscalerDlState(e)"
+                  class="grow"
+                  :downloaded-bytes="upscalerDlState(e)!.downloadedBytes"
+                  :total-bytes="upscalerDlState(e)!.totalBytes"
+                />
+              </li>
+              <li v-if="!upscalerEntries.length" class="muted">No upscaler entries for this group.</li>
+            </ul>
+          </section>
           <section v-if="section === 'tokens'">
             <div class="section-head">
               <h3>Tokens</h3>
@@ -2580,6 +3033,63 @@ onMounted(async () => {
               </tbody>
             </table>
           </section>
+          <section v-if="section === 'accessibility'">
+            <h3>Accessibility</h3>
+            <table class="kv">
+              <tbody>
+                <tr>
+                  <td>Font Size</td>
+                  <td>
+                    <div class="slider-row">
+                      <span class="faint">S</span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="3"
+                        step="1"
+                        :value="fontSliderValue"
+                        @change="onFontSliderChange"
+                      />
+                      <span class="faint">XL</span>
+                    </div>
+                    <div class="slider-labels">
+                      <span>Small</span>
+                      <span>Medium</span>
+                      <span>Large</span>
+                      <span>Extra-large</span>
+                    </div>
+                    <span class="faint">Adjust the base font size for readability.</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Icon Size</td>
+                  <td>
+                    <select v-model="settingsStore.iconSize" @change="onAccessibilityChange">
+                      <option value="small">Small (0.85x)</option>
+                      <option value="medium">Medium (1x)</option>
+                      <option value="large">Large (1.25x)</option>
+                      <option value="extra-large">Extra-large (1.5x)</option>
+                    </select>
+                    <span class="faint">Scale icons and button glyphs.</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+          <section v-if="section === 'application'">
+            <h3>Application</h3>
+            <table class="kv">
+              <tbody>
+                <tr>
+                  <td>Debug</td>
+                  <td>
+                    <input v-model="debugEnabled" type="checkbox" @change="saveDebug()" />
+                    <span class="faint">Enable/Disable debug message. Useful for diagnosing issues. When enabled, the full generated command line and parameters are logged for sd-cli generation and upscaling, ffmpeg, and llama-cli.</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
           <section v-if="section === 'logs'">
             <div class="section-head">
               <h3>Logs</h3>
@@ -2609,7 +3119,7 @@ onMounted(async () => {
   z-index: 1500;
 }
 .dialog {
-  width: min(860px, 92vw);
+  width: min(960px, 92vw);
   height: min(620px, 88vh);
   background: var(--bg-elevated);
   border: 1px solid var(--border);
@@ -2636,7 +3146,7 @@ onMounted(async () => {
   min-height: 0;
 }
 .dialog-nav {
-  width: 180px;
+  width: 250px;
   flex-shrink: 0;
   border-right: 1px solid var(--border);
   padding: 10px 8px;
@@ -2680,6 +3190,53 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+/* Sidebar search input */
+.sidebar-search-wrap {
+  position: relative;
+  margin-bottom: 8px;
+}
+.sidebar-search {
+  width: 100%;
+  padding: 6px 28px 6px 8px;
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+}
+.sidebar-search:focus {
+  outline: none;
+  border-color: var(--accent, var(--border));
+}
+.sidebar-search-clear {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.sidebar-search-clear:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.sidebar-search-clear:focus-visible {
+  outline: 2px solid var(--accent, var(--border));
+  outline-offset: -2px;
+}
+.sidebar-search-clear:active {
+  transform: translateY(-50%) scale(0.92);
 }
 /* Models-section filter input. .dialog-content is a stretch flex column, so
    the input is already full-width — spacing only. */
@@ -2891,6 +3448,14 @@ onMounted(async () => {
   color: var(--ok);
   font-size: 12px;
 }
+/* Hub-configured default badge (Settings → Upscaler rows). */
+.default-tag {
+  color: var(--accent);
+  font-size: 12px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 0 8px;
+}
 .dl-btn {
   padding: 3px 10px;
   font-size: 12px;
@@ -3016,5 +3581,70 @@ label {
 }
 .token-sub {
   font-size: 12px;
+}
+
+/* Accessibility section */
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.slider-row input[type="range"] {
+  flex: 1;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+}
+.slider-row input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background:
+    repeating-linear-gradient(
+      to right,
+      var(--accent) 0px,
+      var(--accent) calc(25% - 2px),
+      var(--border) calc(25% - 2px),
+      var(--border) calc(25% + 1px),
+      transparent calc(25% + 1px),
+      transparent 100%
+    ),
+    var(--bg-panel);
+}
+.slider-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg-elevated);
+  margin-top: -6px;
+  cursor: pointer;
+}
+.slider-row input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-panel);
+}
+.slider-row input[type="range"]::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.slider-row input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg-elevated);
+  cursor: pointer;
+}
+.slider-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-top: 2px;
 }
 </style>

@@ -354,6 +354,17 @@ export async function enhancePrompt(prompt: string): Promise<{ text: string }> {
   const gpuBuild = isGpuLlmBuild(getInitState().platform?.llmRuntimeKey)
   const args = buildLlmArgs(cfg, modelPath, trimmed, gpuBuild)
 
+  // Debug aid (Settings → Application → Debug): log the full command line so
+  // llama-cli issues can be diagnosed from the main-process console. Args
+  // containing whitespace are wrapped in double quotes — except ones that
+  // already start and end with a quote — so the logged line can be pasted
+  // back into a shell as-is.
+  if (settings.get().debug) {
+    const quoteArg = (a: string): string =>
+      /\s/.test(a) && !(a.startsWith('"') && a.endsWith('"')) ? `"${a}"` : a
+    console.log(`[llama-cli] ${[binary, ...args.map(quoteArg)].join(' ')}`)
+  }
+
   return new Promise<{ text: string }>((resolve, reject) => {
     const child = spawn(binary as string, args, {
       cwd: getAppRoot(),

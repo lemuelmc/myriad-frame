@@ -9,11 +9,14 @@ import { onMounted, ref } from 'vue'
 import { useAppStore } from './stores/app'
 import { useSessionsStore } from './stores/sessions'
 import { useSettingsStore } from './stores/settings'
+import { useUpscalerStore } from './stores/upscaler'
 import { applyTheme } from './theme'
 import Sidebar from './components/Sidebar.vue'
 import ChatPanel from './components/ChatPanel.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import ImageLightbox from './components/ImageLightbox.vue'
+import UpscaleDialog from './components/UpscaleDialog.vue'
+import UpscaleOverlay from './components/UpscaleOverlay.vue'
 import ResizeCropOverlay from './components/ResizeCropOverlay.vue'
 import InitOverlay from './components/InitOverlay.vue'
 import Toasts from './components/Toasts.vue'
@@ -24,6 +27,7 @@ import SnowSplash from './components/SnowSplash.vue'
 const appStore = useAppStore()
 const sessionsStore = useSessionsStore()
 const settingsStore = useSettingsStore()
+const upscalerStore = useUpscalerStore()
 
 const settingsOpen = ref(false)
 const sidebarWidth = ref(Number(localStorage.getItem('sidebarWidth') ?? 260))
@@ -77,6 +81,10 @@ onMounted(async () => {
   // ordering guarantees this arrives after app:ready, so it never fires under
   // the InitOverlay.
   window.api.onUpdateAvailable((p) => appStore.notifyUpdates(p))
+  // Launch-time app-version check (detect-only): main broadcasts when the
+  // remote application.json version is strictly greater than the bundled one,
+  // so the renderer can toast with a download link. Arrives after app:ready.
+  window.api.onAppUpdateAvailable((available) => appStore.notifyAppUpdate(available))
   window.api.onRuntimeProgress((p) => {
     settingsStore.runtimeDownloading = {
       version: p.version,
@@ -131,6 +139,10 @@ onMounted(async () => {
   await settingsStore.load()
   // Restore the persisted theme now that settings are loaded.
   settingsStore.applyPersistedTheme()
+  // Apply font/icon size overrides after theme (both use data-* on <html>).
+  settingsStore.applyAccessibility()
+  // Watch for accessibility changes and apply them live.
+  settingsStore.initAccessibilityWatch()
   // The bat splash is a halloween-only startup effect.
   showBatSplash.value = settingsStore.theme === 'halloween'
   // The snow splash is a christmas-only startup effect.
@@ -147,6 +159,8 @@ onMounted(async () => {
     <ChatPanel class="chat" />
     <SettingsDialog v-if="settingsOpen" @close="settingsOpen = false" />
     <ImageLightbox />
+    <UpscaleDialog v-if="upscalerStore.phase === 'dialog'" />
+    <UpscaleOverlay />
     <ResizeCropOverlay />
     <InitOverlay v-if="!appStore.ready" />
     <ConfirmDialog />

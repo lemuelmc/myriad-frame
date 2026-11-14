@@ -6,6 +6,7 @@
  */
 
 import { defineStore } from 'pinia'
+import { watch } from 'vue'
 import type {
   DownloadEntry,
   DownloadProgress,
@@ -23,6 +24,7 @@ import type {
 import { DOWNLOAD_ABORTED_MESSAGE, applySamplingOverrides } from '@shared/types'
 import type { ThemeKey } from '@shared/types'
 import { applyTheme, assertThemeKey, currentTheme, THEMES } from '../theme'
+import { toast } from '../toast'
 import { useAppStore } from './app'
 
 export interface ModelDownloadState {
@@ -47,7 +49,7 @@ export const defaultPerformance: PerformanceSettings = {
   flashAttention: 'none',
   flashAttentionCustom: '',
   backend: 'off',
-  backendCustom: '',
+  backendCustom: 'controlnet=cpu,vae=cpu',
   sageAttention: false,
   autoFit: 'none',
   maxVram: '',
@@ -85,7 +87,11 @@ export const useSettingsStore = defineStore('settings', {
     /** llama.cpp runtime + default-model status (Settings → Language Models). */
     llmStatus: null as LlmStatusInfo | null,
     /** Live progress of a manual LLM runtime install (llm:progress pushes). */
-    llmRuntimeProgress: null as { downloadedBytes: number; totalBytes: number; phase?: 'downloading' | 'extracting' } | null
+    llmRuntimeProgress: null as { downloadedBytes: number; totalBytes: number; phase?: 'downloading' | 'extracting' } | null,
+    /** Accessibility: font size scale. */
+    fontSize: 'medium' as 'small' | 'medium' | 'large' | 'extra-large',
+    /** Accessibility: icon size scale. */
+    iconSize: 'medium' as 'small' | 'medium' | 'large' | 'extra-large'
   }),
   getters: {
     selectedVersion(): string | null {
@@ -97,11 +103,38 @@ export const useSettingsStore = defineStore('settings', {
         ...defaultPerformance,
         ...(this.settings.performance ?? {})
       }
+    },
+    /**
+     * The app-wide "busy downloading" signal: true while ANY download is
+     * actively transferring (models, runtime, or LLM runtime). Paused queues
+     * do NOT animate the indicator. All inputs are already maintained by the
+     * existing downloads:changed / models:progress / llm:progress wiring —
+     * zero new IPC.
+     */
+    busyDownloading(): boolean {
+      if (this.downloadsPaused) return false
+      return (
+        this.pendingDownloads.some((e) => e.status === 'downloading') ||
+        Object.keys(this.modelDownloads).length > 0 ||
+        this.runtimeDownloading !== null ||
+        this.llmRuntimeProgress !== null
+      )
+    },
+    /** Number of active downloads (models + runtime) for the footer tooltip. */
+    activeDownloadCount(): number {
+      if (this.downloadsPaused) return 0
+      let n = this.pendingDownloads.filter((e) => e.status === 'downloading').length
+      n += Object.keys(this.modelDownloads).length
+      if (this.runtimeDownloading !== null) n += 1
+      if (this.llmRuntimeProgress !== null) n += 1
+      return n
     }
   },
   actions: {
     async load() {
       this.settings = await window.api.settingsGet()
+      this.fontSize = (this.settings.fontSize ?? 'medium') as 'small' | 'medium' | 'large' | 'extra-large'
+      this.iconSize = (this.settings.iconSize ?? 'medium') as 'small' | 'medium' | 'large' | 'extra-large'
       await this.loadRuntimeVersions()
       try {
         const list = await window.api.downloadsList()
@@ -171,6 +204,20 @@ export const useSettingsStore = defineStore('settings', {
       const key = this.settings.theme ?? 'default'
       this.theme = key
       applyTheme(key)
+    },
+    /** Apply font/icon size overrides to the document. Call after `applyPersistedTheme()`. */
+    applyAccessibility(): void {
+      const html = document.documentElement
+      html.dataset.fontSize = this.fontSize
+      html.dataset.iconSize = this.iconSize
+    },
+    /** Watch for accessibility changes and apply them live. Call once after `load()`. */
+    initAccessibilityWatch(): void {
+      watch(
+        () => [this.fontSize, this.iconSize] as const,
+        () => this.applyAccessibility(),
+        { flush: 'post' }
+      )
     },
     async loadRuntimeVersions() {
       this.runtimeVersions = await window.api.runtimeVersions()
@@ -311,17 +358,38 @@ export const useSettingsStore = defineStore('settings', {
         await this.loadLlmStatus()
       }
     },
-    async downloadModel(type: ModelType, url: string, provider?: string, force = false) {
+    /** `family` — the requester's own model family (the catalog entry's
+     *  diffusionType): threads through to the download destination so a URL
+     *  shared across families always lands in (and short-circuits against)
+     *  the requester's own family slot. */
+    async downloadModel(type: ModelType, url: string, provider?: string, force = false, family?: string) {
       const key = `${type}:${url}`
       this.modelDownloads[key] = { type, url, downloadedBytes: 0, totalBytes: 0 }
       try {
-        const dest = await window.api.modelsDownload(type, url, provider, force)
+        const dest = await window.api.modelsDownload(type, url, provider, force, family)
         // '' is the Pause/Cancel sentinel from the models:download handler
         // (the invoke resolves it instead of rejecting, because Electron logs
         // every handler rejection as "Error occurred in handler"). Rethrow the
         // abort error so awaiters keep filtering it via DOWNLOAD_ABORTED_MESSAGE.
         if (dest === '') throw new Error(DOWNLOAD_ABORTED_MESSAGE)
         return dest
+      } catch (err) {
+        // HTTP 401 — the model likely requires auth or is gated behind ToS.
+        // Show an additional hint toast with the relevant domain so the user
+        // knows where to create an account / generate a token / accept ToS.
+        const msg = (err as Error).message ?? ''
+        if (/HTTP 401/.test(msg)) {
+          let domain = ''
+          try {
+            domain = new URL(url).hostname.replace(/^www\./, '')
+          } catch { /* ignore malformed URLs */ }
+          toast(
+            `Model may require Auth or Gated behind ToS. Please create an account ${domain} and generate a token or accept the ToS.`,
+            'error',
+            10000
+          )
+        }
+        throw err
       } finally {
         delete this.modelDownloads[key]
         await this.listModels(type)

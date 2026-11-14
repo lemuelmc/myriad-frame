@@ -1,0 +1,79 @@
+/**
+ * Myriad Frame — Accessibility overrides.
+ *
+ * Applied via data-font-size and data-icon-size attributes on <html>.
+ * These are read by the app's global styles to scale typography and icons.
+ * Import this file in src/renderer/src/main.ts alongside theme.css imports.
+ */
+
+/* Font size scale: overrides the theme.css `html, body, #app { font-size: 14px }` rule.
+ * Only <html> carries the data-font-size attribute; body and #app are targeted
+ * as descendants so they inherit the override (theme.css sets font-size on all three). */
+html[data-font-size="small"] body,
+html[data-font-size="small"] #app {
+  font-size: 13px;
+}
+html[data-font-size="medium"] body,
+html[data-font-size="medium"] #app {
+  font-size: 14px;  /* default */
+}
+html[data-font-size="large"] body,
+html[data-font-size="large"] #app {
+  font-size: 16px;
+}
+html[data-font-size="extra-large"] body,
+html[data-font-size="extra-large"] #app {
+  font-size: 18px;
+}
+
+/* Icon size scale: multiplier applied to icon SVG elements via transform */
+:root[data-icon-size="small"] {
+  --icon-scale: 0.85;
+}
+:root[data-icon-size="medium"] {
+  --icon-scale: 1;  /* default */
+}
+:root[data-icon-size="large"] {
+  --icon-scale: 1.25;
+}
+:root[data-icon-size="extra-large"] {
+  --icon-scale: 1.5;
+}
+
+/* Apply icon scale to all inline SVGs used as icons throughout the app.
+ * Uses transform: scale() to scale the SVG visual without changing layout.
+ * transform-origin: center ensures icons scale from their center point. */
+:root[data-icon-size] svg.icon,
+:root[data-icon-size] button.icon svg,
+:root[data-icon-size] .dialog-nav button svg {
+  transform: scale(var(--icon-scale, 1));
+  transform-origin: center;
+  display: inline-block;
+}
+
+/* Indeterminate progress bar — shown during hub catalog scanning (Settings →
+ * "Refresh hub" and the LoRA browser). Used by SettingsDialog.vue and
+ * LoraBrowser.vue; the indeterminate variant animates a shimmer across the
+ * track since buildCatalog() reports no numeric progress. Kept here as a shared
+ * utility so all consumers get identical styling and theme-aware colors. */
+.progress {
+  width: 100%;
+  height: 4px;
+  background: var(--bg-panel);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 6px;
+}
+
+.progress.indeterminate .progress-fill {
+  height: 100%;
+  background: var(--accent);
+  width: 30%;
+  border-radius: 2px;
+  animation: progress-indeterminate 1.5s infinite ease-in-out;
+}
+
+@keyframes progress-indeterminate {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}

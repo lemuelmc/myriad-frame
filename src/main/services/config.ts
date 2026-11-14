@@ -67,7 +67,7 @@ export function loadApplicationConfig(): ApplicationConfig {
  * - non-null, **non-array** object (explicit `Array.isArray` check —
  *   `typeof [] === 'object'`, same rationale as the runtime validator)
  * - `updatedOn` is a non-empty string
- * - `diffusion_models` is a **non-empty** array; every entry is an object
+ * - `model_families` is a **non-empty** array; every entry is an object
  *   with non-empty string `name`, `label`, `type`, `mode`
  * - `providers` is an array (empty allowed — it only drives label
  *   resolution); every entry is an object with non-empty string
@@ -91,7 +91,7 @@ export function loadApplicationConfig(): ApplicationConfig {
  * - `repo.vision` values: objects with non-empty string `url` (`https://`)
  *   and non-empty string `default`; optional string `provider` / `label`
  * - `repo.diffusion` entries: objects with non-empty string `provider`,
- *   `name`, `label`, `inference_type`, `quant_type`, `diffusion_type`,
+ *   `name`, `label`, `inference_type`, `quant_type`, `family`,
  *   `url` (`https://`); optional string `description`; optional non-empty
  *   string `path` (repo-relative folder restricting the hub scan to that
  *   folder's direct files; '/' restricts it to the repo root's direct files);
@@ -100,8 +100,7 @@ export function loadApplicationConfig(): ApplicationConfig {
  * - `repo.lora` is optional — absent is valid (older overrides keep working);
  *   present must be an array (empty allowed) of objects with non-empty string
  *   `provider`, `label`, `url` (`https://`) and a non-empty array
- *   `diffustion_types` of non-empty strings (the shipped hub.json's spelling,
- *   kept as-is); optional string `description`; optional non-empty string
+ *   `families` of non-empty strings; optional string `description`; optional non-empty string
  *   `path`; optional `model_version_ids` (same rule as diffusion); optional
  *   string `source` / `domain`
  * - `default` is a repo-relative path *or* full URL in practice — only a
@@ -121,26 +120,26 @@ export function validateHubConfig(cfg: unknown): string | undefined {
     return 'hub config "updatedOn" must be a non-empty string'
   }
 
-  const dms = obj['diffusion_models']
+  const dms = obj['model_families']
   if (!Array.isArray(dms) || dms.length === 0) {
-    return 'hub config "diffusion_models" must be a non-empty array'
+    return 'hub config "model_families" must be a non-empty array'
   }
   for (let i = 0; i < dms.length; i++) {
     const dm = dms[i]
     if (dm === null || typeof dm !== 'object' || Array.isArray(dm)) {
-      return `diffusion_models[${i}] must be an object`
+      return `model_families[${i}] must be an object`
     }
     const d = dm as Record<string, unknown>
     for (const key of ['name', 'label', 'type'] as const) {
       const v = d[key]
       if (typeof v !== 'string' || v === '') {
-        return `diffusion_models[${i}].${key} must be a non-empty string`
+        return `model_families[${i}].${key} must be a non-empty string`
       }
     }
     // `mode` is legacy-optional: the shipped hub.json no longer carries it,
     // but older overrides still may.
     if (d['mode'] !== undefined && typeof d['mode'] !== 'string') {
-      return `diffusion_models[${i}].mode must be a string when present`
+      return `model_families[${i}].mode must be a string when present`
     }
     // `access` is optional: 'auth' (token required) or 'gated' (token + ToS
     // acceptance on the model page); null/absent = freely downloadable.
@@ -151,7 +150,7 @@ export function validateHubConfig(cfg: unknown): string | undefined {
       d['access'] !== 'auth' &&
       d['access'] !== 'gated'
     ) {
-      return `diffusion_models[${i}].access must be "auth" or "gated" (or null) when present`
+      return `model_families[${i}].access must be "auth" or "gated" (or null) when present`
     }
   }
 
@@ -173,27 +172,27 @@ export function validateHubConfig(cfg: unknown): string | undefined {
     }
   }
 
-  // diffusion_inference_types — optional; present-must-be-valid (per-type
+  // inference_types — optional; present-must-be-valid (per-type
   // { text_input: boolean, accepts: string[] | null }).
-  const inferenceTypes = obj['diffusion_inference_types']
+  const inferenceTypes = obj['inference_types']
   if (inferenceTypes !== undefined) {
     if (inferenceTypes === null || typeof inferenceTypes !== 'object' || Array.isArray(inferenceTypes)) {
-      return 'hub config "diffusion_inference_types" must be an object when present'
+      return 'hub config "inference_types" must be an object when present'
     }
     for (const [key, v] of Object.entries(inferenceTypes as Record<string, unknown>)) {
       if (v === null || typeof v !== 'object' || Array.isArray(v)) {
-        return `diffusion_inference_types["${key}"] must be an object`
+        return `inference_types["${key}"] must be an object`
       }
       const io = v as Record<string, unknown>
       if (typeof io['text_input'] !== 'boolean') {
-        return `diffusion_inference_types["${key}"].text_input must be a boolean`
+        return `inference_types["${key}"].text_input must be a boolean`
       }
       if (
         io['accepts'] !== null &&
         io['accepts'] !== undefined &&
         !Array.isArray(io['accepts'])
       ) {
-        return `diffusion_inference_types["${key}"].accepts must be an array or null`
+        return `inference_types["${key}"].accepts must be an array or null`
       }
     }
   }
@@ -481,6 +480,60 @@ export function validateHubConfig(cfg: unknown): string | undefined {
     }
   }
 
+  // Optional: absent is valid; present-must-be-valid (pixel upscaler —
+  // ESRGAN models for `sd-cli -M upscale`). DIFFERENT from the other repo
+  // sections: a GROUP → ARRAY map (group key = the catalog family, e.g.
+  // 'esregan'), each member an entry with a required `default` file.
+  const pixelUpscaler = repoObj['pixel_upscaler']
+  if (pixelUpscaler !== undefined) {
+    if (pixelUpscaler === null || typeof pixelUpscaler !== 'object' || Array.isArray(pixelUpscaler)) {
+      return 'hub config "repo.pixel_upscaler" must be an object when present'
+    }
+    for (const [key, arr] of Object.entries(pixelUpscaler as Record<string, unknown>)) {
+      if (!Array.isArray(arr)) {
+        return `repo.pixel_upscaler["${key}"] must be an array`
+      }
+      for (let i = 0; i < arr.length; i++) {
+        const v = arr[i]
+        if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+          return `repo.pixel_upscaler["${key}"][${i}] must be an object`
+        }
+        const vo = v as Record<string, unknown>
+        if (
+          typeof vo['url'] !== 'string' ||
+          vo['url'] === '' ||
+          !vo['url'].startsWith('https://')
+        ) {
+          return `repo.pixel_upscaler["${key}"][${i}].url must be a non-empty string starting with https://`
+        }
+        if (typeof vo['default'] !== 'string' || vo['default'] === '') {
+          return `repo.pixel_upscaler["${key}"][${i}].default must be a non-empty string`
+        }
+        if (vo['provider'] !== undefined && typeof vo['provider'] !== 'string') {
+          return `repo.pixel_upscaler["${key}"][${i}].provider must be a string when present`
+        }
+        if (vo['label'] !== undefined && typeof vo['label'] !== 'string') {
+          return `repo.pixel_upscaler["${key}"][${i}].label must be a string when present`
+        }
+        if (vo['description'] !== undefined && typeof vo['description'] !== 'string') {
+          return `repo.pixel_upscaler["${key}"][${i}].description must be a string when present`
+        }
+        if (vo['path'] !== undefined) {
+          const p = vo['path']
+          if (typeof p !== 'string' || p.trim() === '') {
+            return `repo.pixel_upscaler["${key}"][${i}].path must be a non-empty string when present`
+          }
+        }
+        if (vo['source'] !== undefined && typeof vo['source'] !== 'string') {
+          return `repo.pixel_upscaler["${key}"][${i}].source must be a string when present`
+        }
+        if (vo['domain'] !== undefined && typeof vo['domain'] !== 'string') {
+          return `repo.pixel_upscaler["${key}"][${i}].domain must be a string when present`
+        }
+      }
+    }
+  }
+
   const diffusion = repoObj['diffusion']
   if (!Array.isArray(diffusion) || diffusion.length === 0) {
     return 'hub config "repo.diffusion" must be a non-empty array'
@@ -497,7 +550,7 @@ export function validateHubConfig(cfg: unknown): string | undefined {
       'label',
       'inference_type',
       'quant_type',
-      'diffusion_type'
+      'family'
     ] as const) {
       const v = dobj[key]
       if (typeof v !== 'string' || v === '') {
@@ -596,30 +649,46 @@ export function validateHubConfig(cfg: unknown): string | undefined {
     }
     // Optional requires block: the diffusion family each companion model
     // resolves from (e.g. wan2_2_t2v requires the wan2_1 VAE + encoder).
+    // EVERY kind accepts the scalar { from } form OR an array of
+    // { from, use_as } pairs — one companion file per item (each from a
+    // possibly different family, emitted as its own --<use_as> flag at spawn).
     const req = dobj['requires']
     if (req !== undefined && req !== null) {
       if (req === null || typeof req !== 'object' || Array.isArray(req)) {
         return `repo.diffusion[${i}].requires must be an object when present`
       }
       for (const [kind, v] of Object.entries(req as Record<string, unknown>)) {
-        if (!['vae', 'encoder', 'audio_encoder'].includes(kind)) {
+        if (
+          !['vae', 'encoder', 'audio_encoder', 'vision', 'tokenizer', 'audio_vae', 'latent_upscaler'].includes(
+            kind
+          )
+        ) {
           return `repo.diffusion[${i}].requires.${kind} is not a known companion kind`
         }
-        if (v === null || typeof v !== 'object' || Array.isArray(v)) {
-          return `repo.diffusion[${i}].requires.${kind} must be an object`
-        }
-        const ro = v as Record<string, unknown>
-        if (typeof ro['from'] !== 'string' || ro['from'] === '') {
-          return `repo.diffusion[${i}].requires.${kind}.from must be a non-empty string`
+        // Unified scalar-or-array for ALL kinds: scalar { from } OR an array
+        // of { from, use_as } objects — both allowed.
+        const entries = Array.isArray(v) ? v : [v]
+        for (let j = 0; j < entries.length; j++) {
+          const item = entries[j]
+          if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+            return `repo.diffusion[${i}].requires.${kind} must be an object or an array of objects`
+          }
+          const io = item as Record<string, unknown>
+          if (typeof io['from'] !== 'string' || io['from'] === '') {
+            return `repo.diffusion[${i}].requires.${kind}[${j}].from must be a non-empty string`
+          }
+          if (io['use_as'] !== undefined) {
+            if (typeof io['use_as'] !== 'string' || io['use_as'] === '') {
+              return `repo.diffusion[${i}].requires.${kind}[${j}].use_as must be a non-empty string when present`
+            }
+          }
         }
       }
     }
   }
 
   // repo.lora — optional (older overrides without it stay valid); present must
-  // be an array (empty allowed) of well-formed LoRA entries. The
-  // `diffustion_types` spelling is the shipped hub.json key and is validated
-  // as-is (plans/lora-support.md §9).
+  // be an array (empty allowed) of well-formed LoRA entries.
   const lora = repoObj['lora']
   if (lora !== undefined && lora !== null) {
     if (!Array.isArray(lora)) {
@@ -641,14 +710,14 @@ export function validateHubConfig(cfg: unknown): string | undefined {
       if (typeof lurl !== 'string' || lurl === '' || !lurl.startsWith('https://')) {
         return `repo.lora[${i}].url must be a non-empty string starting with https://`
       }
-      const dts = lobj['diffustion_types']
+      const dts = lobj['families']
       if (!Array.isArray(dts) || dts.length === 0) {
-        return `repo.lora[${i}].diffustion_types must be a non-empty array`
+        return `repo.lora[${i}].families must be a non-empty array`
       }
       for (let j = 0; j < dts.length; j++) {
         const v = dts[j]
         if (typeof v !== 'string' || v === '') {
-          return `repo.lora[${i}].diffustion_types[${j}] must be a non-empty string`
+          return `repo.lora[${i}].families[${j}] must be a non-empty string`
         }
       }
       if (lobj['description'] !== undefined && typeof lobj['description'] !== 'string') {
@@ -837,6 +906,66 @@ export function validateHubConfig(cfg: unknown): string | undefined {
         const v = dobj[key]
         if (typeof v !== 'number' || !Number.isFinite(v)) {
           return `repo.llm.default.${key} must be a finite number`
+        }
+      }
+    }
+  }
+
+  // repo.adetailer — optional (older overrides without it stay valid); present
+  // must be an object with an optional `default` and an optional `models` array.
+  const adetailer = repoObj['adetailer']
+  if (adetailer !== undefined && adetailer !== null) {
+    if (typeof adetailer !== 'object' || Array.isArray(adetailer)) {
+      return 'hub config "repo.adetailer" must be an object when present'
+    }
+    const adeobj = adetailer as Record<string, unknown>
+    // default — non-empty strings.
+    const adDef = adeobj['default']
+    if (adDef !== undefined && adDef !== null) {
+      if (typeof adDef !== 'object' || Array.isArray(adDef)) {
+        return 'hub config "repo.adetailer.default" must be an object when present'
+      }
+      const adObj = adDef as Record<string, unknown>
+      for (const key of ['provider', 'file'] as const) {
+        const v = adObj[key]
+        if (typeof v !== 'string' || v === '') {
+          return `repo.adetailer.default.${key} must be a non-empty string`
+        }
+      }
+    }
+    // models — array of adetailer entries.
+    const models = adeobj['models']
+    if (models !== undefined && models !== null) {
+      if (!Array.isArray(models)) {
+        return 'hub config "repo.adetailer.models" must be an array when present'
+      }
+      for (let i = 0; i < models.length; i++) {
+        const m = models[i]
+        if (m === null || typeof m !== 'object' || Array.isArray(m)) {
+          return `repo.adetailer.models[${i}] must be an object`
+        }
+        const mobj = m as Record<string, unknown>
+        for (const key of ['provider', 'name', 'label', 'url'] as const) {
+          const v = mobj[key]
+          if (typeof v !== 'string' || v === '') {
+            return `repo.adetailer.models[${i}].${key} must be a non-empty string`
+          }
+        }
+        const murl = mobj['url']
+        if (typeof murl !== 'string' || murl === '' || !murl.startsWith('https://')) {
+          return `repo.adetailer.models[${i}].url must be a non-empty string starting with https://`
+        }
+        if (mobj['path'] !== undefined) {
+          const p = mobj['path']
+          if (typeof p !== 'string' || p.trim() === '') {
+            return `repo.adetailer.models[${i}].path must be a non-empty string when present`
+          }
+        }
+        if (mobj['source'] !== undefined && typeof mobj['source'] !== 'string') {
+          return `repo.adetailer.models[${i}].source must be a string when present`
+        }
+        if (mobj['domain'] !== undefined && typeof mobj['domain'] !== 'string') {
+          return `repo.adetailer.models[${i}].domain must be a string when present`
         }
       }
     }

@@ -7,16 +7,41 @@ License: Apache License 2.0 — permissive; allows use, modification, and distri
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useLightboxStore } from '../stores/lightbox'
+import { useUpscalerStore } from '../stores/upscaler'
 import { saveImageAs } from '../saveImage'
 
 const store = useLightboxStore()
+const upscalerStore = useUpscalerStore()
 
 const fullSrc = ref('')
 const loading = ref(false)
+const resolution = ref('')
 const closeBtn = ref<HTMLButtonElement | null>(null)
+
+// Resolve the intrinsic resolution of the loaded image so the preview can
+// show it (e.g. "1024x1024"). Only images carry a size; videos fall back to
+// the empty state.
+function measureResolution(src: string): void {
+  const img = new Image()
+  img.onload = () => {
+    if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+      resolution.value = `${img.naturalWidth}x${img.naturalHeight}`
+    }
+  }
+  img.onerror = () => {
+    resolution.value = ''
+  }
+  img.src = src
+}
 
 function onKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape') {
+    // A higher upscaler layer (dialog / busy / compare) owns Escape while it
+    // is open — it closes itself; the lightbox must stay underneath. (The
+    // compare overlay stops us directly via stopImmediatePropagation; the
+    // upscale dialog's listener registers AFTER ours, so this guard is what
+    // saves us there.)
+    if (upscalerStore.phase !== 'idle') return
     e.preventDefault()
     e.stopPropagation()
     store.close()
@@ -32,31 +57,35 @@ async function focusClose(): Promise<void> {
 // run sees store.path === null and must no-op (the else branch is a harmless
 // no-op at that point).
 watch(
-  () => store.path,
-  async (path) => {
-    if (path) {
-      document.body.style.overflow = 'hidden'
-      window.addEventListener('keydown', onKeydown, true)
-      loading.value = true
-      fullSrc.value = ''
-      void focusClose()
-      try {
-        const data = await window.api.imageFromPath(path)
-        // The resolve can outlive the open (fast close + reopen of another
-        // image): only apply if this resolve is still the current one.
-        if (store.path === path) fullSrc.value = data
-      } catch {
-        // leave fullSrc empty → "image unavailable" fallback below
-      } finally {
-        if (store.path === path) loading.value = false
-      }
-    } else {
-      document.body.style.overflow = ''
-      window.removeEventListener('keydown', onKeydown, true)
-    }
-  },
-  { immediate: true }
-)
+   () => store.path,
+   async (path) => {
+     if (path) {
+       document.body.style.overflow = 'hidden'
+       window.addEventListener('keydown', onKeydown, true)
+       loading.value = true
+       fullSrc.value = ''
+       resolution.value = ''
+       void focusClose()
+       try {
+         const data = await window.api.imageFromPath(path)
+         // The resolve can outlive the open (fast close + reopen of another
+         // image): only apply if this resolve is still the current one.
+         if (store.path === path) {
+           fullSrc.value = data
+           measureResolution(data)
+         }
+       } catch {
+         // leave fullSrc empty → "image unavailable" fallback below
+       } finally {
+         if (store.path === path) loading.value = false
+       }
+     } else {
+       document.body.style.overflow = ''
+       window.removeEventListener('keydown', onKeydown, true)
+     }
+   },
+   { immediate: true }
+ )
 
 onBeforeUnmount(() => {
   document.body.style.overflow = ''
@@ -102,9 +131,24 @@ onBeforeUnmount(() => {
             <path d="M12 15V3" />
           </svg>
         </button>
+        <button
+          class="icon lightbox-tool"
+          title="Upscale image…"
+          aria-label="Upscale image"
+          :disabled="!fullSrc"
+          @click="upscalerStore.openDialog(store.path!)"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M15 3h6v6" />
+            <path d="M9 21H3v-6" />
+            <path d="M21 3l-7 7" />
+            <path d="M3 21l7-7" />
+          </svg>
+        </button>
         <div v-if="$slots.tools" class="tools-strip">
           <slot name="tools"></slot>
         </div>
+        <div v-if="resolution" class="lightbox-resolution mono">{{ resolution }}</div>
       </div>
     </div>
   </Teleport>
@@ -183,5 +227,11 @@ onBeforeUnmount(() => {
 }
 .tools-strip {
   flex-shrink: 0;
+}
+.lightbox-resolution {
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 13px;
+  padding: 0 8px;
 }
 </style>

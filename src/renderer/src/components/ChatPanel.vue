@@ -12,15 +12,31 @@ import type {
   ModelType,
   ResolutionEntry,
   SessionInputs,
+  SessionIpAdapter,
+  SessionControlNet,
   SessionLora,
-  SessionSamplingOverride
+  SessionSamplingOverride,
+  AdetailerSettings
 } from '@shared/types'
-import { DOWNLOAD_ABORTED_MESSAGE, applySamplingOverrides, isValidSeed } from '@shared/types'
+import {
+  DOWNLOAD_ABORTED_MESSAGE,
+  FALLBACK_SAMPLING,
+  applySamplingOverrides,
+  isValidSeed
+} from '@shared/types'
 import { useAppStore } from '../stores/app'
 import { useResizeStore } from '../stores/resize'
 import { useSessionsStore } from '../stores/sessions'
+import { useGenerationStore } from '../stores/generation'
 import { useSettingsStore, type ModelDownloadState } from '../stores/settings'
-import { requiredFamilyFor, resolveEncoderBundle, type EncoderBundleEntry } from '../deps'
+import { useUpscalerStore } from '../stores/upscaler'
+import {
+  hubEntryNameFor,
+  requiredCompanionsFor,
+  requiredEncoderBundle,
+  resolveEncoderBundle,
+  type EncoderBundleEntry
+} from '../deps'
 import { baseName } from '../search'
 import { toast } from '../toast'
 import { confirm } from '../confirm'
@@ -36,12 +52,17 @@ import LoraDialog from './LoraDialog.vue'
 import InpaintDialog from './InpaintDialog.vue'
 import OutpaintDialog, { type OutpaintMargins } from './OutpaintDialog.vue'
 import PaintDialog from './PaintDialog.vue'
+import AdetailerDialog from './AdetailerDialog.vue'
+import IpAdapterDialog from './IpAdapterDialog.vue'
+import ControlNetDialog from './ControlNetDialog.vue'
 import logoTiny from '../../../assets/logo-square-tiny.png'
 
 const appStore = useAppStore()
 const resizeStore = useResizeStore()
 const sessionsStore = useSessionsStore()
 const settingsStore = useSettingsStore()
+const upscalerStore = useUpscalerStore()
+const genStore = useGenerationStore()
 
 // ---------- composer state ----------
 const prompt = ref('')
@@ -89,6 +110,13 @@ const pickerOpen = ref(false)
 const negOpen = ref(false)
 const samplingOpen = ref(false)
 const loraOpen = ref(false)
+const adetailerOpen = ref(false)
+const ipAdapterOpen = ref(false)
+const controlNetOpen = ref(false)
+// Preview dialog state — shows the full sd-cli command line without running it.
+const previewOpen = ref(false)
+const previewCommand = ref('')
+const previewError = ref('')
 
 // ---------- per-session composer input persistence ----------
 // The one-shot saved resolution the model watcher consumes after computing
@@ -128,8 +156,15 @@ function persistInputs(sessionId: string | null, patch: SessionInputs): void {
   if (!sessionId) return
   const merged: SessionInputs = { ...(pendingInputs.get(sessionId) ?? {}) }
   if (patch.model !== undefined) merged.model = patch.model
-  if (patch.diffusionType !== undefined) merged.diffusionType = patch.diffusionType
+  // family: the NEW key for the model's diffusion family — new saves carry
+  // `family` INSTEAD of `diffusionType` (the legacy key is dropped here so a
+  // re-pick migrates the pending patch to the new shape).
+  if (patch.family !== undefined) {
+    merged.family = patch.family
+    delete merged.diffusionType
+  } else if (patch.diffusionType !== undefined) merged.diffusionType = patch.diffusionType
   if (patch.modelProvider !== undefined) merged.modelProvider = patch.modelProvider
+  if (patch.diffusionName !== undefined) merged.diffusionName = patch.diffusionName
   if (patch.resolution) {
     // Copy into a plain object: `resolution` holds entries straight from the
     // Pinia-reactive configs (Vue Proxies), and structured clone — what
@@ -168,10 +203,16 @@ function flushPendingInputs(): void {
     const saved = session.inputs ?? {}
     const effective: SessionInputs = { ...saved }
     if (patch.model !== undefined) effective.model = patch.model
+    if (patch.family !== undefined) {
+      effective.family = patch.family
+      delete effective.diffusionType
+    }
     if (patch.diffusionType !== undefined) effective.diffusionType = patch.diffusionType
+    if (patch.diffusionName !== undefined) effective.diffusionName = patch.diffusionName
     if (patch.resolution !== undefined) effective.resolution = patch.resolution
     const changed =
       (effective.model ?? undefined) !== (saved.model ?? undefined) ||
+      (effective.family ?? undefined) !== (saved.family ?? undefined) ||
       (effective.diffusionType ?? undefined) !== (saved.diffusionType ?? undefined) ||
       !sameResolution(effective.resolution, saved.resolution)
     if (!changed) continue
@@ -197,8 +238,12 @@ function onResolutionSelect(entry: ResolutionEntry): void {
   resOpen.value = false
 }
 const sampling = computed(() => {
-  const base = appStore.configs?.sampling[diffusionType.value]
-  if (!base) return null
+  // Complete the configured entry over the shared fallback — gen:start reads
+  // every descriptor UNGUARDED, and an entry may predate a key (boogu_image
+  // lacks `control_video`).
+  const cfg = appStore.configs
+  if (!cfg) return null
+  const base = { ...FALLBACK_SAMPLING, ...(cfg.sampling[diffusionType.value] ?? {}) }
   return settingsStore.samplingFor(diffusionType.value, base)
 })
 // Per-session negative prompt (empty ⇒ inherit the global default).
@@ -208,8 +253,9 @@ const sessionNegative = computed(() => sessionsStore.active?.inputs?.negativePro
 // `sessionSampling` is the source for the request fields and the summary,
 // session overrides flow everywhere automatically.
 const sessionSampling = computed(() => {
-  const base = appStore.configs?.sampling[diffusionType.value]
-  if (!base) return null
+  const cfg = appStore.configs
+  if (!cfg) return null
+  const base = { ...FALLBACK_SAMPLING, ...(cfg.sampling[diffusionType.value] ?? {}) }
   return applySamplingOverrides(settingsStore.samplingFor(diffusionType.value, base), sessionsStore.active?.inputs?.sampling)
 })
 // Rows for the composer's sampling-info hover popover: the configured
@@ -237,6 +283,8 @@ const samplingRows = computed(() => {
   if (s.frame_rate?.show) rows.push({ label: 'Frame rate', value: `${s.frame_rate.default ?? 0} fps` })
   const seed = sessionsStore.active?.inputs?.sampling?.seed
   rows.push({ label: 'Seed', value: isValidSeed(seed) ? `fixed ${seed}` : 'random' })
+  const extraArgs = sessionsStore.active?.inputs?.sampling?.args?.trim()
+  if (extraArgs) rows.push({ label: 'Args', value: extraArgs.length > 96 ? `${extraArgs.slice(0, 96)}…` : extraArgs, title: extraArgs })
   const neg = sessionNegative.value.trim() || s.negative.default?.trim() || ''
   if (neg) rows.push({ label: 'Negative', value: neg.length > 96 ? `${neg.slice(0, 96)}…` : neg, title: neg })
   // Debugging aid: the session id — locates data/sessions/<id>.json (the
@@ -270,16 +318,27 @@ const usePrevious = computed({
   }
 })
 // Video-era channels (WAN): driving audio (--audio), control-frames directory
-// (--control-video) and end image (--end-img).
+// (--control-video) and end image (--end-img). The control-video gate is the
+// `control_video` descriptor's `show` (NOT video_input — that channel is
+// reserved; the anima entry proves the distinction).
 const allowAudio = computed(() => sampling.value?.audio_input.show === true)
-const allowControlVideo = computed(() => sampling.value?.video_input.show === true)
+const allowControlVideo = computed(() => sampling.value?.control_video?.show === true)
 const allowEndImage = computed(() => sampling.value?.end_image_input.show === true)
+// Repeatable reference channels (--ref-audio / --ref-video, MiniMax-H3
+// Ref2VA) — image_reference-style arrays capped by the channel `max`.
+const allowAudioRef = computed(() => sampling.value?.audio_reference?.show === true)
+const maxAudioRef = computed(() => sampling.value?.audio_reference?.max ?? 0)
+const allowVideoRef = computed(() => sampling.value?.video_reference?.show === true)
+const maxVideoRef = computed(() => sampling.value?.video_reference?.max ?? 0)
 const refsEnabled = computed(() => allowRef.value && maxRef.value > 0)
 const inputsEnabled = computed(() => allowInput.value && maxInput.value > 0)
 // Sticky video-era channel states (single-valued flags — one path each).
 const audioPath = ref('')
 const controlVideoPath = ref('')
 const endImagePath = ref('')
+// Sticky repeatable reference-channel states (arrays — one chip per path).
+const audioRefPaths = ref<string[]>([])
+const videoRefPaths = ref<string[]>([])
 // Stale-state reset on diffusion-type switches: clear each channel when its
 // gate turns off, and uncheck 'Use previous image' when its own gate turns
 // off or when transitioning into the fully-forbidden state (the checkbox is
@@ -337,11 +396,25 @@ const allowInpainting = computed(() => sampling.value?.allow_inpainting.show ===
 // `allow_painting.show` gates the Paint button — a separate feature flag from
 // allow_inpainting: painting produces a MERGED image, not a mask.
 const allowPainting = computed(() => sampling.value?.allow_painting.show === true)
+// `adetailer.show` gates the ADetailer button — a separate feature flag,
+// absent/`show: false` ⇒ the button is hidden (v-if, not disabled).
+const allowAdetailer = computed(() => sampling.value?.adetailer?.show === true)
+// `ip_adapter.show` gates the IP Adapter button — a separate feature flag,
+// absent/`show: false` ⇒ the button is hidden (v-if, not disabled).
+const allowIpAdapter = computed(() => sampling.value?.ip_adapter?.show === true)
+// `control_net.show` gates the Control Net button — a separate feature flag,
+// absent/`show: false` ⇒ the button is hidden (v-if, not disabled).
+const allowControlNet = computed(() => sampling.value?.control_net?.show === true)
 // Clear the video-era channel states when their gate turns off.
 watch([allowAudio, allowControlVideo, allowEndImage], ([a, c, e]) => {
   if (!a) audioPath.value = ''
   if (!c) controlVideoPath.value = ''
   if (!e) endImagePath.value = ''
+})
+// Clear the repeatable reference-channel states when their gate turns off.
+watch([allowAudioRef, allowVideoRef], ([ar, vr]) => {
+  if (!ar) audioRefPaths.value = []
+  if (!vr) videoRefPaths.value = []
 })
 // Background availability (same rule for both dialogs): the first attached
 // image wins; otherwise the previous image when 'Use previous image' is
@@ -782,7 +855,13 @@ function onPick(e: CatalogEntry): void {
   // (model-collision-hardening plan §6).
   persistInputs(sessionsStore.activeId, {
     model: e.name,
-    diffusionType: e.diffusionType,
+    // The NEW session key: the model's family (was `diffusionType`).
+    family: e.diffusionType,
+    // The hub.json diffusion entry `name` (e.g. comfy_org_boogu_image) — the
+    // precise hub-config lookup key when a family maps to several entries.
+    // hubEntryNameFor derives it from the fresh hub config while the cached
+    // catalog predates the `hubName` stamp.
+    diffusionName: hubEntryNameFor(e),
     modelProvider: e.provider
   })
 }
@@ -860,8 +939,13 @@ async function ensureSingleDownloaded(e: CatalogEntry): Promise<void> {
     // gen:start will use) instead of a basename-global guess.
     const v = await window.api.modelsVerify(e.type, e.name, e.url, e.provider, e.diffusionType)
     if (!v.ok) {
+      // `exists` distinguishes a truncated file from one that is simply not
+      // installed at this model's own (family, provider) slot — the strict
+      // per-family resolution makes the latter the common repair case.
       toast(
-        `${e.name} is incomplete (${v.actual} of ${v.expected} bytes) — re-downloading`,
+        v.exists
+          ? `${e.name} is incomplete (${v.actual} of ${v.expected} bytes) — re-downloading`
+          : `${e.name} is not installed for this model's configuration — downloading`,
         'info',
         8000
       )
@@ -875,7 +959,7 @@ async function ensureSingleDownloaded(e: CatalogEntry): Promise<void> {
   if (!p) {
     p = (async () => {
       try {
-        await settingsStore.downloadModel(e.type, e.url, e.provider)
+        await settingsStore.downloadModel(e.type, e.url, e.provider, false, e.diffusionType)
         await refreshInstalled()
         toast(`Downloaded ${e.name}`, 'ok')
       } catch (err) {
@@ -934,12 +1018,22 @@ watch(
       return
     }
     // Companion-model families: the hub entry's `requires` blocks route the
-    // VAE / encoder / audio-encoder resolution to a DIFFERENT diffusion
-    // family (wan2_2_t2v uses the wan2_1 VAE + encoder; S2V adds the wan2_2
-    // audio encoder). Absent → the diffusion type itself.
-    const vaeFamily = requiredFamilyFor(dt, 'vae')
-    const encFamily = requiredFamilyFor(dt, 'encoder')
-    const audFamily = requiredFamilyFor(dt, 'audio_encoder')
+    // companion resolution to a DIFFERENT diffusion family (wan2_2_t2v uses
+    // the wan2_1 VAE + encoder; S2V adds the wan2_2 audio encoder). The
+    // companion arrays are NEVER empty — an undeclared kind falls back to the
+    // diffusion type itself under the kind's default CLI flag.
+    // The hub entry `name` pins the EXACT hub entry when a family maps to
+    // several entries (multiple providers). hubEntryNameFor prefers the
+    // catalog stamp and derives from the fresh hub config while the cache
+    // predates it.
+    const hubName = entry ? hubEntryNameFor(entry) : undefined
+    const vaeFamily = requiredCompanionsFor(dt, 'vae', hubName)[0].from
+    const encComps = requiredCompanionsFor(dt, 'encoder', hubName)
+    const encFamily = encComps[0].from
+    const audFamily = requiredCompanionsFor(dt, 'audio_encoder', hubName)[0].from
+    const tokenizerFamily = requiredCompanionsFor(dt, 'tokenizer', hubName)[0].from
+    const audioVaeFamily = requiredCompanionsFor(dt, 'audio_vae', hubName)[0].from
+    const latentUpscalerFamily = requiredCompanionsFor(dt, 'latent_upscaler', hubName)[0].from
     const st = await window.api.settingsGet()
     // Re-entrancy token: restore triggers this watcher on every session
     // switch, so two overlapping async runs — rapid A→B→C switching — could
@@ -972,7 +1066,14 @@ watch(
     // Assignment (not conditional clearing) covers bundle→single,
     // single→bundle, bundle→bundle and model-deselection without enumerating
     // transitions, so a stale bundle can never leak across model switches.
-    const bundle = resolveEncoderBundle(encFamily)
+    // Array-form `requires.encoder` (from hub.json, e.g. hunyuan_video_1_5's
+    // qwen2_5_vl + byt5_small each from a different family) is resolved from
+    // the FRESH config and takes precedence over the SD3.5 `defaults[]` bundle
+    // and the single-file chain: each item carries its own `useAs` and resolves
+    // from its own `from` family, so it must be surfaced before the legacy
+    // bundle/single-file flow.
+    const requiredBundle = requiredEncoderBundle(dt, hubName)
+    const bundle = requiredBundle.length ? requiredBundle : resolveEncoderBundle(encFamily)
     encoderBundle.value = bundle
     if (bundle.length) {
       encoderEntry.value = null
@@ -1007,43 +1108,47 @@ watch(
       }
     }
     // Vision (mmproj) model — only present for diffusion_types that declare a
-    // `vision` dependency in hub.json (e.g. qwen_image_2.1).
-    const userVisionName = st.defaultVision?.[dt]
+    // `vision` dependency in hub.json (e.g. boogu_image). The family it resolves
+    // from is `requiredCompanionsFor(dt, 'vision')[0].from` (the
+    // `requires.vision.from` family when present, else dt itself) — exactly like
+    // the VAE resolution above.
+    const visionFamily = requiredCompanionsFor(dt, 'vision')[0].from
+    const userVisionName = st.defaultVision?.[visionFamily]
     // `vision` is optional in HubConfig — absent when the diffusion type declares no vision dependency.
-    const defaultVision = appStore.configs?.hub.repo.vision?.[dt]?.default ?? ''
+    const defaultVision = appStore.configs?.hub.repo.vision?.[visionFamily]?.default ?? ''
     const defaultVisionName = defaultVision.split('/').pop() ?? defaultVision
     visionEntry.value =
       (userVisionName
         ? (appStore.catalog?.entries ?? []).find(
-            (e) => e.type === 'vision' && e.diffusionType === dt && e.name === userVisionName
+            (e) => e.type === 'vision' && e.diffusionType === visionFamily && e.name === userVisionName
           )
         : undefined) ??
       (appStore.catalog?.entries ?? []).find(
-        (e) => e.type === 'vision' && e.diffusionType === dt && (e.name === defaultVision || e.name === defaultVisionName)
+        (e) => e.type === 'vision' && e.diffusionType === visionFamily && (e.name === defaultVision || e.name === defaultVisionName)
       ) ??
-      (appStore.catalog?.entries ?? []).find((e) => e.type === 'vision' && e.diffusionType === dt && e.isDefault) ??
-      (appStore.catalog?.entries ?? []).find((e) => e.type === 'vision' && e.diffusionType === dt) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'vision' && e.diffusionType === visionFamily && e.isDefault) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'vision' && e.diffusionType === visionFamily) ??
       null
     // Tokenizer — only present for diffusion_types that declare a `tokenizer`
     // dependency in hub.json (e.g. moss_image). Resolution mirrors vision:
     // user-configured default > hub.json `default` (matched by full path AND
     // basename for stale cached catalogs) > the catalog's `isDefault` flag >
     // any entry > null.
-    const userTokenizerName = st.defaultTokenizer?.[dt]
+    const userTokenizerName = st.defaultTokenizer?.[tokenizerFamily]
     // `tokenizer` is optional in HubConfig — absent when the diffusion type declares no tokenizer dependency.
-    const defaultTokenizer = appStore.configs?.hub.repo.tokenizer?.[dt]?.default ?? ''
+    const defaultTokenizer = appStore.configs?.hub.repo.tokenizer?.[tokenizerFamily]?.default ?? ''
     const defaultTokenizerName = defaultTokenizer.split('/').pop() ?? defaultTokenizer
     tokenizerEntry.value =
       (userTokenizerName
         ? (appStore.catalog?.entries ?? []).find(
-            (e) => e.type === 'tokenizer' && e.diffusionType === dt && e.name === userTokenizerName
+            (e) => e.type === 'tokenizer' && e.diffusionType === tokenizerFamily && e.name === userTokenizerName
           )
         : undefined) ??
       (appStore.catalog?.entries ?? []).find(
-        (e) => e.type === 'tokenizer' && e.diffusionType === dt && (e.name === defaultTokenizer || e.name === defaultTokenizerName)
+        (e) => e.type === 'tokenizer' && e.diffusionType === tokenizerFamily && (e.name === defaultTokenizer || e.name === defaultTokenizerName)
       ) ??
-      (appStore.catalog?.entries ?? []).find((e) => e.type === 'tokenizer' && e.diffusionType === dt && e.isDefault) ??
-      (appStore.catalog?.entries ?? []).find((e) => e.type === 'tokenizer' && e.diffusionType === dt) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'tokenizer' && e.diffusionType === tokenizerFamily && e.isDefault) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'tokenizer' && e.diffusionType === tokenizerFamily) ??
       null
     // Audio encoder (wav2vec2 — Wan2.2 S2V only): resolved from the REQUIRED
     // family (hub.json repo.audio_encoder is keyed by the wan2_2 family and
@@ -1065,39 +1170,40 @@ watch(
       (appStore.catalog?.entries ?? []).find((e) => e.type === 'audio_encoder' && e.diffusionType === audFamily) ??
       null
     // Audio VAE (LTX 2.5's audio track) and latent upscaler (LTX 2.5 hires
-    // fix) — resolved from the diffusion type ITSELF (no `requires`
-    // indirection; both hub sections are family-keyed single-default-file
-    // entries). Types whose hub config declares neither resolve to null —
-    // no entry, no flag.
-    const userAudioVaeName = st.defaultAudioVae?.[dt]
-    const defaultAudioVae = appStore.configs?.hub.repo.audio_vae?.[dt]?.default ?? ''
+    // fix) — resolved from the companion family (the hub entry's
+    // `requires.audio_vae` / `requires.latent_upscaler.from` when declared,
+    // else the diffusion type itself; both hub sections are family-keyed
+    // single-default-file entries). Types whose hub config declares neither
+    // resolve to null — no entry, no flag.
+    const userAudioVaeName = st.defaultAudioVae?.[audioVaeFamily]
+    const defaultAudioVae = appStore.configs?.hub.repo.audio_vae?.[audioVaeFamily]?.default ?? ''
     const defaultAudioVaeName = defaultAudioVae.split('/').pop() ?? defaultAudioVae
     audioVaeEntry.value =
       (userAudioVaeName
         ? (appStore.catalog?.entries ?? []).find(
-            (e) => e.type === 'audio_vae' && e.diffusionType === dt && e.name === userAudioVaeName
+            (e) => e.type === 'audio_vae' && e.diffusionType === audioVaeFamily && e.name === userAudioVaeName
           )
         : undefined) ??
       (appStore.catalog?.entries ?? []).find(
-        (e) => e.type === 'audio_vae' && e.diffusionType === dt && (e.name === defaultAudioVae || e.name === defaultAudioVaeName)
+        (e) => e.type === 'audio_vae' && e.diffusionType === audioVaeFamily && (e.name === defaultAudioVae || e.name === defaultAudioVaeName)
       ) ??
-      (appStore.catalog?.entries ?? []).find((e) => e.type === 'audio_vae' && e.diffusionType === dt && e.isDefault) ??
-      (appStore.catalog?.entries ?? []).find((e) => e.type === 'audio_vae' && e.diffusionType === dt) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'audio_vae' && e.diffusionType === audioVaeFamily && e.isDefault) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'audio_vae' && e.diffusionType === audioVaeFamily) ??
       null
-    const userLatentUpscalerName = st.defaultLatentUpscaler?.[dt]
-    const defaultLatentUpscaler = appStore.configs?.hub.repo.latent_upscaler?.[dt]?.default ?? ''
+    const userLatentUpscalerName = st.defaultLatentUpscaler?.[latentUpscalerFamily]
+    const defaultLatentUpscaler = appStore.configs?.hub.repo.latent_upscaler?.[latentUpscalerFamily]?.default ?? ''
     const defaultLatentUpscalerName = defaultLatentUpscaler.split('/').pop() ?? defaultLatentUpscaler
     latentUpscalerEntry.value =
       (userLatentUpscalerName
         ? (appStore.catalog?.entries ?? []).find(
-            (e) => e.type === 'latent_upscaler' && e.diffusionType === dt && e.name === userLatentUpscalerName
+            (e) => e.type === 'latent_upscaler' && e.diffusionType === latentUpscalerFamily && e.name === userLatentUpscalerName
           )
         : undefined) ??
       (appStore.catalog?.entries ?? []).find(
-        (e) => e.type === 'latent_upscaler' && e.diffusionType === dt && (e.name === defaultLatentUpscaler || e.name === defaultLatentUpscalerName)
+        (e) => e.type === 'latent_upscaler' && e.diffusionType === latentUpscalerFamily && (e.name === defaultLatentUpscaler || e.name === defaultLatentUpscalerName)
       ) ??
-      (appStore.catalog?.entries ?? []).find((e) => e.type === 'latent_upscaler' && e.diffusionType === dt && e.isDefault) ??
-      (appStore.catalog?.entries ?? []).find((e) => e.type === 'latent_upscaler' && e.diffusionType === dt) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'latent_upscaler' && e.diffusionType === latentUpscalerFamily && e.isDefault) ??
+      (appStore.catalog?.entries ?? []).find((e) => e.type === 'latent_upscaler' && e.diffusionType === latentUpscalerFamily) ??
       null
     // Restore support: when a saved resolution is pending, prefer it — the
     // dimension-matched preset (keeps canonical preset names) when one
@@ -1229,20 +1335,25 @@ watch(
       return
     }
 
-    // Prefer the PROVIDER-matching entry when the session saved one (pins the
-    // diffusion variant across reloads when two same-family entries share a
-    // basename); legacy sessions without modelProvider fall back to the
+    // The stored model NAME is the primary key — the saved family (the NEW
+    // `family` key, falling back to the legacy `diffusionType`) and provider
+    // are NARROWING hints. A family that no longer matches (hub rename, a
+    // retargeted entry) degrades to the name-only match instead of failing
+    // the restore; legacy sessions without modelProvider fall back to the
     // first name match — the pre-change behavior (plan §6/§9 item 14).
+    const savedFamily = inputs.family ?? inputs.diffusionType
     const nameMatches = catalog.entries.filter(
-      (e) =>
-        e.type === 'diffusion' &&
-        e.diffusionType === inputs.diffusionType &&
-        e.name === inputs.model
+      (e) => e.type === 'diffusion' && e.name === inputs.model
     )
+    const familyMatches = savedFamily
+      ? nameMatches.filter((e) => e.diffusionType === savedFamily)
+      : []
     const resolved =
       (inputs.modelProvider
-        ? nameMatches.find((e) => e.provider === inputs.modelProvider)
+        ? familyMatches.find((e) => e.provider === inputs.modelProvider) ??
+          nameMatches.find((e) => e.provider === inputs.modelProvider)
         : undefined) ??
+      familyMatches[0] ??
       nameMatches[0] ??
       null
 
@@ -1378,6 +1489,39 @@ async function addEndImage(): Promise<void> {
 }
 function clearEndImage(): void {
   endImagePath.value = ''
+}
+// ---------- repeatable reference channels (MiniMax-H3 Ref2VA) ----------
+// Reference audio (--ref-audio, repeatable standalone WAV reference) — append
+// per pick under the channel `max` cap (the pickMedia flow is single-select;
+// the repeatable flag means the user picks repeatedly).
+async function addAudioRef(): Promise<void> {
+  const picked = await window.api.pickMedia([{ name: 'Audio', extensions: ['wav'] }])
+  for (const p of picked) {
+    if (audioRefPaths.value.length >= maxAudioRef.value) {
+      toast(`Maximum of ${maxAudioRef.value} reference audio file${maxAudioRef.value === 1 ? '' : 's'}`, 'error')
+      break
+    }
+    if (!audioRefPaths.value.includes(p)) audioRefPaths.value.push(p)
+  }
+}
+function removeAudioRef(p: string): void {
+  audioRefPaths.value = audioRefPaths.value.filter((x) => x !== p)
+}
+// Reference video (--ref-video, repeatable) — sd-cli wants a reference video
+// FRAMES DIRECTORY at 24 fps, so this opens the directory picker (NOT a media
+// file picker).
+async function addVideoRef(): Promise<void> {
+  const dir = await window.api.pickDirectory()
+  if (!dir) return
+  if (videoRefPaths.value.includes(dir)) return
+  if (videoRefPaths.value.length >= maxVideoRef.value) {
+    toast(`Maximum of ${maxVideoRef.value} reference video director${maxVideoRef.value === 1 ? 'y' : 'ies'}`, 'error')
+    return
+  }
+  videoRefPaths.value.push(dir)
+}
+function removeVideoRef(p: string): void {
+  videoRefPaths.value = videoRefPaths.value.filter((x) => x !== p)
 }
 
 // Drag-and-drop reference images onto the composer. Files dragged in from the OS
@@ -1540,6 +1684,11 @@ async function generate(): Promise<void> {
       // within one family — main resolves the diffusion model through the
       // family/provider-scoped pathFor chain with it (plan §3.6).
       modelProvider: modelEntry.value.provider,
+      // The hub.json diffusion entry `name` of the selected model — main
+      // resolves the entry's hub configuration (requires block…) precisely
+      // when a family maps to several entries. hubEntryNameFor derives it
+      // from the fresh hub config while the catalog cache predates the stamp.
+      ...(hubEntryNameFor(modelEntry.value) ? { diffusionName: hubEntryNameFor(modelEntry.value) } : {}),
       vae: vaeEntry.value?.name,
       // Provider disambiguates a basename collision across provider folders
       // (e.g. sd3_5's `diffusion_pytorch_model.safetensors` exists under both
@@ -1583,6 +1732,10 @@ async function generate(): Promise<void> {
       ...(audioPath.value ? { audioPath: audioPath.value } : {}),
       ...(controlVideoPath.value ? { controlVideoPath: controlVideoPath.value } : {}),
       ...(endImagePath.value ? { endImagePath: endImagePath.value } : {}),
+      // Repeatable reference channels (--ref-audio / --ref-video, MiniMax-H3
+      // Ref2VA) — main re-validates, dedupes and caps them the same way.
+      ...(audioRefPaths.value.length ? { audioReferencePaths: [...audioRefPaths.value] } : {}),
+      ...(videoRefPaths.value.length ? { videoReferencePaths: [...videoRefPaths.value] } : {}),
       usePrevious: chainPrevious,
       // omitted entirely when unchecked or disallowed — the request payload
       // carries no previous image unless the user explicitly opted in
@@ -1610,6 +1763,9 @@ async function generate(): Promise<void> {
       // session override, then the settings override) — the renderer sends
       // nothing.
       negativePrompt: sessionNegative.value.trim() || undefined,
+      // RAW merged value — a concrete string, or null. Main resolves the
+      // global fallback; '' / null ⇒ no --model-args flag (sd-cli default).
+      modelArgs: s?.model_args.default ?? undefined,
       strength: s?.strength.default ?? null
     }
     // Sticky mask: a saved mask rides on EVERY Send until cleared. The
@@ -1642,6 +1798,10 @@ async function generate(): Promise<void> {
     }
     try {
       await window.api.genStart(req)
+      // Seed the per-session busy state so the window between the IPC return
+      // and the first 'running' event is covered even if the user switches
+      // sessions in between (plans/session-switch-busy-state.md).
+      genStore.markRunning(req.sessionId)
       // Main has persisted the messages by now — load them first so the optimistic
       // placeholders are replaced by the real ones, then drop the placeholders.
       await sessionsStore.refreshActive()
@@ -1653,7 +1813,13 @@ async function generate(): Promise<void> {
       inputImages.value = [...inputs]
       pendingPrompt.value = null
       pendingRefs.value = []
-      busy.value = false
+      // Re-mirror from the store instead of blindly clearing: a rejected send
+      // (main's double-spawn guard) must not clear a busy state that is
+      // genuinely still running for this session.
+      const e = genStore.of(req.sessionId)
+      busy.value = !!e
+      converting.value = e?.status === 'converting'
+      progress.value = e?.step != null ? { step: e.step, total: e.totalSteps ?? 0 } : null
       void sessionsStore.refreshActive()
       // A purged stale mask reference already got a native warning dialog
       // from main (which also pushed masks:invalidated) — don't double-toast.
@@ -1665,8 +1831,69 @@ async function generate(): Promise<void> {
   }
 }
 
+async function preview(): Promise<void> {
+  if (!prompt.value.trim()) return
+  if (!sessionsStore.activeId) { toast('No active session', 'error'); return }
+  previewOpen.value = true
+  previewError.value = ''
+  previewCommand.value = ''
+  // Build a GenerationRequest mirroring what generate() builds, then call
+  // gen:preview to get the command line without spawning sd-cli.
+  try {
+    const s = sessionSampling.value
+    const modelE = modelEntry.value
+    if (!modelE) { previewError.value = 'No model selected'; return }
+    const previewReq: GenerationRequest = {
+      sessionId: sessionsStore.activeId,
+      prompt: prompt.value,
+      model: modelE.name,
+      diffusionType: modelE.diffusionType,
+      modelProvider: modelE.provider,
+      ...(hubEntryNameFor(modelE) ? { diffusionName: hubEntryNameFor(modelE) } : {}),
+      vae: vaeEntry.value?.name,
+      vaeProvider: vaeEntry.value?.provider,
+      ...(encoderBundle.value.length
+        ? { encoders: encoderBundle.value.map((e) => ({ name: e.name, useAs: e.useAs, provider: e.provider })) }
+        : { encoder: encoderEntry.value?.name, encoderProvider: encoderEntry.value?.provider }),
+      vision: visionEntry.value?.name,
+      tokenizer: tokenizerEntry.value?.name,
+      ...(audioEncoderEntry.value ? { audioEncoder: audioEncoderEntry.value.name } : {}),
+      ...(audioVaeEntry.value ? { audioVae: audioVaeEntry.value.name, audioVaeProvider: audioVaeEntry.value.provider } : {}),
+      ...(latentUpscalerEntry.value ? { latentUpscaler: latentUpscalerEntry.value.name, latentUpscalerProvider: latentUpscalerEntry.value.provider } : {}),
+      resolution: resolution.value ? { width: resolution.value.width, height: resolution.value.height } : { width: s?.width.default ?? 1024, height: s?.height.default ?? 1024 },
+      referencePaths: [...refImages.value],
+      inputImagePaths: [...inputImages.value],
+      usePrevious: usePrevious.value,
+      previousImageMode: previousMode.value,
+      previousImagePath: usePrevious.value ? sessionsStore.lastGeneratedImage : undefined,
+      steps: s?.steps.default ?? null,
+      cfg: s?.cfg.default ?? null,
+      sampler: s?.sampler.default ?? null,
+      scheduler: s?.scheduler.default ?? undefined,
+      flowShift: s?.flow_shift.default ?? undefined,
+      negativePrompt: sessionNegative.value.trim() || undefined,
+      modelArgs: s?.model_args.default ?? undefined,
+      strength: s?.strength.default ?? null
+    }
+    const result = await window.api.genPreview(previewReq)
+    previewCommand.value = result.command
+  } catch (err) {
+    previewError.value = (err as Error)?.message ?? String(err)
+  }
+}
+
 function stop(): void {
   if (sessionsStore.activeId) void window.api.genStop(sessionsStore.activeId)
+}
+
+function copyPreview(): void {
+  if (previewCommand.value) {
+    navigator.clipboard.writeText(previewCommand.value).then(() => {
+      toast('Command copied to clipboard', 'ok')
+    }).catch(() => {
+      toast('Failed to copy', 'error')
+    })
+  }
 }
 
 // ---------- prompt enhancer (LLM) ----------
@@ -1717,6 +1944,24 @@ async function onSaveLora(draft: SessionLora | null): Promise<void> {
   await sessionsStore.setInputs(id, { lora: draft })
   loraOpen.value = false
 }
+async function onSaveAdetailer(draft: AdetailerSettings): Promise<void> {
+  const id = sessionsStore.activeId
+  if (!id) return
+  await sessionsStore.setInputs(id, { adetailer: draft })
+  adetailerOpen.value = false
+}
+async function onSaveIpAdapter(draft: SessionIpAdapter): Promise<void> {
+  const id = sessionsStore.activeId
+  if (!id) return
+  await sessionsStore.setInputs(id, { ipAdapter: draft })
+  ipAdapterOpen.value = false
+}
+async function onSaveControlNet(draft: SessionControlNet | null): Promise<void> {
+  const id = sessionsStore.activeId
+  if (!id) return
+  await sessionsStore.setInputs(id, { controlNet: draft })
+  controlNetOpen.value = false
+}
 
 const lastMessage = computed(() => {
   const msgs = sessionsStore.active?.messages
@@ -1739,7 +1984,7 @@ function onGenProgress(p: {
   status: 'running' | 'done' | 'stopped' | 'error' | 'converting'
   step?: number
   totalSteps?: number
-  image?: { path: string; name: string }
+  image?: { path: string; name: string; durationMs?: number }
   error?: string
 }): void {
   // Every generation failure toasts — even when it belongs to a background
@@ -1748,12 +1993,24 @@ function onGenProgress(p: {
   if (p.status === 'error') {
     toast(p.error?.trim() || 'Generation failed', 'error', 8000)
   }
+  // Per-session state first — recorded for EVERY session (background ones
+  // included) so switching away and back keeps the busy indicator consistent
+  // (plans/session-switch-busy-state.md).
+  if (p.status === 'running') {
+    genStore.markRunning(p.sessionId, p.step, p.totalSteps)
+  } else if (p.status === 'converting') {
+    genStore.markConverting(p.sessionId)
+  } else {
+    // done / stopped / error — terminal for that session.
+    genStore.clear(p.sessionId)
+  }
   if (p.sessionId !== sessionsStore.activeId) return
   // Real messages are now flowing from main — drop the optimistic placeholders.
   pendingPrompt.value = null
   pendingRefs.value = []
-  if (p.status === 'running' && p.step !== undefined) {
-    progress.value = { step: p.step, total: p.totalSteps ?? 0 }
+  if (p.status === 'running') {
+    busy.value = true // self-heal: the store entry above is the truth
+    if (p.step !== undefined) progress.value = { step: p.step, total: p.totalSteps ?? 0 }
   }
   // 'converting' — the .avi → .mp4 post-processing is running: keep busy +
   // show the indicator, no step update, no busy reset.
@@ -1823,6 +2080,9 @@ onMounted(async () => {
     paintState.value = null
   })
   await refreshInstalled()
+  // Rehydrate the busy state for the initially-selected session (covers a
+  // dev reload mid-generation, where the generation store starts empty).
+  await rehydrateGenerationState(sessionsStore.activeId)
   scrollToBottom()
 })
 onBeforeUnmount(() => {
@@ -1830,9 +2090,34 @@ onBeforeUnmount(() => {
 })
 
 watch(() => sessionsStore.active?.messages.length, scrollToBottom)
-watch(() => sessionsStore.activeId, () => {
-  busy.value = false
-  progress.value = null
+/**
+ * Sync the local busy/progress/converting refs with the session's generation
+ * state: mirror the generation-store entry when present, else ask main
+ * (gen:state — the source of truth) and seed the store. Called on mount and
+ * on every session switch; never clears a busy state the store still holds.
+ * See plans/session-switch-busy-state.md.
+ */
+async function rehydrateGenerationState(id: string | null): Promise<void> {
+  const e = id ? genStore.of(id) : undefined
+  busy.value = !!e
+  converting.value = e?.status === 'converting'
+  progress.value = e?.step != null ? { step: e.step, total: e.totalSteps ?? 0 } : null
+  if (!id || e) return
+  try {
+    const st = await window.api.genState(id)
+    // The user may have switched again while the IPC was in flight.
+    if (!st.running || sessionsStore.activeId !== id) return
+    if (st.converting) genStore.markConverting(id)
+    else genStore.markRunning(id)
+    busy.value = true
+    converting.value = st.converting
+  } catch {
+    // Main unreachable (teardown) — the mirrored store state stands.
+  }
+}
+
+watch(() => sessionsStore.activeId, (id) => {
+  void rehydrateGenerationState(id)
   scrollToBottom()
 })
 
@@ -1902,10 +2187,12 @@ function fmtBytes(n: number): string {
               <ImageFromPath v-for="(r, i) in m.refs" :key="i" :path="r" :alt="'reference ' + (i + 1)" :max="120" />
             </div>
             <!-- Video-era channel chips (display-only, like refs). -->
-            <div v-if="m.audioPath || m.controlVideoPath || m.endImagePath" class="refs">
+            <div v-if="m.audioPath || m.controlVideoPath || m.endImagePath || m.audioReferencePaths?.length || m.videoReferencePaths?.length" class="refs">
               <span v-if="m.audioPath" class="chip-label mono" :title="m.audioPath">♪ {{ mediaBaseName(m.audioPath) }}</span>
               <span v-if="m.controlVideoPath" class="chip-label mono" :title="m.controlVideoPath">▣ {{ mediaBaseName(m.controlVideoPath) }}</span>
               <span v-if="m.endImagePath" class="chip-label mono" :title="m.endImagePath">⇥ {{ mediaBaseName(m.endImagePath) }}</span>
+              <span v-for="p in m.audioReferencePaths ?? []" :key="'ar' + p" class="chip-label mono" :title="p">♪ {{ mediaBaseName(p) }}</span>
+              <span v-for="p in m.videoReferencePaths ?? []" :key="'vr' + p" class="chip-label mono" :title="p">▣ {{ mediaBaseName(p) }}</span>
             </div>
             <div
               v-if="m.role === 'assistant' && busy && !m.image && m.status !== 'error' && m.status !== 'stopped'"
@@ -1922,7 +2209,7 @@ function fmtBytes(n: number): string {
               <span class="dots"><span></span><span></span><span></span></span>
             </div>
             <div v-else-if="m.image" class="image-wrap">
-              <ImageFromPath :path="m.image.path" alt="generated image" :max="480" clickable />
+              <ImageFromPath :path="m.image.path" alt="generated image" :max="480" clickable :duration-ms="m.image.durationMs" />
               <button
                 class="icon save-image"
                 title="Save image as…"
@@ -1932,6 +2219,18 @@ function fmtBytes(n: number): string {
                   <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                   <path d="M7 10l5 5 5-5" />
                   <path d="M12 15V3" />
+                </svg>
+              </button>
+              <button
+                class="icon upscale-image"
+                title="Upscale image…"
+                @click="upscalerStore.openDialog(m.image.path)"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M15 3h6v6" />
+                  <path d="M9 21H3v-6" />
+                  <path d="M21 3l-7 7" />
+                  <path d="M3 21l7-7" />
                 </svg>
               </button>
             </div>
@@ -1968,7 +2267,7 @@ function fmtBytes(n: number): string {
     </div>
     <footer class="composer-wrap">
       <div class="composer">
-        <div v-if="refImages.length || inputImages.length || audioPath || controlVideoPath || endImagePath" class="refs">
+        <div v-if="refImages.length || inputImages.length || audioPath || controlVideoPath || endImagePath || audioRefPaths.length || videoRefPaths.length" class="refs">
           <div v-for="p in refImages" :key="'r' + p" class="ref-thumb">
             <ImageFromPath :path="p" :max="72" />
             <button class="icon remove" title="Remove" @click="removeRef(p)">×</button>
@@ -1992,6 +2291,16 @@ function fmtBytes(n: number): string {
             <span class="chip-label mono">⇥ {{ mediaBaseName(endImagePath) }}</span>
             <button class="icon remove" title="Remove" @click="clearEndImage()">×</button>
           </div>
+          <!-- Repeatable reference-channel chips: one per path, sticky like
+               the video-era chips — they ride every Send until removed. -->
+          <div v-for="p in audioRefPaths" :key="'ar' + p" class="ref-thumb chip" :title="p">
+            <span class="chip-label mono">♪ {{ mediaBaseName(p) }}</span>
+            <button class="icon remove" title="Remove" @click="removeAudioRef(p)">×</button>
+          </div>
+          <div v-for="p in videoRefPaths" :key="'vr' + p" class="ref-thumb chip" :title="p">
+            <span class="chip-label mono">▣ {{ mediaBaseName(p) }}</span>
+            <button class="icon remove" title="Remove" @click="removeVideoRef(p)">×</button>
+          </div>
         </div>
         <div v-if="depDownloads.length" class="dep-dl">
           <DownloadProgress
@@ -2009,7 +2318,7 @@ function fmtBytes(n: number): string {
             v-model="prompt"
             rows="1"
             placeholder="Describe the image you want to create…"
-            :disabled="busy"
+            :disabled="busy || enhancing"
             :class="{ 'drag-over': dragActive }"
             @input="autoGrow()"
             @keydown.enter.exact.prevent="generate()"
@@ -2024,7 +2333,14 @@ function fmtBytes(n: number): string {
             <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
               <rect x="6" y="6" width="12" height="12" rx="1" />
             </svg>
-            {{ busy ? 'Stop' : 'Send' }}
+            {{ busy ? 'Stop' : 'Generate' }}
+          </button>
+          <button v-if="appStore.configs?.application.debug?.preview" class="gen-btn preview-btn" :disabled="!prompt.trim() || busy" @click="preview()" title="Show full sd-cli command line without running">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+            Preview
           </button>
         </div>
 
@@ -2103,6 +2419,41 @@ function fmtBytes(n: number): string {
               <path d="M15 9v6H9" />
             </svg>
           </button>
+          <!-- Repeatable reference channels (MiniMax-H3 Ref2VA): reference
+               audio (WAV file picker) and reference video (frames DIRECTORY
+               picker — man.txt:278, not a media file). -->
+          <button
+            v-if="allowAudioRef"
+            class="icon"
+            :class="{ active: audioRefPaths.length > 0 }"
+            title="Add reference audio"
+            aria-label="Add reference audio"
+            :disabled="busy || audioRefPaths.length >= maxAudioRef"
+            @click="addAudioRef()"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M9 18V5l12-2v13" />
+              <circle cx="6" cy="18" r="3" />
+              <circle cx="18" cy="16" r="3" />
+              <path d="M2 2l20 20" />
+            </svg>
+          </button>
+          <button
+            v-if="allowVideoRef"
+            class="icon"
+            :class="{ active: videoRefPaths.length > 0 }"
+            title="Add reference video frames directory"
+            aria-label="Add reference video frames"
+            :disabled="busy || videoRefPaths.length >= maxVideoRef"
+            @click="addVideoRef()"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="4" width="20" height="16" rx="2" />
+              <path d="M2 9h20" />
+              <path d="M7 4v5M12 4v5M17 4v5" />
+              <path d="M2 2l20 20" />
+            </svg>
+          </button>
           <button
             class="icon"
             :class="{ active: sessionNegative }"
@@ -2146,6 +2497,70 @@ function fmtBytes(n: number): string {
               <rect x="8" y="3" width="13" height="13" rx="2" />
               <path d="M16 16v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h3" />
             </svg>
+          </button>
+          <button
+            v-if="allowAdetailer"
+            class="icon"
+            :class="{ active: (sessionsStore.active?.inputs?.adetailer?.enabled ?? false) }"
+            title="ADetailer"
+            aria-label="ADetailer settings"
+            aria-haspopup="dialog"
+            :disabled="busy || !sessionsStore.activeId"
+            @click="adetailerOpen = true"
+          >
+            <svg xmlns="http://w3.org" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <!-- Main Face Circle (broken at top right for sparkle) -->
+              <path d="M20.9 13.3A9 9 0 1 1 10.7 3.1" />
+              <!-- Eyes & Smile -->
+              <circle cx="9" cy="10" r="1" fill="currentColor" stroke="none" />
+              <circle cx="15" cy="10" r="1" fill="currentColor" stroke="none" />
+              <path d="M9.5 15a3.5 3.5 0 0 0 5 0" />
+              <!-- AI Sparkle -->
+              <path d="M19 2v6M16 5h6" />
+            </svg>
+          </button>
+          <button
+            v-if="allowIpAdapter"
+            class="icon"
+            :class="{ active: sessionsStore.active?.inputs?.ipAdapter?.apply === true }"
+            title="IP Adapter"
+            aria-label="IP Adapter settings"
+            aria-haspopup="dialog"
+            :disabled="busy || !sessionsStore.activeId"
+            @click="ipAdapterOpen = true"
+          >
+            <svg xmlns="http://w3.org" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <!-- Reference Image Frame (Top-Left) -->
+              <rect x="3" y="3" width="11" height="11" rx="2" />
+              <circle cx="6.5" cy="6.5" r="1" fill="currentColor" stroke="none" />
+              <path d="M3.5 12l2.5-2.5 2 2 2.5-2.5 3 3" />
+              <!-- Output / Target Frame (Bottom-Right) -->
+              <path d="M14 10h5a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-7a2 2 0 0 1-2-2v-5" />
+              <!-- Transfer Arrow -->
+              <path d="M14 14l4 4" />
+              <path d="M15 18h3v-3" />
+            </svg>
+
+          </button>
+          <button
+            v-if="allowControlNet"
+            class="icon"
+            :class="{ active: sessionsStore.active?.inputs?.controlNet?.apply === true }"
+            title="Control Net"
+            aria-label="Control Net settings"
+            aria-haspopup="dialog"
+            :disabled="busy || !sessionsStore.activeId"
+            @click="controlNetOpen = true"
+          >
+
+          <svg xmlns="http://w3.org" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="3 3"/>
+            <circle cx="12" cy="8" r="2"/>
+            <path d="M8 14h8"/>
+            <path d="M12 10v6"/>
+            <path d="M9 20l3-4 3 4"/>
+          </svg>
+
           </button>
           <button
             class="icon"
@@ -2346,6 +2761,45 @@ function fmtBytes(n: number): string {
       @save="onSaveLora"
       @close="loraOpen = false"
     />
+    <AdetailerDialog
+      v-if="adetailerOpen"
+      :session-id="sessionsStore.activeId!"
+      @save="onSaveAdetailer"
+      @close="adetailerOpen = false"
+    />
+    <IpAdapterDialog
+      v-if="ipAdapterOpen"
+      :session-id="sessionsStore.activeId!"
+      @save="onSaveIpAdapter"
+      @close="ipAdapterOpen = false"
+    />
+    <ControlNetDialog
+      v-if="controlNetOpen"
+      :session-id="sessionsStore.activeId!"
+      @save="onSaveControlNet"
+      @close="controlNetOpen = false"
+    />
+    <!-- Preview dialog: shows the full sd-cli command line without running -->
+    <div v-if="previewOpen" class="preview-overlay" @click.self="previewOpen = false">
+      <div class="preview-dialog">
+        <div class="preview-header">
+          <h3>sd-cli Command Preview</h3>
+          <button class="preview-close" @click="previewOpen = false" title="Close">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div class="preview-body">
+          <div v-if="previewError" class="preview-error">{{ previewError }}</div>
+          <pre v-else-if="previewCommand" class="preview-command">{{ previewCommand }}</pre>
+          <div v-else class="muted">Generating preview...</div>
+        </div>
+        <div v-if="previewCommand" class="preview-actions">
+          <button class="preview-copy-btn" @click="copyPreview">Copy to clipboard</button>
+        </div>
+      </div>
+    </div>
     <InpaintDialog
       v-if="inpaintOpen"
       :background="inpaintBg"
@@ -2511,10 +2965,10 @@ function fmtBytes(n: number): string {
   display: inline-block;
   line-height: 0;
 }
-.save-image {
+.save-image,
+.upscale-image {
   position: absolute;
   top: 8px;
-  right: 8px;
   width: 30px;
   height: 30px;
   display: inline-flex;
@@ -2529,10 +2983,18 @@ function fmtBytes(n: number): string {
   transition: opacity 0.15s, background 0.15s;
   cursor: pointer;
 }
-.image-wrap:hover .save-image {
+.save-image {
+  right: 8px;
+}
+.upscale-image {
+  right: 44px;
+}
+.image-wrap:hover .save-image,
+.image-wrap:hover .upscale-image {
   opacity: 1;
 }
-.save-image:hover {
+.save-image:hover,
+.upscale-image:hover {
   background: rgba(0, 0, 0, 0.7);
 }
 .ref-thumb .remove {
@@ -2886,4 +3348,97 @@ function fmtBytes(n: number): string {
   border-color: var(--danger);
   background: transparent;
 }
+
+/* Preview dialog */
+.preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.preview-dialog {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 900px;
+  width: 90%;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.preview-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.preview-close {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--text-faint);
+  padding: 4px;
+  border-radius: 4px;
+}
+.preview-close:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+.preview-body {
+  overflow: auto;
+  flex: 1;
+}
+.preview-command {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text);
+  max-height: 400px;
+  overflow: auto;
+}
+.preview-error {
+  color: var(--danger);
+  font-size: 13px;
+  background: rgba(220, 80, 80, 0.1);
+  border: 1px solid rgba(220, 80, 80, 0.3);
+  border-radius: 8px;
+  padding: 12px;
+}
+.preview-copy-btn {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text);
+}
+.preview-copy-btn:hover {
+  background: var(--bg-active);
+}
+.preview-btn {
+  background: var(--bg-hover);
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+.preview-btn:hover:not(:disabled) {
+  background: var(--bg-active);
+  color: var(--text);
+}
 </style>
+

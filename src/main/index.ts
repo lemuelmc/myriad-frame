@@ -6,8 +6,9 @@
  */
 
 import { app, BrowserWindow, Menu, shell } from 'electron'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { initDataDirs, registerIpc } from './ipc'
+import { ensureSessionCompanionDownloads, initDataDirs, registerIpc } from './ipc'
 import { loadApplicationConfig, loadHubConfig, loadRuntimeConfig } from './services/config'
 import { ensureFfmpeg } from './services/ffmpeg'
 import { catalogEntriesForType, createHubService } from './services/hub'
@@ -20,9 +21,9 @@ import { createModelsService, migrateModelLayout } from './services/models'
 import { detectPlatform } from './services/platform'
 import { createRuntimeService } from './services/runtime'
 import { createSettingsService } from './services/settings'
-import { checkForConfigUpdates } from './services/updates'
+import { checkForAppUpdate, checkForConfigUpdates } from './services/updates'
 import { listModels, startAllPending } from './services/downloads'
-import type { InitStatus, PlatformInfo } from '@shared/types'
+import type { HubPixelUpscalerEntry, InitStatus, PlatformInfo } from '@shared/types'
 import type { HubService } from './services/hub'
 
 // Disable GPU compositing. Without this, resizing the window while the main
@@ -229,6 +230,20 @@ async function runInitPipeline(win: BrowserWindow): Promise<void> {
     }
   })
 
+  // 3b. launch-time app-version check (detect-only): fetch the remote
+  // application.json and toast the renderer when its version is strictly
+  // greater than the bundled one. Fire-and-forget AFTER app:ready so it can
+  // never delay readiness or toast under the InitOverlay; failures are
+  // swallowed inside the check (an offline launch must not nag). The notify
+  // callback broadcasts `app:available` to all windows; each send is guarded
+  // like `send` above so a fast-closed window cannot crash the check.
+  void checkForAppUpdate((available) => {
+    if (!available) return
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('app:available', available)
+    }
+  })
+
   // 4. background default-model ensure (fire-and-forget, non-fatal): when no
   // 'llm' model is installed, none is pending, and the platform HAS an LLM
   // runtime key, resolve the hub default entry from the cached catalog (the
@@ -237,6 +252,21 @@ async function runInitPipeline(win: BrowserWindow): Promise<void> {
   // Never blocks the InitOverlay; the Enhance button errors gracefully with a
   // pointer to Settings until the model lands.
   void ensureDefaultLlmModel(hub, platform)
+
+  // 5. background default-upscaler ensure (fire-and-forget, non-fatal): when
+  // the hub-configured default pixel upscaler file is NOT on disk and not
+  // already pending, resolve it from the cached catalog and download it in
+  // the background — progress lands in the Downloads panel via
+  // models:progress and the sidebar footer indicator animates via the
+  // existing downloads:changed wiring. Never blocks the InitOverlay; the
+  // Upscale dialog surfaces the missing model through its installed checks.
+  void ensureDefaultPixelUpscaler(hub)
+
+  // 6. background default-adetailer ensure (fire-and-forget, non-fatal): when
+  // no adetailer model is installed and the hub config declares one, resolve
+  // the default entry from the cached catalog and download it in the
+  // background — progress lands in the Downloads panel via models:progress.
+  void ensureDefaultAdetailerModel(hub)
 }
 
 /**
@@ -289,6 +319,137 @@ async function ensureDefaultLlmModel(hub: HubService, platform: PlatformInfo): P
   }
 }
 
+/**
+ * First-launch / background default-upscaler ensure (fire-and-forget,
+ * non-fatal). When the hub-configured default pixel upscaler file
+ * (`repo.pixel_upscaler` → `default`) is NOT on disk and not already
+ * pending, resolve it from the cached catalog and download it in the
+ * background — progress lands in the Downloads panel via models:progress
+ * and the sidebar footer indicator animates via the existing
+ * downloads:changed wiring.
+ *
+ * Deliberately different from ensureDefaultLlmModel() in two ways:
+ * 1. SPECIFIC-FILE check: skip only when the SPECIFIC default file exists —
+ *    NOT when any pixel_upscaler file is installed. A user who deleted the
+ *    default but kept other upscalers must not get it silently re-downloaded
+ *    every launch — but the spec says "check if this model exists", so the
+ *    exact file is what's checked.
+ * 2. Pending check: skip when a download for the default entry's URL is
+ *    already in the registry (any status), regardless of type filtering.
+ *
+ * Stale-catalog self-heal (existing installs): a catalog cache built before
+ * this feature has NO 'pixel_upscaler' rows, so the default entry cannot
+ * resolve. When the cache has zero 'pixel_upscaler' entries while
+ * `hub.repo.pixel_upscaler` is non-empty, run a one-shot `hub.refresh()`
+ * first and re-read; only then enqueue the download. This also guarantees
+ * the family stamp needed for the family-scoped destination.
+ */
+async function ensureDefaultPixelUpscaler(hub: HubService): Promise<void> {
+  try {
+    const models = createModelsService()
+    const hubCfg = loadHubConfig()
+    const section = hubCfg.repo.pixel_upscaler ?? {}
+    const groups = Object.entries(section)
+    if (groups.length === 0) return
+    // Collect the default entries (one per group entry — the hub default
+    // file that MUST be present on first launch).
+    const defaults: { entry: HubPixelUpscalerEntry; group: string }[] = []
+    for (const [group, ups] of groups) {
+      if (!Array.isArray(ups)) continue
+      for (const up of ups) {
+        if (up === null || typeof up !== 'object' || typeof up.default !== 'string' || up.default === '') continue
+        defaults.push({ entry: up, group })
+      }
+    }
+    if (defaults.length === 0) return
+    let entries = catalogEntriesForType('pixel_upscaler')
+    if (entries.length === 0) {
+      console.log('[upscaler] catalog cache has no pixel_upscaler entries — rescanning the hub once')
+      await hub.refresh()
+      entries = catalogEntriesForType('pixel_upscaler')
+    }
+    for (const { entry, group } of defaults) {
+      const base = entry.default.split('/').pop() ?? entry.default
+      const provider = entry.provider ?? 'default'
+      // Resolve the catalog entry: the stamped isDefault row for this group,
+      // else a name match on the default basename, else a synthetic URL from
+      // the hub config (the fallback-entry path in the catalog loop — the
+      // URL is the entry's URL, so the registry dedupe still works).
+      const catalogEntry =
+        entries.find((e) => e.isDefault && e.diffusionType === group && e.name === base) ??
+        entries.find((e) => e.diffusionType === group && e.name === base) ??
+        entries.find((e) => e.isDefault && e.diffusionType === group)
+      if (!catalogEntry) {
+        console.warn(`[upscaler] default upscaler "${base}" (${group}) has no catalog entry — skipping`)
+        continue
+      }
+      // SPECIFIC-FILE check: skip only when the exact default file exists at
+      // its family-scoped destination (the catalog entry's family/provider).
+      const expectUrl = catalogEntry.url
+      const expectedPath = models.pathFor('pixel_upscaler', base, provider, group, expectUrl)
+      if (existsSync(expectedPath)) continue
+      // Pending check: a download for this URL is already in the registry
+      // (any status) — the manager's dedupe-by-URL would no-op anyway.
+      if (listModels().some((e) => e.url === catalogEntry.url)) continue
+      console.log(`[upscaler] background download of the default upscaler model: ${catalogEntry.name}`)
+      // The manager broadcasts models:progress itself; the callback is a no-op.
+      await models.download('pixel_upscaler', catalogEntry.url, () => {}, provider)
+      console.log(`[upscaler] default upscaler model downloaded: ${catalogEntry.name}`)
+    }
+  } catch (e) {
+    console.warn(`[upscaler] background default-upscaler download failed: ${(e as Error).message}`)
+  }
+}
+
+/**
+ * Background first-launch download of the hub default adetailer model. Skipped
+ * when a model is already installed or a download is already pending.
+ *
+ * Stale-catalog self-heal: a catalog cache built before this feature has NO
+ * 'adetailer' rows, so the default entry cannot resolve. When the cache has
+ * zero 'adetailer' entries while `hub.repo.adetailer` is non-empty, run a
+ * one-shot `hub.refresh()` first and re-read; only then enqueue the download.
+ */
+async function ensureDefaultAdetailerModel(hub: HubService): Promise<void> {
+  try {
+    const models = createModelsService()
+    if (models.list('adetailer').length > 0) return
+    const pending = listModels().some((e) => e.type === 'adetailer' && e.status !== 'failed')
+    if (pending) return
+    const hubCfg = loadHubConfig()
+    const adSection = hubCfg.repo.adetailer
+    if (!adSection) return
+    const hasAdRepos = (adSection.models?.length ?? 0) > 0 || !!adSection.default
+    let entries = catalogEntriesForType('adetailer')
+    if (entries.length === 0 && hasAdRepos) {
+      console.log('[adetailer] catalog cache has no adetailer entries — rescanning the hub once')
+      await hub.refresh()
+      entries = catalogEntriesForType('adetailer')
+    }
+    if (entries.length === 0) return
+    // Resolve the hub default entry: the default.file item (name match) with
+    // the default provider, else a stamped isDefault entry, else the first
+    // 'adetailer' entry.
+    const def = adSection.default
+    const base = def?.file ? (def.file.split('/').pop() ?? def.file) : undefined
+    const entry =
+      entries.find(
+        (e) =>
+          base !== undefined &&
+          e.name === base &&
+          (e.provider ?? 'default') === (def?.provider ?? 'default')
+      ) ??
+      entries.find((e) => e.isDefault) ??
+      entries[0]
+    console.log(`[adetailer] background download of the default model: ${entry.name}`)
+    // The manager broadcasts models:progress itself; the callback is a no-op.
+    await models.download('adetailer', entry.url, () => {}, entry.provider)
+    console.log(`[adetailer] default model downloaded: ${entry.name}`)
+  } catch (e) {
+    console.warn(`[adetailer] background default-model download failed: ${(e as Error).message}`)
+  }
+}
+
 // Single instance: two app instances share the same userData/data tree — a
 // second instance's initDataDirs() wipes data/tmp and clobbers the first
 // instance's staged downloads (staged-file ENOENT at rename), and both fight
@@ -334,6 +495,13 @@ if (!app.requestSingleInstanceLock()) {
     // "yield model retries while the runtime download is in flight" gate would add
     // state for a marginal first-launch benefit.
     void startAllPending()
+    // Launch-time dependency self-heal (requires-downloader work): for every
+    // session's saved model, kick downloads for requires-declared companion
+    // files missing on disk — the resume path for downloads that died without
+    // a registry entry (startAllPending above retries the ones that left
+    // one). Sync, cheap existsSync probes; the kicks are fire-and-forget and
+    // the manager's installed short-circuit keeps them non-redundant.
+    ensureSessionCompanionDownloads()
     createWindow()
     if (mainWindow) void runInitPipeline(mainWindow)
 

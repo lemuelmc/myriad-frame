@@ -5,8 +5,9 @@
  * (commercial or private) provided the license notice and copyright is preserved.
  */
 
-import type { ConfigUpdateStatus, HubConfig, RuntimeConfig } from '@shared/types'
+import type { ApplicationConfig, ConfigUpdateStatus, HubConfig, RuntimeConfig } from '@shared/types'
 import { fetchText } from './download'
+import { loadApplicationConfig } from './config'
 import {
   loadHubConfig,
   loadRuntimeConfig,
@@ -40,6 +41,64 @@ export function stableStringify(value: unknown): string {
     return `{${entries.join(',')}}`
   }
   return JSON.stringify(value)
+}
+
+/**
+ * Compare two dot-separated version strings (e.g. "0.2.1") numerically, segment
+ * by segment, left to right. Returns 1 when `a` is strictly greater than `b`,
+ * -1 when less, and 0 when equal (shorter forms pad missing segments with 0).
+ * Non-numeric segments parse to NaN and are treated as 0 so a malformed version
+ * never throws — it just degrades to "not greater".
+ */
+function compareVersions(a: string, b: string): number {
+  const pa = a.split('.').map((n) => parseInt(n, 10) || 0)
+  const pb = b.split('.').map((n) => parseInt(n, 10) || 0)
+  const len = Math.max(pa.length, pb.length)
+  for (let i = 0; i < len; i++) {
+    const x = pa[i] ?? 0
+    const y = pb[i] ?? 0
+    if (x > y) return 1
+    if (x < y) return -1
+  }
+  return 0
+}
+
+/** Raw source of the up-to-date application.json (the launch-time version check). */
+const APPLICATION_URL =
+  'https://raw.githubusercontent.com/lemuelmc/myriad-frame/master/configurations/application.json'
+
+/**
+ * Launch-time app-version check: fetch the remote application.json and compare
+ * its `version` against the bundled one. Returns true only when the remote
+ * version is strictly greater (semver segment comparison). Detect-only — nothing
+ * is written or installed; the renderer is told via the `app:available` push so
+ * it can toast with a download link.
+ *
+ * Failure is silent: a fetch failure, invalid remote shape, or missing `version`
+ * is logged and treated as "no update", so an offline or broken launch never
+ * nags. This function never rejects.
+ */
+export async function checkForAppUpdate(): Promise<boolean> {
+  try {
+    const remoteRaw = await fetchText(APPLICATION_URL)
+    const remote = JSON.parse(remoteRaw) as ApplicationConfig
+    const remoteVersion = remote?.version
+    if (typeof remoteVersion !== 'string' || remoteVersion === '') {
+      console.warn('[updates] Remote application.json has no valid version — treating as no update')
+      return false
+    }
+    const bundled = loadApplicationConfig().version ?? ''
+    const greater = compareVersions(remoteVersion, bundled) > 0
+    if (greater) {
+      console.log(`[updates] New version available: ${remoteVersion} > bundled ${bundled}`)
+    } else {
+      console.log(`[updates] App version up to date: remote ${remoteVersion}, bundled ${bundled}`)
+    }
+    return greater
+  } catch (e) {
+    console.warn('[updates] App version check failed (treating as no update):', e)
+    return false
+  }
 }
 
 /** Outcome of one remote-config check: whether it differs from the active config. */

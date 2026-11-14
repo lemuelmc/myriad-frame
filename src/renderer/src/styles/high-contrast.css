@@ -1,0 +1,47 @@
+/**
+ * Myriad Frame — High Contrast theme.
+ *
+ * Overrides the base variables declared on `:root` in theme.css. Only the
+ * variables that change are re-declared here; everything else inherits from the
+ * `:root` defaults, so future themes stay tiny. Activate with
+ * `document.documentElement.dataset.theme = 'highContrast'`.
+ */
+
+:root[data-theme="highContrast"] {
+  /* near-black background, near-white text for maximum contrast ratio (>15:1) */
+  --bg: #000000;
+  --bg-elevated: #0a0a0a;
+  --bg-panel: #111111;
+  --bg-hover: #1a1a1a;
+  --border: #ffffff;
+
+  --text: #ffffff;
+  --text-dim: #e0e0e0;
+  --text-faint: #b0b0b0;
+
+  /* vivid yellow accent (passes WCAG AAA on black) */
+  --accent: #ffd600;
+  --accent-hover: #ffea00;
+  --accent-soft: rgba(255, 214, 0, 0.2);
+
+  --danger: #ff1744;
+  --ok: #00e676;
+  --warn: #ffea00;
+}
+
+/* ---------- decorative touches (High Contrast only) ---------- */
+
+/* themed scrollbar thumb */
+:root[data-theme="highContrast"] ::-webkit-scrollbar-thumb {
+  background: #ffffff;
+  border-radius: 5px;
+}
+:root[data-theme="highContrast"] ::-webkit-scrollbar-thumb:hover {
+  background: #ffd600;
+}
+
+/* High Contrast accent on the composer focus ring */
+:root[data-theme="highContrast"] .composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}

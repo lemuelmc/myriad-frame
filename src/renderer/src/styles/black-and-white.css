@@ -1,0 +1,47 @@
+/**
+ * Myriad Frame — Black and White theme.
+ *
+ * Overrides the base variables declared on `:root` in theme.css. Only the
+ * variables that change are re-declared here; everything else inherits from the
+ * `:root` defaults, so future themes stay tiny. Activate with
+ * `document.documentElement.dataset.theme = 'blackAndWhite'`.
+ */
+
+:root[data-theme="blackAndWhite"] {
+  /* strictly monochrome */
+  --bg: #000000;
+  --bg-elevated: #0a0a0a;
+  --bg-panel: #111111;
+  --bg-hover: #1a1a1a;
+  --border: #808080;
+
+  --text: #ffffff;
+  --text-dim: #cccccc;
+  --text-faint: #999999;
+
+  /* grayscale accent (no hue) */
+  --accent: #e0e0e0;
+  --accent-hover: #ffffff;
+  --accent-soft: rgba(224, 224, 224, 0.15);
+
+  --danger: #ffffff;
+  --ok: #cccccc;
+  --warn: #aaaaaa;
+}
+
+/* ---------- decorative touches (Black and White only) ---------- */
+
+/* themed scrollbar thumb */
+:root[data-theme="blackAndWhite"] ::-webkit-scrollbar-thumb {
+  background: #808080;
+  border-radius: 5px;
+}
+:root[data-theme="blackAndWhite"] ::-webkit-scrollbar-thumb:hover {
+  background: #cccccc;
+}
+
+/* Black and White accent on the composer focus ring */
+:root[data-theme="blackAndWhite"] .composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}

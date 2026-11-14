@@ -84,6 +84,11 @@ button.icon {
   align-items: center;
   justify-content: center;
 }
+button.icon.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
 
 input,
 select,

@@ -8,7 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { SCHEDULER_MODEL_DEFAULT, isValidSeed } from '@shared/types'
-import type { ChatMessage, LoraApplyMode, Session, SessionInputs, SessionLora } from '@shared/types'
+import type { AdetailerSettings, ChatMessage, LoraApplyMode, Session, SessionControlNet, SessionInputs, SessionIpAdapter, SessionLora } from '@shared/types'
 import { dataRoot } from './data'
 
 function sessionsRoot(): string {
@@ -132,8 +132,17 @@ export function createSessionsService(): SessionsService {
     if (!s) throw new Error(`Session ${id} not found`)
     const merged: SessionInputs = { ...(s.inputs ?? {}) }
     if (typeof patch.model === 'string' && patch.model !== '') merged.model = patch.model
-    if (typeof patch.diffusionType === 'string' && patch.diffusionType !== '')
+    // family: the NEW name for diffusionType (same value). New sessions
+    // persist `family` instead; when a valid family merges in the legacy
+    // `diffusionType` key is dropped, so a re-picked model migrates the saved
+    // file to the new shape. A patch WITHOUT family (legacy renderer) still
+    // merges diffusionType for old-session compatibility.
+    if (typeof patch.family === 'string' && patch.family !== '') {
+      merged.family = patch.family
+      delete merged.diffusionType
+    } else if (typeof patch.diffusionType === 'string' && patch.diffusionType !== '') {
       merged.diffusionType = patch.diffusionType
+    }
     // modelProvider: pins the diffusion VARIANT across session reloads
     // (model-collision-hardening plan §4/§6) — with duplicate basenames
     // within a family, name+diffusionType alone could silently switch
@@ -141,6 +150,13 @@ export function createSessionsService(): SessionsService {
     // name match.
     if (typeof patch.modelProvider === 'string' && patch.modelProvider !== '')
       merged.modelProvider = patch.modelProvider
+    // diffusionName: the hub.json diffusion entry `name` for the saved model
+    // (e.g. comfy_org_boogu_image) — lets the entry's hub configuration (its
+    // `requires` block…) be looked up precisely when a family maps to several
+    // entries. Absent (legacy sessions / a pre-hubName catalog cache) → the
+    // family match remains the lookup.
+    if (typeof patch.diffusionName === 'string' && patch.diffusionName !== '')
+      merged.diffusionName = patch.diffusionName
     if (
       patch.resolution !== null &&
       typeof patch.resolution === 'object' &&
@@ -244,6 +260,22 @@ export function createSessionsService(): SessionsService {
       if (usRaw === undefined) delete dst.upscaler_steps
       else if (typeof usRaw === 'number' && Number.isFinite(usRaw) && usRaw >= 0) dst.upscaler_steps = usRaw
       else dst.upscaler_steps = null
+      // Model args: a non-empty trimmed string stores as-is; '' / null →
+      // explicit "none" (overwrites a prior value); undefined drops the key
+      // (inherit). The dialog sends the full draft on every save, so a saved
+      // session pins the draft's value (clear the input ⇒ null ⇒ no
+      // --model-args; Reset clears the whole override).
+      const maRaw = patch.sampling.modelArgs as unknown
+      if (maRaw === undefined) delete dst.modelArgs
+      else if (typeof maRaw === 'string' && maRaw.trim() !== '') dst.modelArgs = maRaw.trim()
+      else dst.modelArgs = null
+      // Universal args: a non-empty trimmed string stores as-is; '' / null →
+      // explicit "none" (overwrites a prior value); undefined drops the key
+      // (inherit). Same materialized-snapshot semantics as modelArgs.
+      const argsRaw = patch.sampling.args as unknown
+      if (argsRaw === undefined) delete dst.args
+      else if (typeof argsRaw === 'string' && argsRaw.trim() !== '') dst.args = argsRaw.trim()
+      else dst.args = null
       if (Object.keys(dst).length) merged.sampling = dst
     }
     // lora: null CLEARS the saved config (the dialog Reset button's explicit
@@ -265,6 +297,28 @@ export function createSessionsService(): SessionsService {
         }
         merged.lora = dst
       }
+    }
+    // adetailer: null CLEARS the saved settings (the dialog's explicit clear
+    // signal); object → store. The dialog always emits the FULL draft (it
+    // restores the saved value on open), so replace merged.adetailer wholesale
+    // rather than merging — a bogus payload can never poison the session file
+    // (same defensive philosophy as `lora`).
+    if (patch.adetailer === null) {
+      delete merged.adetailer
+    } else if (patch.adetailer && typeof patch.adetailer === 'object') {
+      merged.adetailer = patch.adetailer as AdetailerSettings
+    }
+    // ipAdapter: null CLEARS the saved settings; object → store.
+    if (patch.ipAdapter === null) {
+      delete merged.ipAdapter
+    } else if (patch.ipAdapter && typeof patch.ipAdapter === 'object') {
+      merged.ipAdapter = patch.ipAdapter as SessionIpAdapter
+    }
+    // controlNet: null CLEARS the saved settings; object → store.
+    if (patch.controlNet === null) {
+      delete merged.controlNet
+    } else if (patch.controlNet && typeof patch.controlNet === 'object') {
+      merged.controlNet = patch.controlNet as SessionControlNet
     }
     s.inputs = merged
     write(s)

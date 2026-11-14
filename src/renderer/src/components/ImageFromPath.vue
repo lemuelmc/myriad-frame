@@ -9,10 +9,18 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useLightboxStore } from '../stores/lightbox'
 import { toast } from '../toast'
 
-const props = defineProps<{ path: string; alt?: string; max?: number; clickable?: boolean }>()
+const props = defineProps<{
+  path: string
+  alt?: string
+  max?: number
+  clickable?: boolean
+  /** total generation time in ms (spawn → done); surfaced as a badge overlay */
+  durationMs?: number
+}>()
 
 const src = ref('')
-
+const resolution = ref('')
+ 
 // Browser-decodable containers render as an inline <video> player; the
 // lightbox stays image-only.
 const isVideo = /\.(mp4|webm|mov)$/i.test(props.path)
@@ -64,10 +72,38 @@ onMounted(async () => {
   try {
     src.value = await window.api.imageFromPath(props.path)
     if (isAvi && src.value) extractPoster(src.value)
+    else measureResolution(src.value)
   } catch {
     src.value = ''
   }
 })
+
+// Resolve the intrinsic resolution of the loaded image so the chat preview
+// can show it (e.g. "1024x1024"). Only images carry a size; videos fall back
+// to the empty state.
+function measureResolution(srcValue: string): void {
+  const img = new Image()
+  img.onload = () => {
+    if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+      resolution.value = `${img.naturalWidth}x${img.naturalHeight}`
+    }
+  }
+  img.onerror = () => {
+    resolution.value = ''
+  }
+  img.src = srcValue
+}
+
+// Format a generation duration in ms into a compact human-readable label
+// (e.g. "123ms", "45s", "2m 30s") for the preview badge.
+function fmtDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  const totalSeconds = Math.round(ms / 1000)
+  if (totalSeconds < 60) return `${totalSeconds}s`
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}m ${seconds.toString().padStart(2, '0')}s`
+}
 
 onBeforeUnmount(() => {
   if (posterObjectUrl) {
@@ -126,21 +162,55 @@ async function openInPlayer(): Promise<void> {
   <div v-else-if="src && isAvi" class="chat-img avi-fallback">
     <button class="avi-open" @click="openInPlayer">Open video</button>
   </div>
-  <img
-    v-else-if="src"
-    :src="src"
-    :alt="alt ?? ''"
-    :style="max ? { maxWidth: max + 'px' } : {}"
-    class="chat-img"
-    :class="{ clickable }"
-    :tabindex="clickable ? 0 : undefined"
-    @click="openLightbox"
-    @keydown.enter="openLightbox"
-  />
+  <div v-else-if="src" class="image-with-badge">
+    <img
+      :src="src"
+      :alt="alt ?? ''"
+      :style="max ? { maxWidth: max + 'px' } : {}"
+      class="chat-img"
+      :class="{ clickable }"
+      :tabindex="clickable ? 0 : undefined"
+      @click="openLightbox"
+      @keydown.enter="openLightbox"
+    />
+    <span v-if="durationMs" class="duration-badge mono">{{ fmtDuration(durationMs) }}</span>
+    <span v-if="resolution" class="resolution-badge mono">{{ resolution }}</span>
+  </div>
   <div v-else class="chat-img missing mono">media unavailable</div>
 </template>
 
 <style scoped>
+.image-with-badge {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+}
+.resolution-badge {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  font-size: 11px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: var(--radius);
+  padding: 2px 6px;
+  line-height: 1.2;
+}
+/* Generation duration badge — sits above the resolution badge, gold-accented
+   to distinguish it from the white resolution label. */
+.duration-badge {
+  position: absolute;
+  right: 6px;
+  bottom: 26px;
+  font-size: 10px;
+  color: #ffd700;
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(255, 215, 0, 0.3);
+  border-radius: var(--radius);
+  padding: 1px 5px;
+  line-height: 1.2;
+}
 .chat-img {
   border-radius: var(--radius);
   display: block;

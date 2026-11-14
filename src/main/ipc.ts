@@ -1,4 +1,4 @@
-﻿/**
+﻿﻿/**
  * Myriad Frame â€” Electron + Vue 3 desktop front-end for sd-cli (stable-diffusion.cpp).
  * Author: Lemuel Raganas
  * License: Apache License 2.0 â€” permissive; allows use, modification, and distribution
@@ -13,12 +13,18 @@ import { basename, join } from 'node:path'
 import type {
   AllConfigs,
   ChatMessage,
+  CompanionKind,
+  CompanionRef,
   ConfigUpdateStatus,
   DownloadProgress,
   GenProgress,
   GenerationRequest,
+  GenStateInfo,
+  UpscaleRequest,
+  UpscaleResult,
   HubCatalog,
   HubCheckResult,
+  HubConfig,
   LlmEnhanceResult,
   LlmStatusInfo,
   LogLevel,
@@ -55,7 +61,12 @@ import {
   saveRuntimeConfig
 } from './services/config'
 import { DownloadAbortError, headSize } from './services/download'
-import { catalogEntriesForLocation, catalogHighNoiseCompanion, createHubService } from './services/hub'
+import {
+  catalogEntriesForLocation,
+  catalogHighNoiseCompanion,
+  companionTargetsFor,
+  createHubService
+} from './services/hub'
 import { getInitState } from './services/init'
 import { authHeadersForUrl, createModelsService, ensureModelDirs } from './services/models'
 import { detectPlatform } from './services/platform'
@@ -68,7 +79,8 @@ import { convertToMp4, ensureFfmpeg } from './services/ffmpeg'
 import { defaultModelInstalled, enhancePrompt, stopActiveEnhance } from './services/llm'
 import { ensureLlmRuntime, llmStatus } from './services/llm-runtime'
 import { isStreamableVideo, mediaUrlFor } from './services/media'
-import { createSdCliService, newOutputPath } from './services/sdcli'
+import { buildArgs, createSdCliService, newOutputPath } from './services/sdcli'
+import { normalizeTileSize, runUpscale, upscaleOutputPath } from './services/upscaler'
 import { sourceNames } from './services/sources'
 import { addToken, deleteToken, exportTokens, importTokens, listTokens, updateToken } from './services/tokens'
 import { checkHubConfig, checkRuntimeConfig, getConfigUpdateStatus } from './services/updates'
@@ -83,7 +95,13 @@ import {
   setPaused,
   setRuntimeProgressBroadcaster
 } from './services/downloads'
-import { SCHEDULER_MODEL_DEFAULT, applySamplingOverrides, isValidSeed } from '@shared/types'
+import {
+  COMPANION_USE_AS_DEFAULTS,
+  FALLBACK_SAMPLING,
+  SCHEDULER_MODEL_DEFAULT,
+  applySamplingOverrides,
+  isValidSeed
+} from '@shared/types'
 import type { DownloadsListResult } from '@shared/types'
 
 const hub = createHubService()
@@ -93,10 +111,16 @@ const sessions = createSessionsService()
 const runtime = createRuntimeService()
 const sdcli = createSdCliService()
 
-/** in-flight generations: sessionId -> { gen, sessionId, messageId } */
+/** in-flight generations: sessionId -> { gen, sessionId, messageId, converting? } */
 const activeGens = new Map<
   string,
-  { gen: { child: import('node:child_process').ChildProcess; stopped: boolean }; sessionId: string; messageId: string }
+  {
+    gen: { child: import('node:child_process').ChildProcess; stopped: boolean }
+    sessionId: string
+    messageId: string
+    /** true while the post-generation .avi → .mp4 conversion runs */
+    converting?: boolean
+  }
 >()
 
 /**
@@ -213,38 +237,14 @@ async function purgeStalePaint(req: GenerationRequest): Promise<never> {
 }
 
 function effectiveSampling(diffusionType: string, cfg: AllConfigs): SamplingDefaults {
-  // Descriptor-shaped fallback for a diffusion type missing from
-  // sampling.json (e.g. the wan2_1/wan2_2 placeholder families): every
-  // channel closed, img_gen, sd-cli-default sampling values.
-  const base: SamplingDefaults = cfg.sampling[diffusionType] ?? {
-    mode: 'img_gen',
-    diffusion_behavior: 'standalone',
-    image_reference: { show: false, max: 0, accepts: null },
-    image_input: { show: false, max: 0, accepts: null },
-    end_image_input: { show: false, max: 0, accepts: null },
-    audio_input: { show: false, max: 0, accepts: null },
-    video_input: { show: false, max: 0, accepts: null },
-    frames: { show: false, max: 0, default: 0 },
-    frame_rate: { show: false, max: 0, default: 0 },
-    control_video: { show: false, default: null },
-    strength: { show: true, default: 0.75 },
-    steps: { show: true, default: 25 },
-    high_steps: { show: false, default: null },
-    cfg: { show: true, default: 1.0 },
-    high_cfg: { show: false, default: null },
-    sampler: { show: true, default: 'euler' },
-    high_sampler: { show: false, default: null },
-    scheduler: { show: true, default: null },
-    width: { show: true, default: 1024 },
-    height: { show: true, default: 1024 },
-    negative: { show: true, default: null },
-    flow_shift: { show: true, default: null },
-    allow_inpainting: { show: false },
-    allow_painting: { show: false },
-    use_previous_image: { show: false, default: false },
-    upscale: { show: false, default: false },
-    upscaler_steps: { show: false, default: null }
-  }
+  // The configured entry (when the type HAS one) is merged OVER the shared
+  // fallback — completing any descriptor key the entry predates (e.g.
+  // boogu_image lacks `control_video`): gen:start reads every descriptor
+  // UNGUARDED (`sampling.X.show`), so the effective descriptor must always
+  // carry every key. Shallow spread: each present key replaces the
+  // fallback's, missing keys inherit the closed-channel defaults.
+  const configured = cfg.sampling[diffusionType]
+  const base: SamplingDefaults = configured ? { ...FALLBACK_SAMPLING, ...configured } : FALLBACK_SAMPLING
   // Flat scalar overrides (settings.json per-type) merge into the descriptor
   // defaults — the same semantics as the renderer's `samplingFor()` (shared
   // `applySamplingOverrides` helper).
@@ -252,18 +252,217 @@ function effectiveSampling(diffusionType: string, cfg: AllConfigs): SamplingDefa
 }
 
 /**
- * The diffusion family a companion model resolves from — the hub entry's
- * `requires.<kind>.from` when present, else the session's own diffusionType.
- * First `repo.diffusion` entry with the requested diffusion_type wins
- * (`requires` is per hub ENTRY; each wan family maps to exactly one entry).
+ * The companion references for a diffusion type + kind — one { from, useAs }
+ * per companion file, resolved from the hub entry's `requires.<kind>` block
+ * (scalar → single item under the kind's default flag; array → one item per
+ * entry). NEVER empty: when the hub entry declares no `requires.<kind>` — or
+ * no `repo.diffusion` entry matches — the FALLBACK `[{ from: diffusionType,
+ * useAs: <kind default> }]` is returned, so every caller can use
+ * `comps[0].from` directly (the session's own diffusionType — exactly what
+ * the old `requiresFamilyFor` returned). First `repo.diffusion` entry with
+ * the requested family wins (`requires` is per hub ENTRY; each wan family
+ * maps to exactly one entry). The hub config is PASSED IN by gen:start (the
+ * handler already holds `cfg.hub` from its top-of-handler loadAllConfigs()
+ * call — no extra per-kind loadHubConfig() reads).
  */
-function requiresFamilyFor(
+function requiresCompanionsFor(
+  hub: HubConfig,
   diffusionType: string,
-  kind: 'vae' | 'encoder' | 'audio_encoder'
-): string {
-  const entry = loadHubConfig().repo.diffusion.find((d) => d.diffusion_type === diffusionType)
-  const from = entry?.requires?.[kind]?.from
-  return typeof from === 'string' && from !== '' ? from : diffusionType
+  kind: CompanionKind,
+  hubName?: string
+): CompanionRef[] {
+  // A family may map to SEVERAL hub entries (multiple providers); the hub
+  // entry `name` carried by the request pins the exact entry when present,
+  // falling back to the first family match (the pre-hubName behavior).
+  const entry =
+    (hubName
+      ? hub.repo.diffusion.find((d) => d.family === diffusionType && d.name === hubName)
+      : undefined) ?? hub.repo.diffusion.find((d) => d.family === diffusionType)
+  const raw = entry?.requires?.[kind]
+  const fallback: CompanionRef[] = [{ from: diffusionType, useAs: COMPANION_USE_AS_DEFAULTS[kind] }]
+  if (!raw) return fallback
+  const items = (Array.isArray(raw) ? raw : [raw]) as { from?: unknown; use_as?: unknown }[]
+  const out: CompanionRef[] = []
+  for (const it of items) {
+    if (it && typeof it === 'object' && typeof it.from === 'string' && it.from !== '') {
+      out.push({
+        from: it.from,
+        useAs:
+          typeof it.use_as === 'string' && it.use_as !== ''
+            ? it.use_as
+            : COMPANION_USE_AS_DEFAULTS[kind]
+      })
+    }
+  }
+  return out.length > 0 ? out : fallback
+}
+
+/**
+ * One companion resolution site's outcome: the installed `{ path, useAs }`
+ * pairs (deduped — a degenerate requires block resolving the SAME file emits
+ * the flag once, not twice) and the items whose file is NOT on disk.
+ */
+interface CompanionResolution {
+  resolved: { path: string; useAs: string }[]
+  /** Companion items whose file is missing: the family, the flag, the name
+   * the site tried to resolve ('' when nothing was derivable) and the
+   * request's provider (feeds the exact-file re-download kick). */
+  missing: { from: string; useAs: string; name: string; provider?: string }[]
+}
+
+/**
+ * Resolve a companion array for gen:start. The companions array is NEVER
+ * empty (requiresCompanionsFor's fallback), so an undeclared kind resolves
+ * from the session's own diffusionType exactly as before. Name resolution:
+ * the explicit request name (applied to every item — companion arrays are
+ * single-item in practice for every kind but encoder) wins; otherwise the
+ * item's OWN family's hub default is derived from the FRESH hub config (the
+ * same stale-cache backstop the audio-VAE / latent-upscaler sites use). The
+ * backstop only ever emits files that ALREADY exist on disk (the existsSync
+ * guard) — a missing derived file lands in `missing` for the caller's
+ * self-heal handling instead of being silently dropped.
+ */
+function resolveCompanionPaths(
+  type: ModelType,
+  companions: CompanionRef[],
+  reqName?: string,
+  reqProvider?: string,
+  hubDefaultFor?: (family: string) => string
+): CompanionResolution {
+  const resolved: { path: string; useAs: string }[] = []
+  const missing: CompanionResolution['missing'] = []
+  for (const comp of companions) {
+    const name = reqName ?? basename(hubDefaultFor?.(comp.from) ?? '')
+    if (!name) {
+      missing.push({ from: comp.from, useAs: comp.useAs, name: '' })
+      continue
+    }
+    const p = models.pathFor(
+      type,
+      name,
+      reqProvider,
+      comp.from,
+      expectUrlFor(type, comp.from, reqProvider, name)
+    )
+    if (existsSync(p)) {
+      if (!resolved.some((o) => o.path === p)) resolved.push({ path: p, useAs: comp.useAs })
+    } else {
+      missing.push({
+        from: comp.from,
+        useAs: comp.useAs,
+        name,
+        ...(reqProvider !== undefined ? { provider: reqProvider } : {})
+      })
+    }
+  }
+  return { resolved, missing }
+}
+
+const COMPANION_KINDS: CompanionKind[] = [
+  'vae',
+  'encoder',
+  'audio_encoder',
+  'vision',
+  'tokenizer',
+  'audio_vae',
+  'latent_upscaler'
+]
+
+const COMPANION_LABELS: Record<CompanionKind, string> = {
+  vae: 'VAE',
+  encoder: 'Text encoder',
+  audio_encoder: 'Audio encoder',
+  vision: 'Vision model',
+  tokenizer: 'Tokenizer',
+  audio_vae: 'Audio VAE',
+  latent_upscaler: 'Latent upscaler'
+}
+
+/**
+ * Whether the diffusion entry's `requires` block DECLARES the kind — distinct
+ * from the fallback `requiresCompanionsFor` returns when it does not. The
+ * gen:start self-heal only kicks downloads for DECLARED companions
+ * (undeclared kinds keep today's silent-skip semantics).
+ */
+function requiresDeclaresFor(
+  hub: HubConfig,
+  diffusionType: string,
+  kind: CompanionKind,
+  hubName?: string
+): boolean {
+  const entry =
+    (hubName
+      ? hub.repo.diffusion.find((d) => d.family === diffusionType && d.name === hubName)
+      : undefined) ?? hub.repo.diffusion.find((d) => d.family === diffusionType)
+  const raw = entry?.requires?.[kind]
+  if (!raw) return false
+  const items = Array.isArray(raw) ? raw : [raw]
+  return items.some(
+    (it) =>
+      !!it &&
+      typeof it === 'object' &&
+      typeof (it as { from?: unknown }).from === 'string' &&
+      (it as { from: string }).from !== ''
+  )
+}
+
+/**
+ * Launch-time dependency self-heal (called from index.ts after
+ * startAllPending): for EVERY session with a saved model, resolve its hub
+ * entry's `requires` companions (the entry pinned by the saved `diffusionName`
+ * when present, else the family) and kick a download for every declared
+ * companion file that is not on disk. This is the launch-side resume path for
+ * downloads that died WITHOUT leaving a registry entry — `startAllPending()`
+ * already retries the ones that left one (pending/failed). Deduped by URL
+ * across sessions and kinds; the manager's installed short-circuit skips
+ * anything already complete. Presence probing goes through `pathFor` (with the
+ * target's URL as the gate), so both the family-scoped and the legacy layouts
+ * — and the same-URL cross-family copies — count as present. Never throws:
+ * a launch-critical path must not break over a companion check.
+ */
+export function ensureSessionCompanionDownloads(): void {
+  try {
+    const hub = loadHubConfig()
+    const pairs = new Map<string, { family: string; hubName?: string }>()
+    for (const s of sessions.list()) {
+      const inputs = s.inputs
+      const family = inputs?.family ?? inputs?.diffusionType
+      if (!inputs?.model || !family) continue
+      const key = `${family}|${inputs.diffusionName ?? ''}`
+      if (!pairs.has(key)) pairs.set(key, { family, hubName: inputs.diffusionName })
+    }
+    if (pairs.size === 0) return
+    const seen = new Set<string>()
+    let kicked = 0
+    for (const { family, hubName } of pairs.values()) {
+      for (const kind of COMPANION_KINDS) {
+        if (!requiresDeclaresFor(hub, family, kind, hubName)) continue
+        for (const comp of requiresCompanionsFor(hub, family, kind, hubName)) {
+          for (const t of companionTargetsFor(kind, comp.from)) {
+            if (seen.has(t.url)) continue
+            seen.add(t.url)
+            const p = models.pathFor(t.type, t.name, t.provider, comp.from, t.url)
+            if (existsSync(p)) continue
+            kicked++
+            void models
+              .download(t.type, t.url, () => {}, t.provider ?? 'default', false, comp.from)
+              .catch((err: unknown) => {
+                console.warn(
+                  `[launch] companion download failed (${t.name}): ${(err as Error)?.message ?? String(err)}`
+                )
+              })
+          }
+        }
+      }
+    }
+    if (kicked > 0) {
+      console.log(
+        `[launch] companion check: kicked ${kicked} download(s) for ${pairs.size} session model(s)`
+      )
+    }
+  } catch (err) {
+    console.warn('[launch] companion check failed:', (err as Error)?.message ?? String(err))
+  }
 }
 
 /**
@@ -617,14 +816,21 @@ export function registerIpc(): void {
   // mount to catch up when the check completed before it mounted — the same
   // pattern as app:initState. null until the first check of the session
   // completes.
-  ipcMain.handle('updates:get', (): ConfigUpdateStatus | null => getConfigUpdateStatus())
+ ipcMain.handle('updates:get', (): ConfigUpdateStatus | null => getConfigUpdateStatus())
 
-  // ---------- models ----------
+ // ---------- models ----------
   ipcMain.handle('models:list', (_e, type: ModelType): ModelFile[] => models.list(type))
 
   ipcMain.handle(
     'models:download',
-    async (_e, type: ModelType, url: string, provider?: string, force?: boolean): Promise<string> => {
+    async (
+      _e,
+      type: ModelType,
+      url: string,
+      provider?: string,
+      force?: boolean,
+      family?: string
+    ): Promise<string> => {
       // The download manager is the sole source of `models:progress`; the
       // handler just awaits it. The resolved destination path is still
       // returned (Promise<string> contract preserved) even though no current
@@ -637,7 +843,7 @@ export function registerIpc(): void {
       // destination path is ever empty). The settings store translates ''
       // back into the DOWNLOAD_ABORTED_MESSAGE error for awaiters.
       try {
-        return await models.download(type, url, () => {}, provider, force)
+        return await models.download(type, url, () => {}, provider, force, family)
       } catch (err) {
         if (isDownloadAbortError(err)) return ''
         throw err
@@ -675,9 +881,10 @@ export function registerIpc(): void {
       url: string,
       provider?: string,
       diffusionType?: string
-    ): Promise<{ ok: boolean; actual: number; expected: number }> => {
+    ): Promise<{ ok: boolean; actual: number; expected: number; exists: boolean }> => {
       const p = models.pathFor(type, name, provider, diffusionType, url)
-      const actual = existsSync(p) ? statSync(p).size : 0
+      const exists = existsSync(p)
+      const actual = exists ? statSync(p).size : 0
       // Authenticated probe: the models:verify HEAD runs OUTSIDE the download
       // manager, so the manager's two header threads never reach it. Without
       // headers a private repo's HEAD answers 401 → expected === 0 → the
@@ -686,7 +893,10 @@ export function registerIpc(): void {
       // passes). authHeadersForUrl yields {} when no source/token — the
       // pre-existing anonymous semantics.
       const expected = await headSize(url, undefined, undefined, await authHeadersForUrl(url))
-      return { ok: expected === 0 || actual === expected, actual, expected }
+      // `exists` distinguishes a MISSING file (actual 0) from a truncated one
+      // — and fixes a latent hole: a missing file + a failed HEAD (expected 0)
+      // used to report ok:true ("installed") and never re-download.
+      return { ok: exists && (expected === 0 || actual === expected), actual, expected, exists }
     }
   )
 
@@ -773,23 +983,420 @@ export function registerIpc(): void {
   )
 
   // ---------- generation ----------
+  /**
+   * Build the sd-cli command line for a generation request without actually
+   * spawning the process. Returns the binary path and the full argument list
+   * so the renderer can display it to the user (gen:preview flow).
+   * Mirrors gen:start's resolution logic up to the buildArgs() call.
+   */
+  function previewGenerationCommand(req: GenerationRequest): Promise<{ binary: string; args: string[] }> {
+    return new Promise(async (resolve, reject) => {
+      try {
+        const cfg = loadAllConfigs()
+        let sampling = effectiveSampling(req.diffusionType, cfg)
+        const modelBehavior = sampling.diffusion_behavior
+        const vaeCompanions = requiresCompanionsFor(cfg.hub, req.diffusionType, 'vae', req.diffusionName)
+        const encoderCompanions = requiresCompanionsFor(cfg.hub, req.diffusionType, 'encoder', req.diffusionName)
+        const audioEncoderCompanions = requiresCompanionsFor(cfg.hub, req.diffusionType, 'audio_encoder', req.diffusionName)
+        const visionCompanions = requiresCompanionsFor(cfg.hub, req.diffusionType, 'vision', req.diffusionName)
+        const tokenizerCompanions = requiresCompanionsFor(cfg.hub, req.diffusionType, 'tokenizer', req.diffusionName)
+        const audioVaeCompanions = requiresCompanionsFor(cfg.hub, req.diffusionType, 'audio_vae', req.diffusionName)
+        const latentUpscalerCompanions = requiresCompanionsFor(cfg.hub, req.diffusionType, 'latent_upscaler', req.diffusionName)
+        const hubRepo = cfg.hub.repo
+        const pendingDeps: string[] = []
+        const kickCompanionDownloads = (kind: CompanionKind, kickFamily: string): void => {
+          for (const t of companionTargetsFor(kind, kickFamily)) {
+            void models.download(t.type, t.url, () => {}, t.provider ?? 'default', false, t.family).catch(() => {})
+          }
+        }
+        const kickNamedCompanion = (kind: CompanionKind, family: string, provider: string | undefined, name: string): boolean => {
+          const row = catalogEntriesForLocation(kind, family, provider, name)[0]
+          if (!row?.url) return false
+          void models.download(kind, row.url, () => {}, row.provider ?? provider ?? 'default', false, family).catch(() => {})
+          return true
+        }
+        const noteMisses = (kind: CompanionKind, missing: CompanionResolution['missing']): void => {
+          if (!requiresDeclaresFor(cfg.hub, req.diffusionType, kind, req.diffusionName)) return
+          for (const m of missing) {
+            if (m.name) {
+              kickNamedCompanion(kind, m.from, m.provider, m.name)
+              kickCompanionDownloads(kind, m.from)
+              pendingDeps.push(`${COMPANION_LABELS[kind]} "${m.name}"`)
+            } else {
+              pendingDeps.push(`the ${COMPANION_LABELS[kind]} for family "${m.from}" (the hub declares no default file for it)`)
+            }
+          }
+        }
+
+        const st = settings.get()
+        const version = st.runtimeVersion ?? Object.keys(cfg.runtime.releases).sort((a, b) => Number(b) - Number(a))[0]
+        const binary = runtime.binaryFor(version)
+        if (!binary) { reject(new Error(`Runtime ${version} is not installed. Download it in Settings → Runtime.`)); return }
+
+        const modelPath = models.pathFor('diffusion', req.model, req.modelProvider, req.diffusionType, expectUrlFor('diffusion', req.diffusionType, req.modelProvider, req.model))
+        if (!existsSync(modelPath)) { reject(new Error(`Diffusion model not found: ${req.model}`)); return }
+        const vaeRes = resolveCompanionPaths('vae', vaeCompanions, req.vae, req.vaeProvider, (f) => {
+          const v = hubRepo.vae?.[f]
+          return v === undefined ? '' : typeof v === 'string' ? v : v.default
+        })
+        if (req.vae && vaeRes.resolved.length === 0) { reject(new Error(`VAE not found: ${req.vae}`)); return }
+        noteMisses('vae', vaeRes.missing)
+
+        const encoderPaths: { path: string; useAs: string }[] = []
+        if (req.encoders && req.encoders.length > 0) {
+          for (const enc of req.encoders) {
+            const comp = encoderCompanions.find((c) => c.useAs === enc.useAs) ?? encoderCompanions[0]
+            const p = models.pathFor('encoder', enc.name, enc.provider, comp.from, expectUrlFor('encoder', comp.from, enc.provider, enc.name))
+            if (!existsSync(p)) { reject(new Error(`Encoder not found: ${enc.name}`)); return }
+            encoderPaths.push({ path: p, useAs: enc.useAs })
+          }
+        } else if (req.encoder) {
+          const single = resolveCompanionPaths('encoder', [encoderCompanions[0]], req.encoder, req.encoderProvider)
+          if (single.resolved.length === 0) { reject(new Error(`Encoder not found: ${req.encoder}`)); return }
+          encoderPaths.push(...single.resolved)
+        } else {
+          const auto = resolveCompanionPaths('encoder', encoderCompanions, undefined, undefined, (f) => hubRepo.encoder?.[f]?.default ?? '')
+          encoderPaths.push(...auto.resolved)
+          noteMisses('encoder', auto.missing)
+        }
+
+        const audioEncoderRes = resolveCompanionPaths('audio_encoder', audioEncoderCompanions, req.audioEncoder, undefined, (f) => hubRepo.audio_encoder?.[f]?.default ?? '')
+        if (req.audioEncoder && audioEncoderRes.resolved.length === 0) { reject(new Error(`Audio encoder not found: ${req.audioEncoder}`)); return }
+        noteMisses('audio_encoder', audioEncoderRes.missing)
+
+        const audioVaeRes = resolveCompanionPaths('audio_vae', audioVaeCompanions, req.audioVae, req.audioVaeProvider, (f) => hubRepo.audio_vae?.[f]?.default ?? '')
+        const audioVaeDeclared = !!req.audioVae || audioVaeCompanions.some((c) => !!hubRepo.audio_vae?.[c.from]?.default)
+        if (audioVaeDeclared && audioVaeRes.resolved.length === 0) { reject(new Error(`Audio VAE not found`)); return }
+        noteMisses('audio_vae', audioVaeRes.missing)
+
+        let highNoisePath: string | undefined
+        {
+          const entry = catalogEntriesForLocation('diffusion', req.diffusionType, req.modelProvider, req.model)[0]
+          if (entry?.groupId) {
+            const companion = catalogHighNoiseCompanion('diffusion', req.diffusionType, req.modelProvider, entry.groupId)
+            if (companion) {
+              const p = models.pathFor('diffusion', companion.name, req.modelProvider ?? companion.provider, req.diffusionType, companion.url)
+              if (existsSync(p)) highNoisePath = p
+            }
+          }
+        }
+
+        const visionRes = resolveCompanionPaths('vision', visionCompanions, req.vision, undefined, (f) => hubRepo.vision?.[f]?.default ?? '')
+        if (req.vision && visionRes.resolved.length === 0) { reject(new Error(`Vision model not found: ${req.vision}`)); return }
+        noteMisses('vision', visionRes.missing)
+
+        const tokenizerRes = resolveCompanionPaths('tokenizer', tokenizerCompanions, req.tokenizer, undefined, (f) => hubRepo.tokenizer?.[f]?.default ?? '')
+        if (req.tokenizer && tokenizerRes.resolved.length === 0) { reject(new Error(`Tokenizer not found: ${req.tokenizer}`)); return }
+        noteMisses('tokenizer', tokenizerRes.missing)
+
+        // ---------- two-channel routing ----------
+        const prevExists = !!req.previousImagePath && existsSync(req.previousImagePath)
+        const refs: string[] = sampling.image_reference.show === true ? [...req.referencePaths] : []
+        if (req.usePrevious && req.previousImageMode === 'reference' && sampling.image_reference.show === true && sampling.use_previous_image.show === true && prevExists) {
+          if (!refs.includes(req.previousImagePath!)) refs.push(req.previousImagePath!)
+        }
+        if (refs.length > sampling.image_reference.max) refs.length = sampling.image_reference.max
+
+        const inputImages: string[] = sampling.image_input.show === true ? [...(req.inputImagePaths ?? [])] : []
+        if (req.usePrevious && req.previousImageMode === 'input' && sampling.image_input.show === true && sampling.use_previous_image.show === true && prevExists) {
+          inputImages.unshift(req.previousImagePath!)
+        }
+        if (inputImages.length > sampling.image_input.max) inputImages.length = sampling.image_input.max
+        const existingInputs = inputImages.filter((r) => existsSync(r)).slice(0, 1)
+
+        const audioPath = sampling.audio_input.show === true && req.audioPath && existsSync(req.audioPath) ? req.audioPath : undefined
+        const controlVideoDefault = typeof sampling.control_video?.default === 'string' && sampling.control_video.default.trim() ? sampling.control_video.default.trim() : undefined
+        const controlVideoCandidate = req.controlVideoPath ?? controlVideoDefault
+        const controlVideoPath = sampling.control_video.show === true && controlVideoCandidate && existsSync(controlVideoCandidate) ? controlVideoCandidate : undefined
+        const endImagePath = sampling.end_image_input.show === true && req.endImagePath && existsSync(req.endImagePath) ? req.endImagePath : undefined
+        const audioRefPaths = sampling.audio_reference.show === true ? [...new Set(req.audioReferencePaths ?? [])].filter((p) => existsSync(p)).slice(0, Math.max(0, sampling.audio_reference.max)) : []
+        const videoRefPaths = sampling.video_reference.show === true ? [...new Set(req.videoReferencePaths ?? [])].filter((p) => existsSync(p)).slice(0, Math.max(0, sampling.video_reference.max)) : []
+
+        const existingRefs = refs.filter((r) => existsSync(r))
+        let initImage: string | undefined
+        let maskPath: string | undefined
+        if (req.maskPath && req.initImagePath) {
+          if (sampling.allow_inpainting.show === true) {
+            maskPath = req.maskPath
+            initImage = req.initImagePath
+            const i = existingRefs.indexOf(req.initImagePath)
+            if (i >= 0) existingRefs.splice(i, 1)
+          }
+        }
+        if (req.paintImagePath && sampling.allow_painting.show !== true) {
+          req.paintImagePath = undefined
+          req.paintTarget = undefined
+        }
+        const paintTarget = req.paintImagePath && (req.paintTarget === 'init' || req.paintTarget === 'reference') ? req.paintTarget : undefined
+        if (req.paintImagePath && paintTarget && !(maskPath && initImage)) {
+          if (paintTarget === 'init') {
+            if (sampling.image_input.show === true) {
+              initImage = req.paintImagePath
+              const k = existingInputs.indexOf(req.paintImagePath)
+              if (k >= 0) existingInputs.splice(k, 1)
+              const r = existingRefs.indexOf(req.paintImagePath)
+              if (r >= 0) existingRefs.splice(r, 1)
+            }
+          } else {
+            if (sampling.image_reference.show === true) {
+              const dup = existingRefs.indexOf(req.paintImagePath)
+              if (dup >= 0) existingRefs.splice(dup, 1)
+              if (existingRefs.length > 0) existingRefs[0] = req.paintImagePath
+              else if (sampling.image_reference.max > 0) existingRefs.push(req.paintImagePath)
+            }
+          }
+        }
+        if (!initImage) initImage = existingInputs[0]
+        if (initImage) {
+          const j = existingInputs.indexOf(initImage)
+          if (j >= 0) existingInputs.splice(j, 1)
+        }
+
+        const session = sessions.get(req.sessionId)
+        if (!session) { reject(new Error(`Session ${req.sessionId} not found`)); return }
+
+        const sessSampling = session.inputs?.sampling
+        if (sessSampling) sampling = applySamplingOverrides(sampling, sessSampling)
+        const negative = (req.negativePrompt ?? session.inputs?.negativePrompt ?? '').trim() || (sampling.negative.default ?? '').trim()
+        if (negative) req.negativePrompt = negative
+        const raw = req.scheduler ?? sampling.scheduler.default
+        req.scheduler = raw && raw !== SCHEDULER_MODEL_DEFAULT && String(raw).trim() ? String(raw).trim() : undefined
+        const rawFlow = req.flowShift ?? sampling.flow_shift.default
+        req.flowShift = typeof rawFlow === 'number' && Number.isFinite(rawFlow) ? rawFlow : typeof rawFlow === 'string' && rawFlow.trim() !== '' && Number.isFinite(Number(rawFlow)) ? Number(rawFlow) : undefined
+        const rawModelArgs = req.modelArgs ?? sampling.model_args?.default
+        req.modelArgs = typeof rawModelArgs === 'string' && rawModelArgs.trim() !== '' ? rawModelArgs.trim() : undefined
+        const rawSeed = req.seed ?? sessSampling?.seed ?? settings.get().sampling?.[req.diffusionType]?.seed
+        req.seed = isValidSeed(rawSeed) ? Math.floor(rawSeed) : undefined
+        const rawArgs = sessSampling?.args
+        req.args = typeof rawArgs === 'string' && rawArgs.trim() !== '' ? rawArgs.trim() : undefined
+        const posNum = (v: number | null | undefined): number | undefined => typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined
+        if (sampling.mode === 'vid_gen') req.genMode = 'vid_gen'
+        req.frames = posNum(sampling.frames?.default)
+        req.frameRate = posNum(sampling.frame_rate?.default)
+        req.highSteps = posNum(sampling.high_steps?.default)
+        req.highCfg = typeof sampling.high_cfg?.default === 'number' && Number.isFinite(sampling.high_cfg.default) ? sampling.high_cfg.default : undefined
+        req.highSampler = typeof sampling.high_sampler?.default === 'string' && sampling.high_sampler.default.trim() ? sampling.high_sampler.default.trim() : undefined
+        req.upscale = sampling.upscale?.default === true
+        req.upscalerSteps = posNum(sampling.upscaler_steps?.default)
+        const latentUpscalerRes = req.upscale ? resolveCompanionPaths('latent_upscaler', latentUpscalerCompanions, req.latentUpscaler, req.latentUpscalerProvider, (f) => hubRepo.latent_upscaler?.[f]?.default ?? '') : { resolved: [], missing: [] }
+        const latentUpscalerDeclared = !!req.latentUpscaler || latentUpscalerCompanions.some((c) => !!hubRepo.latent_upscaler?.[c.from]?.default)
+        if (req.upscale && latentUpscalerDeclared && latentUpscalerRes.resolved.length === 0) { reject(new Error(`Latent upscaler not found`)); return }
+        noteMisses('latent_upscaler', latentUpscalerRes.missing)
+
+        if (pendingDeps.length > 0) { reject(new Error(`Required model files are missing (${pendingDeps.join(', ')})`)); return }
+
+        let loraSpawn: { dir: string; mode: Exclude<LoraApplyMode, 'off'> } | undefined
+        const loraCfg = session.inputs?.lora
+        if (loraCfg && loraCfg.mode !== 'off') {
+          const dir = loraCfg.dir && existsSync(loraCfg.dir) ? loraCfg.dir : join(dataRoot(), 'models', 'lora')
+          mkdirSync(dir, { recursive: true })
+          loraSpawn = { dir, mode: loraCfg.mode }
+        }
+
+        let adetailerSpawn: { model: string; options: Record<string, number | string>; adPrompt?: string; adNegativePrompt?: string } | undefined
+        {
+          const ad = session.inputs?.adetailer
+          if (ad?.enabled && ad.model) {
+            const resolvedPath = models.pathFor('adetailer', ad.model, ad.provider, undefined)
+            if (basename(resolvedPath) !== ad.model) { reject(new Error(`ADetailer model mismatch: expected ${ad.model}, resolved to ${basename(resolvedPath)}`)); return }
+            if (!existsSync(resolvedPath)) { reject(new Error(`ADetailer model not found: ${ad.model}`)); return }
+            const opts: Record<string, number | string> = {}
+            if (typeof ad.inputSize === 'number') opts.inputSize = ad.inputSize
+            if (typeof ad.confidence === 'number') opts.confidence = ad.confidence
+            if (typeof ad.nms === 'number') opts.nms = ad.nms
+            if (typeof ad.maxDetections === 'number') opts.maxDetections = ad.maxDetections
+            if (typeof ad.maskKLargest === 'number') opts.maskKLargest = ad.maskKLargest
+            if (ad.maskFilterMethod) opts.maskFilterMethod = ad.maskFilterMethod
+            if (typeof ad.maskMinRatio === 'number') opts.maskMinRatio = ad.maskMinRatio
+            if (typeof ad.maskMaxRatio === 'number') opts.maskMaxRatio = ad.maskMaxRatio
+            if (typeof ad.dilateErode === 'number') opts.dilateErode = ad.dilateErode
+            if (typeof ad.offsetX === 'number') opts.offsetX = ad.offsetX
+            if (typeof ad.offsetY === 'number') opts.offsetY = ad.offsetY
+            if (ad.maskMode) opts.maskMode = ad.maskMode
+            if (ad.mergeMasks) opts.mergeMasks = ad.mergeMasks
+            if (ad.invertMask) opts.invertMask = ad.invertMask
+            if (typeof ad.maskBlur === 'number') opts.maskBlur = ad.maskBlur
+            if (typeof ad.inpaintPadding === 'number') opts.inpaintPadding = ad.inpaintPadding
+            if (ad.inpaintOnlyMasked) opts.inpaintOnlyMasked = ad.inpaintOnlyMasked
+            if (typeof ad.inpaintWidth === 'number') opts.inpaintWidth = ad.inpaintWidth
+            if (typeof ad.inpaintHeight === 'number') opts.inpaintHeight = ad.inpaintHeight
+            if (typeof ad.denoisingStrength === 'number') opts.denoisingStrength = ad.denoisingStrength
+            if (ad.sortBy) opts.sortBy = ad.sortBy
+            if (typeof ad.detailSteps === 'number') opts.detailSteps = ad.detailSteps
+            if (typeof ad.detailCfg === 'number') opts.detailCfg = ad.detailCfg
+            if (ad.detailSampler) opts.detailSampler = ad.detailSampler
+            if (ad.detailScheduler) opts.detailScheduler = ad.detailScheduler
+            if (ad.clipSkip != null) opts.clipSkip = ad.clipSkip
+            const adPrompt = ad.adPrompt?.trim()
+            const adNegativePrompt = ad.adNegativePrompt?.trim()
+            adetailerSpawn = { model: resolvedPath, options: opts, ...(adPrompt ? { adPrompt } : {}), ...(adNegativePrompt ? { adNegativePrompt } : {}) }
+          }
+        }
+
+        let ipAdapterSpawn: { model: string; clipVision: string; image: string; strength?: number } | undefined
+        {
+          const ipa = session.inputs?.ipAdapter
+          if (ipa?.apply && ipa.model) {
+            const family = req.diffusionType
+            const modelPath2 = models.pathFor('ip_adapter', ipa.model, ipa.provider, family)
+            if (basename(modelPath2) !== ipa.model) { reject(new Error(`IP Adapter model mismatch: expected ${ipa.model}, resolved to ${basename(modelPath2)}`)); return }
+            if (!existsSync(modelPath2)) { reject(new Error(`IP Adapter model not found: ${ipa.model}`)); return }
+            if (!ipa.clipVision) { reject(new Error('IP Adapter is enabled but no Clip Vision model is selected')); return }
+            const cvPath = models.pathFor('clip_vision', ipa.clipVision, ipa.clipVisionProvider, family)
+            if (basename(cvPath) !== ipa.clipVision) { reject(new Error(`Clip Vision model mismatch: expected ${ipa.clipVision}, resolved to ${basename(cvPath)}`)); return }
+            if (!existsSync(cvPath)) { reject(new Error(`Clip Vision model not found: ${ipa.clipVision}`)); return }
+            if (!ipa.image || !existsSync(ipa.image)) { reject(new Error('IP Adapter is enabled but the reference image is missing')); return }
+            ipAdapterSpawn = { model: modelPath2, clipVision: cvPath, image: ipa.image, ...(typeof ipa.strength === 'number' && Number.isFinite(ipa.strength) && ipa.strength >= 0 ? { strength: ipa.strength } : {}) }
+          }
+        }
+
+        let controlNetSpawn: { model: string; image: string; strength?: number } | undefined
+        {
+          const cn = session.inputs?.controlNet
+          if (cn?.apply && cn.model) {
+            const family = req.diffusionType
+            const modelPath2 = models.pathFor('control_net', cn.model, cn.provider, family)
+            if (basename(modelPath2) !== cn.model) { reject(new Error(`Control Net model mismatch: expected ${cn.model}, resolved to ${basename(modelPath2)}`)); return }
+            if (!existsSync(modelPath2)) { reject(new Error(`Control Net model not found: ${cn.model}`)); return }
+            if (!cn.image || !existsSync(cn.image)) { reject(new Error('Control Net is enabled but the control image is missing')); return }
+            controlNetSpawn = { model: modelPath2, image: cn.image, ...(typeof cn.strength === 'number' && Number.isFinite(cn.strength) && cn.strength >= 0 ? { strength: cn.strength } : {}) }
+          }
+        }
+
+        const output = newOutputPath(req.sessionId, 'preview', req.genMode === 'vid_gen' ? 'avi' : 'png')
+        const paths = {
+          model: modelPath,
+          modelBehavior,
+          highNoiseModel: highNoisePath,
+          vae: vaeRes.resolved,
+          encoder: encoderPaths,
+          vision: visionRes.resolved,
+          tokenizer: tokenizerRes.resolved,
+          audioEncoder: audioEncoderRes.resolved,
+          audioVae: audioVaeRes.resolved,
+          latentUpscaler: latentUpscalerRes.resolved,
+          lora: loraSpawn,
+          adetailer: adetailerSpawn,
+          ipAdapter: ipAdapterSpawn,
+          controlNet: controlNetSpawn,
+          initImage,
+          mask: maskPath,
+          references: existingRefs,
+          audioPath,
+          controlVideoPath,
+          endImagePath,
+          audioReferencePaths: audioRefPaths,
+          videoReferencePaths: videoRefPaths,
+          output
+        }
+
+        const perf = settings.get().performance
+        if (perf?.enabled) req.performance = perf
+
+        const args = buildArgs(req, paths)
+        resolve({ binary, args })
+      } catch (err) {
+        reject(err)
+      }
+    })
+  }
+
+  ipcMain.handle('gen:preview', async (_e, req: GenerationRequest): Promise<{ binary: string; args: string[]; command: string }> => {
+    const { binary, args } = await previewGenerationCommand(req)
+    const quoteArg = (a: string): string => /\s/.test(a) && !(a.startsWith('"') && a.endsWith('"')) ? `"${a}"` : a
+    const command = [binary, ...args.map(quoteArg)].join(' ')
+    return { binary, args, command }
+  })
+
   ipcMain.handle('gen:start', async (_e, req: GenerationRequest): Promise<string> => {
+    // One generation per session at a time: a second spawn would overwrite the
+    // activeGens entry and orphan the first child (its Stop becomes
+    // unreachable, its progress events interleave). The renderer gates this
+    // via the per-session busy state (plans/session-switch-busy-state.md);
+    // main is the enforcement point.
+    if (activeGens.has(req.sessionId)) {
+      throw new Error('A generation is already running in this session')
+    }
     const cfg = loadAllConfigs()
     let sampling = effectiveSampling(req.diffusionType, cfg)
     // How the diffusion weights are passed: 'all_in_one' types ship a full
     // checkpoint (conditioners + VAE inside the file) and go out via `--model`;
     // 'standalone' types (default) go out via `--diffusion-model`.
     const modelBehavior = sampling.diffusion_behavior
-    // Companion-model families: the hub entry's `requires` blocks route the
-    // VAE / encoder / audio-encoder resolution to a DIFFERENT diffusion
-    // family (e.g. wan2_2_t2v uses the wan2_1 VAE + encoder). Absent → the
-    // session's own diffusionType.
-    const vaeFamily = requiresFamilyFor(req.diffusionType, 'vae')
-    const encoderFamily = requiresFamilyFor(req.diffusionType, 'encoder')
-    const audioEncoderFamily = requiresFamilyFor(req.diffusionType, 'audio_encoder')
+    // Companion-model references: the hub entry's `requires` blocks route the
+    // companion resolution to a DIFFERENT diffusion family (e.g. wan2_2_t2v
+    // uses the wan2_1 VAE + encoder). The arrays are NEVER empty — an
+    // undeclared kind falls back to the session's own diffusionType under the
+    // kind's default CLI flag, so every site keeps today's behavior when no
+    // `requires` block exists.
+    const vaeCompanions = requiresCompanionsFor(cfg.hub, req.diffusionType, 'vae', req.diffusionName)
+    const encoderCompanions = requiresCompanionsFor(cfg.hub, req.diffusionType, 'encoder', req.diffusionName)
+    const audioEncoderCompanions = requiresCompanionsFor(cfg.hub, req.diffusionType, 'audio_encoder', req.diffusionName)
+    const visionCompanions = requiresCompanionsFor(cfg.hub, req.diffusionType, 'vision', req.diffusionName)
+    const tokenizerCompanions = requiresCompanionsFor(cfg.hub, req.diffusionType, 'tokenizer', req.diffusionName)
+    const audioVaeCompanions = requiresCompanionsFor(cfg.hub, req.diffusionType, 'audio_vae', req.diffusionName)
+    const latentUpscalerCompanions = requiresCompanionsFor(cfg.hub, req.diffusionType, 'latent_upscaler', req.diffusionName)
+    // ONE hub-repo read for every hubDefaultFor stale-cache backstop below.
+    const hubRepo = cfg.hub.repo
+    // Missing-companion self-heal state: the resolution sites below report
+    // what they could not resolve; the funnel after the last site kicks the
+    // downloads (for REQUIRES-declared kinds — undeclared kinds keep today's
+    // silent-skip semantics) and fails this generation with a retry hint, so
+    // the currently selected model's dependencies always (re)download instead
+    // of silently spawning without them. The Downloads list shows live
+    // progress; the next Send succeeds once the files land.
+    const pendingDeps: string[] = []
+    const kickCompanionDownloads = (kind: CompanionKind, kickFamily: string): void => {
+      for (const t of companionTargetsFor(kind, kickFamily)) {
+        void models
+          .download(t.type, t.url, () => {}, t.provider ?? 'default', false, t.family)
+          .catch((err: unknown) => {
+            console.warn(
+              `[gen] companion download failed (${t.name}): ${(err as Error)?.message ?? String(err)}`
+            )
+          })
+      }
+    }
+    /** Best-effort exact-file re-download: the cached catalog row at this
+     * (type, family, provider, name) location carries the precise URL. True
+     * when a download was kicked. */
+    const kickNamedCompanion = (
+      kind: CompanionKind,
+      family: string,
+      provider: string | undefined,
+      name: string
+    ): boolean => {
+      const row = catalogEntriesForLocation(kind, family, provider, name)[0]
+      if (!row?.url) return false
+      void models
+        .download(kind, row.url, () => {}, row.provider ?? provider ?? 'default', false, family)
+        .catch((err: unknown) => {
+          console.warn(
+            `[gen] companion download failed (${name}): ${(err as Error)?.message ?? String(err)}`
+          )
+        })
+      return true
+    }
+    /** Record a declared kind's missing items: kick the exact file (when the
+     * request named one) AND the family's fresh-config defaults, and queue
+     * the human-readable summary for the funnel's error. */
+    const noteMisses = (kind: CompanionKind, missing: CompanionResolution['missing']): void => {
+      if (!requiresDeclaresFor(cfg.hub, req.diffusionType, kind, req.diffusionName)) return
+      for (const m of missing) {
+        if (m.name) {
+          kickNamedCompanion(kind, m.from, m.provider, m.name)
+          kickCompanionDownloads(kind, m.from)
+          pendingDeps.push(`${COMPANION_LABELS[kind]} "${m.name}"`)
+        } else {
+          pendingDeps.push(
+            `the ${COMPANION_LABELS[kind]} for family "${m.from}" (the hub declares no default file for it)`
+          )
+        }
+      }
+    }
 
     const st = settings.get()
-    const version = st.runtimeVersion ?? Object.keys(cfg.runtime).sort((a, b) => Number(b) - Number(a))[0]
+    const version = st.runtimeVersion ?? Object.keys(cfg.runtime.releases).sort((a, b) => Number(b) - Number(a))[0]
     const binary = runtime.binaryFor(version)
     if (!binary) {
       throw new Error(`Runtime ${version} is not installed. Download it in Settings â†’ Runtime.`)
@@ -812,89 +1419,153 @@ export function registerIpc(): void {
       expectUrlFor('diffusion', req.diffusionType, req.modelProvider, req.model)
     )
     if (!existsSync(modelPath)) throw new Error(`Diffusion model not found: ${req.model}`)
-    const vaePath = req.vae
-      ? models.pathFor(
-          'vae',
-          req.vae,
-          req.vaeProvider,
-          vaeFamily,
-          expectUrlFor('vae', vaeFamily, req.vaeProvider, req.vae)
-        )
-      : undefined
-    if (req.vae && vaePath && !existsSync(vaePath)) throw new Error(`VAE not found: ${req.vae}`)
-    const encoderPath = req.encoder
-      ? models.pathFor(
-          'encoder',
-          req.encoder,
-          req.encoderProvider,
-          encoderFamily,
-          expectUrlFor('encoder', encoderFamily, req.encoderProvider, req.encoder)
-        )
-      : undefined
-    if (req.encoder && encoderPath && !existsSync(encoderPath)) {
-      throw new Error(`Encoder not found: ${req.encoder}`)
+    const vaeRes = resolveCompanionPaths(
+      'vae',
+      vaeCompanions,
+      req.vae,
+      req.vaeProvider,
+      // repo.vae still accepts the legacy plain-URL string form — its
+      // "default" is the URL itself (resolveCompanionPaths basenames it).
+      (f) => {
+        const v = hubRepo.vae?.[f]
+        return v === undefined ? '' : typeof v === 'string' ? v : v.default
+      }
+    )
+    if (req.vae && vaeRes.resolved.length === 0) {
+      // Best-effort exact-file re-download (the catalog row's URL at this
+      // location), falling back to the family's fresh-config default
+      // download — then the pre-existing loud failure, with a retry hint when
+      // the kick actually started something.
+      const kicked = kickNamedCompanion('vae', vaeCompanions[0].from, req.vaeProvider, req.vae)
+      if (!kicked) kickCompanionDownloads('vae', vaeCompanions[0].from)
+      throw new Error(
+        `VAE not found: ${req.vae}${kicked ? ' — downloading it now; try again in a moment' : ''}`
+      )
     }
-    // Encoder bundle (SD3.5-style multi-encoder): resolve every file WITH its
-    // own provider (previously dropped here — with SD3.5's and Flux's
-    // clip_l.safetensors both installed, both families resolved to whichever
-    // provider dir sorted first → the wrong file loaded silently) and the
-    // request's diffusionType as the family (F1). The bundle and the
-    // single-file encoder are mutually exclusive by construction; the guard
-    // below makes a malformed request unable to emit both `--llm` and bundle
-    // flags (mirrored inside buildArgs()).
-    const encoderRefs: { path: string; useAs: string }[] = []
+    noteMisses('vae', vaeRes.missing)
+    // Encoder — THREE input paths merged into ONE companion array (the
+    // SdCliPaths.encoder/encoders XOR guard dissolves into the unified shape):
+    // 1. the renderer-sent `req.encoders` bundle (SD3.5 defaults[] or an
+    //    array-form requires.encoder): each file resolves WITH its own
+    //    provider (previously dropped — with SD3.5's and Flux's
+    //    clip_l.safetensors both installed, both families resolved to
+    //    whichever provider dir sorted first → the wrong file loaded
+    //    silently), from the companion whose useAs matches, else the first
+    //    companion's family (the scalar `requires.encoder.from` / the
+    //    session's own diffusionType) — the per-item mapping that serves
+    //    hunyuan_video_1_5's two-encoder array (qwen2_5_vl under
+    //    `qwen2_5_vl_7b_instruct`, byt5 under `byt5_small_glyphxl` — never one
+    //    shared family);
+    // 2. the single-file legacy `req.encoder` (first companion's family);
+    // 3. no request names — derive each companion's default from its OWN
+    //    family's hub config (only files already on disk are emitted; the
+    //    stale-cache self-heal).
+    const encoderPaths: { path: string; useAs: string }[] = []
     if (req.encoders && req.encoders.length > 0) {
       for (const enc of req.encoders) {
+        const comp = encoderCompanions.find((c) => c.useAs === enc.useAs) ?? encoderCompanions[0]
         const p = models.pathFor(
           'encoder',
           enc.name,
           enc.provider,
-          encoderFamily,
-          expectUrlFor('encoder', encoderFamily, enc.provider, enc.name)
+          comp.from,
+          expectUrlFor('encoder', comp.from, enc.provider, enc.name)
         )
-        if (!existsSync(p)) throw new Error(`Encoder not found: ${enc.name}`)
-        encoderRefs.push({ path: p, useAs: enc.useAs })
+        if (!existsSync(p)) {
+          // Best-effort exact-file re-download, then the pre-existing loud
+          // failure — with a retry hint when the kick started something.
+          const kicked = kickNamedCompanion('encoder', comp.from, enc.provider, enc.name)
+          if (!kicked) kickCompanionDownloads('encoder', comp.from)
+          throw new Error(
+            `Encoder not found: ${enc.name}${kicked ? ' — downloading it now; try again in a moment' : ''}`
+          )
+        }
+        encoderPaths.push({ path: p, useAs: enc.useAs })
       }
+    } else if (req.encoder) {
+      const single = resolveCompanionPaths(
+        'encoder',
+        [encoderCompanions[0]],
+        req.encoder,
+        req.encoderProvider
+      )
+      if (single.resolved.length === 0) {
+        const kicked = kickNamedCompanion(
+          'encoder',
+          encoderCompanions[0].from,
+          req.encoderProvider,
+          req.encoder
+        )
+        if (!kicked) kickCompanionDownloads('encoder', encoderCompanions[0].from)
+        throw new Error(
+          `Encoder not found: ${req.encoder}${kicked ? ' — downloading it now; try again in a moment' : ''}`
+        )
+      }
+      encoderPaths.push(...single.resolved)
+    } else {
+      const auto = resolveCompanionPaths('encoder', encoderCompanions, undefined, undefined, (f) =>
+        hubRepo.encoder?.[f]?.default ?? ''
+      )
+      encoderPaths.push(...auto.resolved)
+      noteMisses('encoder', auto.missing)
     }
     // Audio encoder (Wan2.2 S2V's wav2vec2) — resolved from the family the
     // hub entry's `requires.audio_encoder.from` names (else the session's own
     // diffusionType).
-    const audioEncoderPath = req.audioEncoder
-      ? models.pathFor(
-          'audio_encoder',
-          req.audioEncoder,
-          undefined,
-          audioEncoderFamily,
-          expectUrlFor('audio_encoder', audioEncoderFamily, undefined, req.audioEncoder)
-        )
-      : undefined
-    if (req.audioEncoder && audioEncoderPath && !existsSync(audioEncoderPath)) {
-      throw new Error(`Audio encoder not found: ${req.audioEncoder}`)
+    const audioEncoderRes = resolveCompanionPaths(
+      'audio_encoder',
+      audioEncoderCompanions,
+      req.audioEncoder,
+      undefined,
+      (f) => hubRepo.audio_encoder?.[f]?.default ?? ''
+    )
+    if (req.audioEncoder && audioEncoderRes.resolved.length === 0) {
+      const kicked = kickNamedCompanion(
+        'audio_encoder',
+        audioEncoderCompanions[0].from,
+        undefined,
+        req.audioEncoder
+      )
+      if (!kicked) kickCompanionDownloads('audio_encoder', audioEncoderCompanions[0].from)
+      throw new Error(
+        `Audio encoder not found: ${req.audioEncoder}${kicked ? ' — downloading it now; try again in a moment' : ''}`
+      )
     }
-    // Audio VAE (LTX 2.5's audio track) — resolved from the session's own
-    // diffusionType (no `requires` indirection). Resolves UNCONDITIONALLY when
-    // the family declares one (LTX needs `--audio-vae` on every run) and does
-    // NOT depend on the upscale gate, so this early site is safe. Stale-cache
-    // backstop: when the request omits the name (a legacy catalog cache has no
-    // audio_vae rows), derive the default basename from the FRESH hub config —
+    noteMisses('audio_encoder', audioEncoderRes.missing)
+    // Audio VAE (LTX 2.5's audio track) — resolved from the companion family
+    // (the hub entry's `requires.audio_vae.from` when declared, else the
+    // session's own diffusionType). Resolves UNCONDITIONALLY when the family
+    // declares one (LTX needs `--audio-vae` on every run) and does NOT depend
+    // on the upscale gate, so this early site is safe. Stale-cache backstop:
+    // when the request omits the name (a legacy catalog cache has no audio_vae
+    // rows), derive the default basename from the FRESH hub config —
     // expectUrlFor degrades permissively on a stale cache, so the file still
     // resolves by family/provider/name. An empty derived name (the family
-    // declares nothing) resolves nothing and emits nothing.
-    const hubRepo = loadHubConfig().repo
-    const audioVaeName = req.audioVae
-      ?? basename(hubRepo.audio_vae?.[req.diffusionType]?.default ?? '')
-    const audioVaePath = audioVaeName
-      ? models.pathFor(
-          'audio_vae',
-          audioVaeName,
-          req.audioVaeProvider,
-          req.diffusionType,
-          expectUrlFor('audio_vae', req.diffusionType, req.audioVaeProvider, audioVaeName)
-        )
-      : undefined
-    if (audioVaeName && audioVaePath && !existsSync(audioVaePath)) {
-      throw new Error(`Audio VAE not found: ${audioVaeName} — download it in Settings → Audio VAE`)
+    // declares nothing) resolves nothing and emits nothing. The missing-file
+    // throw is DECLARED-keyed — the auto-derived audio VAE is a required
+    // companion, so a declared-but-missing file fails the generation even when
+    // the request omits the name (preserved from the pre-unified site).
+    const audioVaeRes = resolveCompanionPaths(
+      'audio_vae',
+      audioVaeCompanions,
+      req.audioVae,
+      req.audioVaeProvider,
+      (f) => hubRepo.audio_vae?.[f]?.default ?? ''
+    )
+    const audioVaeDeclared =
+      !!req.audioVae || audioVaeCompanions.some((c) => !!hubRepo.audio_vae?.[c.from]?.default)
+    if (audioVaeDeclared && audioVaeRes.resolved.length === 0) {
+      const missName = req.audioVae ?? basename(hubRepo.audio_vae?.[audioVaeCompanions[0].from]?.default ?? '')
+      const kicked = req.audioVae
+        ? kickNamedCompanion('audio_vae', audioVaeCompanions[0].from, req.audioVaeProvider, req.audioVae)
+        : false
+      if (!kicked) kickCompanionDownloads('audio_vae', audioVaeCompanions[0].from)
+      throw new Error(
+        `Audio VAE not found: ${missName}` +
+          `${kicked ? ' — downloading it now; try again in a moment' : ' — download it in Settings → Audio VAE'}`
+      )
     }
+    noteMisses('audio_vae', audioVaeRes.missing)
     // High-noise expert (WAN MoE pairs): the low-noise file the user selected
     // carries a `groupId`; the high-noise companion is the catalog entry with
     // the same group whose `useAs` is `high_noise_diffusion_model`. A MoE
@@ -932,30 +1603,36 @@ export function registerIpc(): void {
         }
       }
     }
-    const visionPath = req.vision
-      ? models.pathFor(
-          'vision',
-          req.vision,
-          undefined,
-          req.diffusionType,
-          expectUrlFor('vision', req.diffusionType, undefined, req.vision)
-        )
-      : undefined
-    if (req.vision && visionPath && !existsSync(visionPath)) {
-      throw new Error(`Vision model not found: ${req.vision}`)
+    const visionRes = resolveCompanionPaths(
+      'vision',
+      visionCompanions,
+      req.vision,
+      undefined,
+      (f) => hubRepo.vision?.[f]?.default ?? ''
+    )
+    if (req.vision && visionRes.resolved.length === 0) {
+      const kicked = kickNamedCompanion('vision', visionCompanions[0].from, undefined, req.vision)
+      if (!kicked) kickCompanionDownloads('vision', visionCompanions[0].from)
+      throw new Error(
+        `Vision model not found: ${req.vision}${kicked ? ' — downloading it now; try again in a moment' : ''}`
+      )
     }
-    const tokenizerPath = req.tokenizer
-      ? models.pathFor(
-          'tokenizer',
-          req.tokenizer,
-          undefined,
-          req.diffusionType,
-          expectUrlFor('tokenizer', req.diffusionType, undefined, req.tokenizer)
-        )
-      : undefined
-    if (req.tokenizer && tokenizerPath && !existsSync(tokenizerPath)) {
-      throw new Error(`Tokenizer not found: ${req.tokenizer}`)
+    noteMisses('vision', visionRes.missing)
+    const tokenizerRes = resolveCompanionPaths(
+      'tokenizer',
+      tokenizerCompanions,
+      req.tokenizer,
+      undefined,
+      (f) => hubRepo.tokenizer?.[f]?.default ?? ''
+    )
+    if (req.tokenizer && tokenizerRes.resolved.length === 0) {
+      const kicked = kickNamedCompanion('tokenizer', tokenizerCompanions[0].from, undefined, req.tokenizer)
+      if (!kicked) kickCompanionDownloads('tokenizer', tokenizerCompanions[0].from)
+      throw new Error(
+        `Tokenizer not found: ${req.tokenizer}${kicked ? ' — downloading it now; try again in a moment' : ''}`
+      )
     }
+    noteMisses('tokenizer', tokenizerRes.missing)
 
     // ---------- two-channel routing ----------
     // Reference channel (--ref-image): user-picked references plus the
@@ -1002,18 +1679,26 @@ export function registerIpc(): void {
     // Video-era channels (descriptor-gated; each flag is single-valued, so a
     // stale or forbidden path is dropped entirely — defense-in-depth):
     // --audio (Wan2.2 S2V), --control-video (VACE, a frames DIRECTORY),
-    // --end-img (FLF2V).
+    // --end-img (FLF2V). The control-video gate is the `control_video`
+    // descriptor's `show` (NOT video_input — that channel is reserved); when
+    // the request carries no explicit user-picked directory, the descriptor's
+    // `default` (a configured frames directory, usually null) is the fallback.
     const audioPath =
       sampling.audio_input.show === true &&
       req.audioPath &&
       existsSync(req.audioPath)
         ? req.audioPath
         : undefined
+    const controlVideoDefault =
+      typeof sampling.control_video?.default === 'string' && sampling.control_video.default.trim()
+        ? sampling.control_video.default.trim()
+        : undefined
+    const controlVideoCandidate = req.controlVideoPath ?? controlVideoDefault
     const controlVideoPath =
-      sampling.video_input.show === true &&
-      req.controlVideoPath &&
-      existsSync(req.controlVideoPath)
-        ? req.controlVideoPath
+      sampling.control_video.show === true &&
+      controlVideoCandidate &&
+      existsSync(controlVideoCandidate)
+        ? controlVideoCandidate
         : undefined
     const endImagePath =
       sampling.end_image_input.show === true &&
@@ -1021,6 +1706,32 @@ export function registerIpc(): void {
       existsSync(req.endImagePath)
         ? req.endImagePath
         : undefined
+    // Reference channels (--ref-audio / --ref-video, MiniMax-H3 Ref2VA) —
+    // REPEATABLE flags, so they follow the image_reference pattern (arrays,
+    // deduped, existsSync-filtered, capped by the channel `max`); a type whose
+    // config forbids the channel gets an empty array (drop entirely,
+    // defense-in-depth). --ref-video takes a frames DIRECTORY at 24 fps, not
+    // a media file.
+    const audioRefPaths =
+      sampling.audio_reference.show === true
+        ? [...new Set(req.audioReferencePaths ?? [])]
+            .filter((p) => existsSync(p))
+            .slice(0, Math.max(0, sampling.audio_reference.max))
+        : []
+    const videoRefPaths =
+      sampling.video_reference.show === true
+        ? [...new Set(req.videoReferencePaths ?? [])]
+            .filter((p) => existsSync(p))
+            .slice(0, Math.max(0, sampling.video_reference.max))
+        : []
+    // Write the GATED values back onto the request — buildArgs() reads the
+    // req.* fields (sdcli.ts), so without this the gate above would only
+    // protect the persisted message display, never the emitted flags.
+    req.audioPath = audioPath
+    req.controlVideoPath = controlVideoPath
+    req.endImagePath = endImagePath
+    req.audioReferencePaths = audioRefPaths
+    req.videoReferencePaths = videoRefPaths
 
     const existingRefs = refs.filter((r) => existsSync(r))
     let initImage: string | undefined
@@ -1148,6 +1859,12 @@ export function registerIpc(): void {
         : typeof rawFlow === 'string' && rawFlow.trim() !== '' && Number.isFinite(Number(rawFlow))
           ? Number(rawFlow)
           : undefined
+    // Model args: `req.modelArgs` carries the RAW renderer value (a concrete
+    // string, or undefined). Request value wins; else the global effective
+    // default. A non-empty trimmed string survives; '' / null / undefined ⇒
+    // undefined ⇒ buildArgs emits no --model-args flag (sd-cli default).
+    const rawModelArgs = req.modelArgs ?? sampling.model_args?.default
+    req.modelArgs = typeof rawModelArgs === 'string' && rawModelArgs.trim() !== '' ? rawModelArgs.trim() : undefined
     // Seed: `req.seed` carries the RAW merged value (a finite integer in
     // [0, SEED_MAX], null, or undefined). Request value wins; else the
     // session-saved override, else the settings per-type override (seed is
@@ -1156,6 +1873,11 @@ export function registerIpc(): void {
     // per run.
     const rawSeed = req.seed ?? sessSampling?.seed ?? settings.get().sampling?.[req.diffusionType]?.seed
     req.seed = isValidSeed(rawSeed) ? Math.floor(rawSeed) : undefined
+    // Universal args: session-only (never a sampling.json field). A non-empty
+    // trimmed string survives; '' / null / undefined ⇒ undefined ⇒ buildArgs
+    // appends nothing.
+    const rawArgs = sessSampling?.args
+    req.args = typeof rawArgs === 'string' && rawArgs.trim() !== '' ? rawArgs.trim() : undefined
     // Video-era values (descriptors resolved post-merge): gen mode, video
     // frames / frame rate and the MoE high-noise sampling values. Positive
     // numbers only for frames/fps/high-steps (0 or null ⇒ the flag is omitted
@@ -1183,31 +1905,58 @@ export function registerIpc(): void {
     // default 0 = reuse --steps).
     req.upscale = sampling.upscale?.default === true
     req.upscalerSteps = posNum(sampling.upscaler_steps?.default)
-    // Latent upscaler (LTX 2.5 hires fix) — resolved from the session's own
-    // diffusionType (no `requires` indirection). GATED on `req.upscale`, which
+    // Latent upscaler (LTX 2.5 hires fix) — resolved from the companion
+    // family (the hub entry's `requires.latent_upscaler.from` when declared,
+    // else the session's own diffusionType). GATED on `req.upscale`, which
     // only exists once the merged descriptor has been read above — placing
     // this at the audio-encoder site would read `req.upscale` before it is
     // assigned, the path would never resolve, and buildArgs would silently
     // drop the two upscaler flags. Same stale-cache backstop as the audio
     // VAE: the name derives from the fresh hub config when the request omits
-    // it. A family that DECLARES an upscaler but whose file is missing fails
-    // the generation (a required companion, like the MoE high-noise expert —
+    // it. The missing-file throw is DECLARED-keyed (NOT keyed on
+    // `req.latentUpscaler`, which is absent on the backstop path): a family
+    // that DECLARES an upscaler but whose file is missing fails the
+    // generation (a required companion, like the MoE high-noise expert —
     // never a silent quality downgrade); a family that declares NOTHING
     // resolves nothing and buildArgs falls back to sd-cli's built-in upscaler.
-    const latentUpscalerName = req.latentUpscaler
-      ?? basename(hubRepo.latent_upscaler?.[req.diffusionType]?.default ?? '')
-    const latentUpscalerPath =
-      req.upscale && latentUpscalerName
-        ? models.pathFor(
+    const latentUpscalerRes = req.upscale
+      ? resolveCompanionPaths(
+          'latent_upscaler',
+          latentUpscalerCompanions,
+          req.latentUpscaler,
+          req.latentUpscalerProvider,
+          (f) => hubRepo.latent_upscaler?.[f]?.default ?? ''
+        )
+      : { resolved: [], missing: [] }
+    const latentUpscalerDeclared =
+      !!req.latentUpscaler ||
+      latentUpscalerCompanions.some((c) => !!hubRepo.latent_upscaler?.[c.from]?.default)
+    if (req.upscale && latentUpscalerDeclared && latentUpscalerRes.resolved.length === 0) {
+      const missName =
+        req.latentUpscaler ?? basename(hubRepo.latent_upscaler?.[latentUpscalerCompanions[0].from]?.default ?? '')
+      const kicked = req.latentUpscaler
+        ? kickNamedCompanion(
             'latent_upscaler',
-            latentUpscalerName,
+            latentUpscalerCompanions[0].from,
             req.latentUpscalerProvider,
-            req.diffusionType,
-            expectUrlFor('latent_upscaler', req.diffusionType, req.latentUpscalerProvider, latentUpscalerName)
+            req.latentUpscaler
           )
-        : undefined
-    if (req.upscale && latentUpscalerName && latentUpscalerPath && !existsSync(latentUpscalerPath)) {
-      throw new Error(`Latent upscaler not found: ${latentUpscalerName} — download it in Settings → Latent Upscaler`)
+        : false
+      if (!kicked) kickCompanionDownloads('latent_upscaler', latentUpscalerCompanions[0].from)
+      throw new Error(
+        `Latent upscaler not found: ${missName}` +
+          `${kicked ? ' — downloading it now; try again in a moment' : ' — download it in Settings → Latent Upscaler'}`
+      )
+    }
+    noteMisses('latent_upscaler', latentUpscalerRes.missing)
+
+    // Self-heal funnel: every REQUIRES-declared companion the sites above
+    // could not resolve has had its download kicked — fail this generation
+    // with a retry hint instead of silently spawning without the dependency.
+    if (pendingDeps.length > 0) {
+      throw new Error(
+        `Required model files are missing and are being downloaded now (${pendingDeps.join(', ')}) — try again once the Downloads list shows them complete`
+      )
     }
 
     // LoRA: the per-session config lives in session.inputs.lora (the renderer
@@ -1228,6 +1977,149 @@ export function registerIpc(): void {
       mkdirSync(dir, { recursive: true })
       loraSpawn = { dir, mode: loraCfg.mode }
     }
+    // ADetailer (YOLOv8 object detector repair pass): resolved from the
+    // session's saved adetailer settings - when enabled, the model path is
+    // resolved and the basename is validated against the session's model
+    // name (collision-hardening plan). Options are built from the session's
+    // AdetailerSettings and emitted as --extra-ad-args.
+    let adetailerSpawn: {
+      model: string
+      options: Record<string, number | string>
+      adPrompt?: string
+      adNegativePrompt?: string
+    } | undefined
+    {
+      const ad = session.inputs?.adetailer
+      if (ad?.enabled && ad.model) {
+        const resolvedPath = models.pathFor(
+          'adetailer',
+          ad.model,
+          ad.provider, // provider scopes the on-disk slot so two providers
+          undefined // shipping the same basename resolve to different dirs
+          // adetailer has no diffusion-type variation
+        )
+        // Basename validation: the resolved path must carry the session's
+        // model name as its basename (the family-scoped pathFor chain may
+        // serve a different URL's file under the same basename - reject).
+        if (basename(resolvedPath) !== ad.model) {
+          throw new Error(
+            `ADetailer model mismatch: expected ${ad.model}, resolved to ${basename(resolvedPath)}`
+          )
+        }
+        if (!existsSync(resolvedPath)) {
+          throw new Error(`ADetailer model not found: ${ad.model} - download it in Settings -> Adetailer`)
+        }
+        // Build --extra-ad-args from the session's AdetailerSettings
+        const opts: Record<string, number | string> = {}
+        if (typeof ad.inputSize === 'number') opts.inputSize = ad.inputSize
+        if (typeof ad.confidence === 'number') opts.confidence = ad.confidence
+        if (typeof ad.nms === 'number') opts.nms = ad.nms
+        if (typeof ad.maxDetections === 'number') opts.maxDetections = ad.maxDetections
+        if (typeof ad.maskKLargest === 'number') opts.maskKLargest = ad.maskKLargest
+        if (ad.maskFilterMethod) opts.maskFilterMethod = ad.maskFilterMethod
+        if (typeof ad.maskMinRatio === 'number') opts.maskMinRatio = ad.maskMinRatio
+        if (typeof ad.maskMaxRatio === 'number') opts.maskMaxRatio = ad.maskMaxRatio
+        if (typeof ad.dilateErode === 'number') opts.dilateErode = ad.dilateErode
+        if (typeof ad.offsetX === 'number') opts.offsetX = ad.offsetX
+        if (typeof ad.offsetY === 'number') opts.offsetY = ad.offsetY
+        if (ad.maskMode) opts.maskMode = ad.maskMode
+        if (ad.mergeMasks) opts.mergeMasks = ad.mergeMasks
+        if (ad.invertMask) opts.invertMask = ad.invertMask
+        if (typeof ad.maskBlur === 'number') opts.maskBlur = ad.maskBlur
+        if (typeof ad.inpaintPadding === 'number') opts.inpaintPadding = ad.inpaintPadding
+        if (ad.inpaintOnlyMasked) opts.inpaintOnlyMasked = ad.inpaintOnlyMasked
+        if (typeof ad.inpaintWidth === 'number') opts.inpaintWidth = ad.inpaintWidth
+        if (typeof ad.inpaintHeight === 'number') opts.inpaintHeight = ad.inpaintHeight
+        if (typeof ad.denoisingStrength === 'number') opts.denoisingStrength = ad.denoisingStrength
+        if (ad.sortBy) opts.sortBy = ad.sortBy
+        if (typeof ad.detailSteps === 'number') opts.detailSteps = ad.detailSteps
+        if (typeof ad.detailCfg === 'number') opts.detailCfg = ad.detailCfg
+        if (ad.detailSampler) opts.detailSampler = ad.detailSampler
+        if (ad.detailScheduler) opts.detailScheduler = ad.detailScheduler
+        if (ad.clipSkip != null) opts.clipSkip = ad.clipSkip
+        // Thread prompt overrides onto the request (buildArgs reads these)
+        const adPrompt = ad.adPrompt?.trim()
+        const adNegativePrompt = ad.adNegativePrompt?.trim()
+        adetailerSpawn = {
+          // Pass the ABSOLUTE path — sd-cli resolves the detector file itself
+          // and needs the full path, not just the basename (a bare basename
+          // fails with "cannot inspect model source ... file specified").
+          model: resolvedPath,
+          options: opts,
+          ...(adPrompt ? { adPrompt } : {}),
+          ...(adNegativePrompt ? { adNegativePrompt } : {})
+        }
+      }
+    }
+
+    // IP Adapter (CLIP-Vision encoder + adapter weight + reference image):
+    // resolved from the session's saved ipAdapter settings; early clear error
+    // when apply is on but clip vision or reference image is missing.
+    let ipAdapterSpawn: { model: string; clipVision: string; image: string; strength?: number } | undefined
+    {
+      const ipa = session.inputs?.ipAdapter
+      if (ipa?.apply && ipa.model) {
+        const family = req.diffusionType
+        const modelPath = models.pathFor('ip_adapter', ipa.model, ipa.provider, family)
+        if (basename(modelPath) !== ipa.model) {
+          throw new Error(
+            `IP Adapter model mismatch: expected ${ipa.model}, resolved to ${basename(modelPath)}`
+          )
+        }
+        if (!existsSync(modelPath)) {
+          throw new Error(`IP Adapter model not found: ${ipa.model} - download it in the IP Adapter dialog`)
+        }
+        if (!ipa.clipVision) {
+          throw new Error('IP Adapter is enabled but no Clip Vision model is selected - open the IP Adapter dialog and pick/download one (Tab: Clip Vision)')
+        }
+        const cvPath = models.pathFor('clip_vision', ipa.clipVision, ipa.clipVisionProvider, family)
+        if (basename(cvPath) !== ipa.clipVision) {
+          throw new Error(
+            `Clip Vision model mismatch: expected ${ipa.clipVision}, resolved to ${basename(cvPath)}`
+          )
+        }
+        if (!existsSync(cvPath)) {
+          throw new Error(`Clip Vision model not found: ${ipa.clipVision} - download it in the IP Adapter dialog`)
+        }
+        if (!ipa.image || !existsSync(ipa.image)) {
+          throw new Error('IP Adapter is enabled but the reference image is missing - re-attach it in the IP Adapter dialog')
+        }
+        ipAdapterSpawn = {
+          model: modelPath,
+          clipVision: cvPath,
+          image: ipa.image,
+          ...(typeof ipa.strength === 'number' && Number.isFinite(ipa.strength) && ipa.strength >= 0 ? { strength: ipa.strength } : {})
+        }
+      }
+    }
+
+    // Control Net (control net model + control image): resolved from the
+    // session's saved controlNet settings; early clear error when apply is on
+    // but the model or control image is missing.
+    let controlNetSpawn: { model: string; image: string; strength?: number } | undefined
+    {
+      const cn = session.inputs?.controlNet
+      if (cn?.apply && cn.model) {
+        const family = req.diffusionType
+        const cnModelPath = models.pathFor('control_net', cn.model, cn.provider, family)
+        if (basename(cnModelPath) !== cn.model) {
+          throw new Error(
+            `Control Net model mismatch: expected ${cn.model}, resolved to ${basename(cnModelPath)}`
+          )
+        }
+        if (!existsSync(cnModelPath)) {
+          throw new Error(`Control Net model not found: ${cn.model} - download it in the Control Net dialog`)
+        }
+        if (!cn.image || !existsSync(cn.image)) {
+          throw new Error('Control Net is enabled but the control image is missing - re-attach it in the Control Net dialog')
+        }
+        controlNetSpawn = {
+          model: cnModelPath,
+          image: cn.image,
+          ...(typeof cn.strength === 'number' && Number.isFinite(cn.strength) && cn.strength >= 0 ? { strength: cn.strength } : {})
+        }
+      }
+    }
 
     const messageId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
     const userMsg: ChatMessage = {
@@ -1240,6 +2132,8 @@ export function registerIpc(): void {
       ...(audioPath ? { audioPath } : {}),
       ...(controlVideoPath ? { controlVideoPath } : {}),
       ...(endImagePath ? { endImagePath } : {}),
+      ...(audioRefPaths.length ? { audioReferencePaths: audioRefPaths } : {}),
+      ...(videoRefPaths.length ? { videoReferencePaths: videoRefPaths } : {}),
       createdAt: Date.now()
     }
     sessions.addMessage(req.sessionId, userMsg)
@@ -1263,22 +2157,34 @@ export function registerIpc(): void {
       // WAN MoE companion — emitted as --high-noise-diffusion-model (its
       // presence also gates the three --high-noise-* sampling flags).
       highNoiseModel: highNoisePath,
-      vae: vaePath,
-      // Bundle wins: when `encoders` resolved non-empty, `encoder` is ignored.
-      encoder: encoderRefs.length ? undefined : encoderPath,
-      encoders: encoderRefs.length ? encoderRefs : undefined,
-      vision: visionPath,
-      tokenizer: tokenizerPath,
+      // Unified companion arrays — one { path, useAs } per companion file;
+      // buildArgs emits one --<useAs> <path> per item (VAE skipped for
+      // all_in_one types; the latent upscaler stays upscale-gated).
+      vae: vaeRes.resolved,
+      encoder: encoderPaths,
+      vision: visionRes.resolved,
+      tokenizer: tokenizerRes.resolved,
       // Wan2.2 S2V audio encoder (--audio-encoder)
-      audioEncoder: audioEncoderPath,
+      audioEncoder: audioEncoderRes.resolved,
       // LTX 2.5 audio VAE (--audio-vae)
-      audioVae: audioVaePath,
+      audioVae: audioVaeRes.resolved,
       // LTX 2.5 latent upscaler — buildArgs derives --hires-upscalers-dir +
-      // --hires-upscaler from the absolute path (only when upscale is on)
-      latentUpscaler: latentUpscalerPath,
+      // --hires-upscaler from each absolute path (only when upscale is on)
+      latentUpscaler: latentUpscalerRes.resolved,
       // Per-session LoRA flags; undefined when the session's mode is 'off'
       // (or unset) — buildArgs emits neither flag then.
       lora: loraSpawn,
+      // ADetailer (YOLOv8 object detector repair pass); undefined when the
+      // session's adetailer is disabled or no model is selected — buildArgs
+      // emits neither --ad-model nor --extra-ad-args then.
+      adetailer: adetailerSpawn,
+      // IP Adapter; undefined when the session's apply switch is off — buildArgs
+      // emits --clip_vision + --ip-adapter + --ip-adapter-image + (optional)
+      // --ip-adapter-strength when set.
+      ipAdapter: ipAdapterSpawn,
+      // Control Net; undefined when the session's apply switch is off — buildArgs
+      // emits --control-net + --control-image + (optional) --control-strength.
+      controlNet: controlNetSpawn,
       initImage,
       // inpaint/outpaint mask — always set together with initImage (main
       // never emits --mask without --init-img)
@@ -1288,6 +2194,9 @@ export function registerIpc(): void {
       audioPath,
       controlVideoPath,
       endImagePath,
+      // Repeatable reference channels (empty arrays for types that forbid them)
+      audioReferencePaths: audioRefPaths,
+      videoReferencePaths: videoRefPaths,
       output
     }
 
@@ -1297,11 +2206,14 @@ export function registerIpc(): void {
     const perf = settings.get().performance
     if (perf?.enabled) req.performance = perf
 
+    // Capture the spawn timestamp so the terminal 'done' event can report the
+    // total wall-clock generation time (spawn → done, incl. any ffmpeg
+    // conversion) on the image preview badge.
+    const genStart = Date.now()
     const gen = sdcli.generate(binary, req, paths, {
       onProgress: (step, totalSteps) =>
         sendProgress(req.sessionId, assistantMsg.id, { status: 'running', step, totalSteps }),
       onDone: (imagePath) => {
-        activeGens.delete(req.sessionId)
         // vid_gen outputs are Motion-JPEG .avi (the bundled runtime has no
         // ffmpeg muxer) — Chromium cannot play MJPEG inline, so every .avi
         // is re-encoded to H.264 .mp4 via the bundled ffmpeg before being
@@ -1312,6 +2224,11 @@ export function registerIpc(): void {
         const finish = async (): Promise<void> => {
           let finalPath = imagePath
           if (imagePath.toLowerCase().endsWith('.avi')) {
+            // Track the phase on the live entry so gen:state reports the
+            // session as converting (the "Converting…" label survives a
+            // session switch — plans/session-switch-busy-state.md).
+            const live = activeGens.get(req.sessionId)
+            if (live) live.converting = true
             sendProgress(req.sessionId, assistantMsg.id, { status: 'converting' })
             try {
               // Lazy fallback: when the init-pipeline download failed
@@ -1337,15 +2254,25 @@ export function registerIpc(): void {
               // fallback keeps it viewable. Full detail lands in the log.
               log.error(`[gen] avi→mp4 conversion failed (session ${req.sessionId}): ${(e as Error).message}`)
             }
-          }
-          sessions.updateMessage(req.sessionId, assistantMsg.id, {
-            image: { path: finalPath, name: basename(finalPath) },
-            status: 'ok'
-          })
-          sendProgress(req.sessionId, assistantMsg.id, {
-            status: 'done',
-            image: { path: finalPath, name: basename(finalPath) }
-          })
+            }
+            // Total generation time from spawn to done (incl. any ffmpeg
+            // conversion) — persisted on the message so the renderer shows it
+            // on the image preview badge after refreshActive() reloads it.
+            const durationMs = Date.now() - genStart
+            sessions.updateMessage(req.sessionId, assistantMsg.id, {
+              image: { path: finalPath, name: basename(finalPath), durationMs },
+              status: 'ok'
+            })
+            // Terminal: the entry is dropped only AFTER the work — it stays
+            // resolvable via gen:state / gen:isRunning for the whole busy
+            // lifetime, through the conversion phase (the child process itself
+            // has already exited; gen:stop ignores it via the exit guard).
+            activeGens.delete(req.sessionId)
+            sendProgress(req.sessionId, assistantMsg.id, {
+              status: 'done',
+              image: { path: finalPath, name: basename(finalPath) },
+              durationMs
+            })
         }
         void finish()
       },
@@ -1370,6 +2297,10 @@ export function registerIpc(): void {
   ipcMain.handle('gen:stop', (_e, sessionId: string): void => {
     const entry = activeGens.get(sessionId)
     if (!entry) return
+    // During the post-generation conversion phase the child has already
+    // exited while the entry stays alive (gen:state accuracy) — stopping
+    // then must be a no-op, never a spurious 'stopped' event mid-conversion.
+    if (entry.gen.child.exitCode !== null || entry.gen.child.signalCode !== null) return
     sdcli.stop(entry.gen)
     sessions.updateMessage(entry.sessionId, entry.messageId, { status: 'stopped' })
     sendProgress(entry.sessionId, entry.messageId, { status: 'stopped' })
@@ -1377,6 +2308,66 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle('gen:isRunning', (_e, sessionId: string): boolean => activeGens.has(sessionId))
+
+  // Full in-flight probe for rehydration (plans/session-switch-busy-state.md):
+  // the renderer mirrors the busy state back after a session switch / dev
+  // reload — `running` alone can't distinguish the conversion phase, which
+  // needs the "Converting…" label instead of the step counter.
+  ipcMain.handle('gen:state', (_e, sessionId: string): GenStateInfo => {
+    const entry = activeGens.get(sessionId)
+    return {
+      running: !!entry,
+      converting: entry?.converting ?? false,
+      ...(entry ? { messageId: entry.messageId } : {})
+    }
+  })
+
+  // ---------- upscale (image upscaler) ----------
+  // One upscale at a time (the single-flight guard in upscaler.ts). The
+  // session is captured at invoke time so a session switch mid-run appends
+  // the result to the right session. No push events: the renderer awaits the
+  // invoke with an indeterminate busy overlay.
+  ipcMain.handle('upscale:start', async (_e, req: UpscaleRequest): Promise<UpscaleResult> => {
+    const cfg = loadAllConfigs()
+    const st = settings.get()
+    const version = st.runtimeVersion ?? Object.keys(cfg.runtime.releases).sort((a, b) => Number(b) - Number(a))[0]
+    const binary = runtime.binaryFor(version)
+    if (!binary) {
+      throw new Error(`Runtime ${version} is not installed. Download it in Settings → Runtime.`)
+    }
+    if (!req.path || !existsSync(req.path)) {
+      throw new Error('Source image not found — it may have been deleted.')
+    }
+    const modelPath = models.pathFor(
+      'pixel_upscaler',
+      req.model,
+      req.provider,
+      req.diffusionType,
+      expectUrlFor('pixel_upscaler', req.diffusionType ?? '', req.provider, req.model)
+    )
+    if (!existsSync(modelPath)) {
+      throw new Error(`Upscaler model not found: ${req.model}. Download it in Settings → Upscaler.`)
+    }
+    const tileSize = normalizeTileSize(req.tileSize)
+    const outputPath = upscaleOutputPath(req.path)
+    try {
+      await runUpscale({ binary, imagePath: req.path, modelPath, outputPath, tileSize })
+    } catch (err) {
+      throw new Error(`Upscale failed: ${(err as Error).message}`)
+    }
+    const name = basename(outputPath)
+    // Append the result to the session as a NEW assistant message (the same
+    // persistence path as generation) — the original message is untouched.
+    sessions.addMessage(req.sessionId, {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+      role: 'assistant',
+      text: '',
+      image: { path: outputPath, name },
+      status: 'ok',
+      createdAt: Date.now()
+    })
+    return { path: outputPath, name }
+  })
 
   // ---------- llm (prompt enhancer) ----------
   // One enhancement at a time (module state inside llm.ts); a second click on

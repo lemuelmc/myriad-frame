@@ -5,16 +5,22 @@ License: Apache License 2.0 — permissive; allows use, modification, and distri
 (commercial or private) provided the license notice and copyright are preserved.
 -->
 <script setup lang="ts">
-import { nextTick, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
+import type { Session } from '@shared/types'
+import { useGenerationStore } from '../stores/generation'
 import { useSessionsStore } from '../stores/sessions'
+import { useSettingsStore } from '../stores/settings'
 import { toast } from '../toast'
 import { confirm } from '../confirm'
+import { normalizeForSearch } from '../search'
 import logoTiny from '../../../assets/logo-square-tiny.png'
 
 defineProps<{ width: number }>()
 const emit = defineEmits<{ openSettings: [] }>()
 
 const sessionsStore = useSessionsStore()
+const settingsStore = useSettingsStore()
+const genStore = useGenerationStore()
 const renamingId = ref<string | null>(null)
 const renameValue = ref('')
 const renameEl = ref<HTMLInputElement | null>(null)
@@ -22,6 +28,36 @@ const creating = ref(false)
 const newName = ref('')
 const newNameEl = ref<HTMLInputElement | null>(null)
 let confirming = false
+const searchInput = ref<HTMLInputElement | null>(null)
+const searchQuery = ref('')
+const searchNeedle = computed(() => normalizeForSearch(searchQuery.value).trim())
+
+const filteredSessions = computed(() => {
+  const needle = searchNeedle.value
+  if (!needle) return sessionsStore.sessions
+  return sessionsStore.sessions.filter((s) => matchesSessionSearch(s, needle))
+})
+
+function matchesSessionSearch(s: Session, needle: string): boolean {
+  if (normalizeForSearch(s.name).includes(needle)) return true
+  return s.messages.some((m) => normalizeForSearch(m.text).includes(needle))
+}
+
+function onSearchKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape') {
+    searchQuery.value = ''
+    ;(e.currentTarget as HTMLInputElement).blur()
+  }
+}
+function clearSearch(): void {
+  searchQuery.value = ''
+  searchInput.value?.focus()
+}
+
+function onSelectSession(id: string): void {
+  sessionsStore.select(id)
+  searchQuery.value = ''
+}
 
 function startCreate(): void {
   newName.value = `Session ${sessionsStore.sessions.length + 1}`
@@ -106,6 +142,29 @@ function fmtDate(ts: number): string {
     <div class="sessions">
       <div class="sessions-bar">
         <span class="muted">Sessions</span>
+        <div class="search-wrap">
+          <input
+            ref="searchInput"
+            v-model="searchQuery"
+            class="session-search"
+            type="text"
+            placeholder="Search…"
+            autocomplete="off"
+            @keydown="onSearchKeydown"
+          />
+          <button
+            v-if="searchQuery"
+            class="icon session-search-clear"
+            type="button"
+            title="Clear search"
+            aria-label="Clear search"
+            @click="clearSearch"
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
         <button class="icon" title="New session" @click="startCreate()">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <path d="M12 5v14M5 12h14" />
@@ -130,11 +189,11 @@ function fmtDate(ts: number): string {
       </div>
       <ul class="session-list">
         <li
-          v-for="s in sessionsStore.sessions"
+          v-for="s in filteredSessions"
           :key="s.id"
           class="session"
           :class="{ active: s.id === sessionsStore.activeId }"
-          @click="sessionsStore.select(s.id)"
+          @click="onSelectSession(s.id)"
         >
           <template v-if="renamingId === s.id">
             <input
@@ -148,7 +207,13 @@ function fmtDate(ts: number): string {
           </template>
           <template v-else>
             <div class="session-name" @dblclick.stop="startRename(s.id, s.name)">{{ s.name }}</div>
-            <div class="session-meta faint">{{ fmtDate(s.updatedAt) }} · {{ s.messages.length }} msg</div>
+            <div class="session-meta faint">
+              <!-- Tiny busy badge while a generation runs in this session —
+                   visible even when the session is NOT the active one
+                   (plans/session-switch-busy-state.md). -->
+              <span v-if="genStore.gens[s.id]" class="gen-dot" title="Generating…"></span>
+              {{ fmtDate(s.updatedAt) }} · {{ s.messages.length }} msg
+            </div>
           </template>
           <div class="session-actions" @click.stop>
             <button class="icon" title="Rename" @click="startRename(s.id, s.name)">
@@ -163,7 +228,10 @@ function fmtDate(ts: number): string {
             </button>
           </div>
         </li>
-        <li v-if="sessionsStore.sessions.length === 0" class="empty muted">
+        <li v-if="filteredSessions.length === 0 && sessionsStore.sessions.length > 0" class="empty muted">
+          No sessions match "{{ searchQuery }}".
+        </li>
+        <li v-else-if="sessionsStore.sessions.length === 0" class="empty muted">
           No sessions yet. Create one to start.
         </li>
       </ul>
@@ -178,6 +246,20 @@ function fmtDate(ts: number): string {
           />
         </svg>
       </button>
+      <!-- Standard busy-downloading indicator: a small animated download-arrow
+           glyph shown while ANY download is actively transferring (models,
+           runtime, LLM runtime). Paused queues do not animate it. -->
+      <div
+        v-if="settingsStore.busyDownloading"
+        class="busy-download"
+        :title="`Downloading ${settingsStore.activeDownloadCount} file${settingsStore.activeDownloadCount === 1 ? '' : 's'}…`"
+      >
+        <svg class="busy-download-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 3v12" />
+          <path d="m7 10 5 5 5-5" />
+          <path d="M4 19h16" />
+        </svg>
+      </div>
     </footer>
   </aside>
 </template>
@@ -254,6 +336,29 @@ function fmtDate(ts: number): string {
   font-size: 11px;
   margin-top: 2px;
 }
+/* Per-session busy badge: a mini spinner on the meta line of any session
+   with a generation in flight (currentColor follows the row's text tone). */
+.gen-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 4px;
+  vertical-align: -1px;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: gen-dot-spin 0.9s linear infinite;
+}
+@keyframes gen-dot-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gen-dot {
+    animation: none;
+  }
+}
 .session-actions {
   position: absolute;
   top: 8px;
@@ -286,6 +391,53 @@ function fmtDate(ts: number): string {
   flex: 1;
   min-width: 0;
 }
+.search-wrap {
+  flex: 1;
+  position: relative;
+  margin: 0 4px;
+  min-width: 0;
+}
+.session-search {
+  width: 100%;
+  padding: 4px 26px 4px 8px;
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 12px;
+}
+.session-search:focus {
+  outline: none;
+  border-color: var(--accent, var(--border));
+}
+.session-search-clear {
+  position: absolute;
+  top: 50%;
+  right: 3px;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.session-search-clear:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.session-search-clear:focus-visible {
+  outline: 2px solid var(--accent, var(--border));
+  outline-offset: -2px;
+}
+.session-search-clear:active {
+  transform: translateY(-50%) scale(0.92);
+}
 .empty {
   padding: 12px 10px;
   font-size: 12px;
@@ -295,5 +447,31 @@ function fmtDate(ts: number): string {
   border-top: 1px solid var(--border);
   display: flex;
   align-items: center;
+  justify-content: space-between;
+}
+.busy-download {
+  display: flex;
+  align-items: center;
+  color: var(--accent);
+  opacity: 0.9;
+}
+.busy-download-icon {
+  animation: busy-download-pulse 1.1s ease-in-out infinite;
+}
+@keyframes busy-download-pulse {
+  0%,
+  100% {
+    transform: translateY(-1px);
+    opacity: 0.55;
+  }
+  50% {
+    transform: translateY(1px);
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .busy-download-icon {
+    animation: none;
+  }
 }
 </style>
