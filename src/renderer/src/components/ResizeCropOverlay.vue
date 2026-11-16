@@ -18,7 +18,7 @@ import { toast } from '../toast'
  * Full-screen non-destructive image resize / crop editor
  * (plans/image-resize-crop.md). Driven by the `resize` Pinia store; mounted
  * once in App.vue. The ORIGINAL picked file is never modified — Save produces
- * a NEW PNG under data/tmp/resize/ via `resize:save` and the store records it.
+ * a NEW PNG under data/media/resize/ via `resize:save` and the store records it.
  */
 
 const CUSTOM_MIN = 16

@@ -642,11 +642,12 @@ export function registerIpc(): void {
   // directory can ever be removed.
   ipcMain.handle('masks:clear', (_e, paths: string[]): void => clearMask(paths))
 
-  // ---------- resize / crop (data/tmp/resize — ResizeCropOverlay) ----------
+  // ---------- resize / crop (data/media/resize — ResizeCropOverlay) ----------
   // Persist the renderer's cropped / resized image as a NEW PNG under
-  // data/tmp/resize — the ORIGINAL picked file is never modified
+  // data/media/resize — the ORIGINAL picked file is never modified
   // (non-destructive by construction). The invoke rejects on a malformed
   // payload (wrong prefix / over the size cap); the overlay toasts the error.
+  // (Persistent location — data/tmp is wiped on every launch.)
   ipcMain.handle('resize:save', (_e, req: ResizeSaveRequest): ResizeSaveResult =>
     saveResized(req?.png)
   )
@@ -2668,25 +2669,40 @@ export function initDataDirs(): void {
   // wipe happens before startAllPending() (fired from index.ts after
   // registerIpc()) so background retries start clean.
   //
-  // data/tmp/resize is preserved across the wipe: it holds user-cropped/
-  // resized images that a session references by path. Wiping them leaves those
-  // attachments pointing at a now-missing file ("media unavailable"), so the
-  // folder is moved aside, the rest of tmp is wiped, then it is moved back.
-  const resizePath = join(root, 'tmp', 'resize')
-  let movedResize: string | null = null
-  if (existsSync(resizePath)) {
-    movedResize = join(root, 'tmp', `.resize-preserve-${Date.now()}`)
-    renameSync(resizePath, movedResize)
-  }
+  // NOTE: user-referenced media (cropped/resized images) must NOT live under
+  // data/tmp — it is wiped on every launch, leaving every session attachment
+  // pointing at a missing file. They live under the persistent data/media/
+  // tree instead (see resize.ts). The old data/tmp/resize location is migrated
+  // once, on first launch after this change, so existing attachments keep
+  // resolving.
   mkdirSync(join(root, 'tmp'), { recursive: true })
   rmSync(join(root, 'tmp'), { recursive: true, force: true })
   mkdirSync(join(root, 'tmp'), { recursive: true })
-  if (movedResize) {
-    renameSync(movedResize, resizePath)
-    movedResize = null
-  }
+  migrateResizeLocation(root)
   mkdirSync(join(root, 'tmp', 'ffmpeg'), { recursive: true })
   mkdirSync(join(root, 'tmp', 'llm'), { recursive: true })
   ensureModelDirs()
 }
 
+/**
+ * One-time migration of the legacy data/tmp/resize location to the persistent
+ * data/media/resize (see resize.ts). data/tmp is wiped on every launch, so the
+ * old location silently dropped every cropped/resized attachment after a
+ * restart — the root cause behind the "media unavailable" composer state.
+ *
+ * Runs AFTER the data/tmp wipe (inside initDataDirs), so any files still present
+ * under data/tmp/resize are the leftover from before this change and are safe
+ * to move. A no-op once the move is done.
+ */
+function migrateResizeLocation(root: string): void {
+  const oldPath = join(root, 'tmp', 'resize')
+  if (!existsSync(oldPath)) return
+  const newPath = join(root, 'media', 'resize')
+  mkdirSync(join(root, 'media'), { recursive: true })
+  try {
+    renameSync(oldPath, newPath)
+    console.log(`[init] migrated resized images from data/tmp/resize to data/media/resize`)
+  } catch (e) {
+    console.warn(`[init] resize migration failed (data/tmp/resize -> data/media/resize): ${(e as Error).message}`)
+  }
+}

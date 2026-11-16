@@ -26,7 +26,7 @@ export interface ResizeQueueItem {
  * `openEditor()` seeds the queue, opens the overlay and returns a promise that
  * settles when the overlay closes:
  *  - `string[]` — the FINAL path list, 1:1 with the input order (the processed
- *    path under data/tmp/resize where saved, the original path where skipped)
+ *    path under data/media/resize where saved, the original path where skipped)
  *  - `null` — the user canceled; the caller attaches nothing
  */
 export const useResizeStore = defineStore('resize', {

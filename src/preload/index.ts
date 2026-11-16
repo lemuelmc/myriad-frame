@@ -84,7 +84,7 @@ const api = {
   imageFromPath: (p: string): Promise<string> => ipcRenderer.invoke('app:imageFromPath', p),
   /**
    * Persist a cropped / resized image (PNG data URL from the ResizeCropOverlay)
-   * as a NEW file under data/tmp/resize — the original file is never modified.
+   * as a NEW file under data/media/resize — the original file is never modified.
    * Resolves the absolute written path; rejects on a malformed payload.
    */
   resizeSave: (req: ResizeSaveRequest): Promise<ResizeSaveResult> =>
