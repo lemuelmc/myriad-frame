@@ -326,7 +326,6 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
       console.warn(`[hub] encoder entry "${diffusionType}" has no url; skipping`)
       continue
     }
-    onProgress?.(`Scanning ${enc.url}`)
     eligibleEntries++
     const source = getSourceForEntry(enc.url, enc.source ?? enc.domain)
     if (!source) {
@@ -363,21 +362,49 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
     // the legacy `--llm`.
     const entryUseAs =
       typeof enc.use_as === 'string' && enc.use_as.trim() !== '' ? enc.use_as.trim() : undefined
-    const files = await source.listFiles(repo)
+    // Optional `path` scan restriction: when set, enumerate the folder's
+    // direct children and expose every .gguf in it as a selectable row so the
+    // user can download / re-download / set-default any of them (not just the
+    // configured default). Same grammar as the diffusion / vae `path` keys:
+    //   "/x" -> "x"  → scan that folder's direct children
+    //   "/" (or "./", or a bare ".") -> '' → repo root's direct children
+    //   absent/empty -> undefined → the configured default is synthesized
+    //   alone (legacy behavior)
+    const rawPath = typeof enc.path === 'string' ? enc.path.trim() : ''
+    const normalizedPath = rawPath.replace(/^(?:\.\/|\/)+/, '').replace(/\/+$/, '')
+    const rootOnly = rawPath !== '' && (normalizedPath === '' || normalizedPath === '.')
+    const folder = rootOnly ? '' : (normalizedPath || undefined)
+    let scanned: RepoFile[] = []
+    try {
+      scanned = await source.listFiles(repo, folder)
+    } catch (e) {
+      // A failing folder scan still leaves the configured default available,
+      // so degrade gracefully (warn + keep scanning only the default) rather
+      // than drop the entry entirely.
+      console.warn(
+        `[hub] encoder entry "${diffusionType}" (${enc.url}) folder "${folder || '/'}' scan failed (${(e as Error).message}); contributing only the configured default`
+      )
+      onProgress?.(`Scan failed for /${folder || ''} in ${enc.url} — using configured default only`)
+    }
     const seen = new Set<string>()
-    for (const f of files) {
+    for (const f of scanned) {
       if (!f.path.toLowerCase().endsWith('.gguf')) continue
       seen.add(f.path)
+      // A slash-name breaks the name↔disk contract (downloads store
+      // basename(url), installed-tag matching compares basenames), so the
+      // row name is the basename while the id/url keep the full path. Root-only
+      // files carry no slash, so the basename equals f.path there.
+      const name = folder !== undefined ? (f.path.split('/').pop() ?? f.path) : f.path
       const bundleUseAs = bundleMap.get(f.path)
       entries.push({
         id: `encoder:${diffusionType}:${f.path}`,
         type: 'encoder' as ModelType,
         diffusionType,
-        name: f.path,
-        label: f.path,
+        name,
+        label: name,
         url: source.resolveUrl(repo, f.path),
         size: f.size,
-        quant: quantFromName(f.path),
+        quant: quantFromName(name),
         repo,
         source: source.name,
         // the configured default file(s) may already be in the repo tree —
@@ -389,8 +416,8 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
       })
       dispatchedEntries++
     }
-    // ensure the configured default is present
-    if (defaultPath !== undefined && !seen.has(defaultPath)) {
+    // ensure the configured default is present (single-file shape)
+    if (defaultPath !== undefined && !bundle && !seen.has(defaultPath)) {
       const name = defaultPath.split('/').pop() ?? defaultPath
       const url = source.resolveUrl(repo, defaultPath)
       const size = await headSize(url)
@@ -1220,7 +1247,14 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
     }
   }
 
-  // vae (repo + default file; the legacy plain-URL form is still accepted)
+  // vae (repo + default file; the legacy plain-URL form is still accepted).
+  // A `path` restriction selects the folder whose direct children are scanned
+  // for selectable rows — the same grammar as diffusion entries, except the
+  // default is '/' (repo root's direct children) instead of a whole-repo
+  // recursive scan. Every scanned model file becomes a row so the Settings →
+  // VAE dialog can browse and choose; the configured `default` is always
+  // emitted too (marked `isDefault`) even when it lives outside the scanned
+  // folder.
   for (const [diffusionType, v] of Object.entries(hub.repo.vae)) {
     if (typeof v === 'string') {
       // Legacy plain-URL form: stored VERBATIM — no source dispatch, no
@@ -1254,24 +1288,83 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
     const repo = source.repoFromUrl(v.url)
     // `default` may be a full URL or a repo-relative path — normalize through the source
     const defaultPath = source.normalizeFilePath?.(v.default) ?? v.default
-    const name = defaultPath.split('/').pop() ?? defaultPath
-    const vaeUrl = source.resolveUrl(repo, defaultPath)
-    const size = await headSize(vaeUrl)
-    entries.push({
-      id: `vae:${diffusionType}:${name}`,
-      type: 'vae' as ModelType,
-      diffusionType,
-      name,
-      label: name,
-      url: vaeUrl,
-      size,
-      quant: quantFromName(name),
-      source: source.name,
-      // provider selects the per-provider download subdirectory
-      ...(v.provider ? { provider: v.provider } : {}),
-      isDefault: true
-    })
-    dispatchedEntries++
+    const defaultName = defaultPath.split('/').pop() ?? defaultPath
+
+    // Normalize the optional `path` scan restriction:
+    //   "/vae" -> "vae"  → scan that folder's direct children
+    //   "/" (or "./", or a bare ".") -> '' → repo root's direct children
+    //   absent/empty -> '' → repo root's direct children (the default)
+    // Root-only is expressed as folder '' (see HuggingFaceSource.listFiles):
+    // the direct-children filter there handles it, so no extra client-side
+    // guard is needed here.
+    const rawPath = typeof v.path === 'string' ? v.path.trim() : ''
+    const normalizedPath = rawPath.replace(/^(?:\.\/|\/)+/, '').replace(/\/+$/, '')
+    const rootOnly = rawPath !== '' && (normalizedPath === '' || normalizedPath === '.')
+    const folder = rootOnly ? '' : (normalizedPath || '')
+
+    let scanned: RepoFile[] = []
+    try {
+      scanned = await source.listFiles(repo, folder)
+    } catch (e) {
+      console.warn(
+        `[hub] vae entry "${diffusionType}" (${v.url}) folder "${folder || '/'}' scan failed (${(e as Error).message}); contributing only the configured default`
+      )
+      onProgress?.(`Scan failed for /${folder || ''} in ${v.url} — using configured default only`)
+    }
+
+    const seen = new Set<string>()
+    for (const f of scanned) {
+      const ext = f.path.toLowerCase()
+      if (!ext.endsWith('.gguf') && !ext.endsWith('.safetensors')) continue
+      // A slash-name breaks the name↔disk contract (downloads store
+      // basename(url), installed-tag matching compares basenames), so the
+      // row name is the basename while the id/url keep the full path.
+      const name = f.path.split('/').pop() ?? f.path
+      if (seen.has(f.path)) continue
+      seen.add(f.path)
+      entries.push({
+        id: `vae:${diffusionType}:${f.path}`,
+        type: 'vae' as ModelType,
+        diffusionType,
+        name,
+        label: name,
+        url: source.resolveUrl(repo, f.path),
+        size: f.size,
+        quant: quantFromName(name),
+        source: source.name,
+        // provider selects the per-provider download subdirectory
+        ...(v.provider ? { provider: v.provider } : {}),
+        isDefault: name === defaultName
+      })
+      dispatchedEntries++
+    }
+    // The configured default must always be a selectable row so the family
+    // has an `isDefault` to fall back to (the Models section's
+    // defaultDepEntry relies on it). Emit it alone when the scan produced no
+    // rows at all (broken/empty scan — preserving the pre-scan single-row
+    // behavior), or when the default sits outside the scanned folder and no
+    // scanned row matched it.
+    const hasDefaultRow = entries.some(
+      (e) => e.id === `vae:${diffusionType}:${defaultPath}`
+    )
+    if (!hasDefaultRow) {
+      const vaeUrl = source.resolveUrl(repo, defaultPath)
+      const size = await headSize(vaeUrl)
+      entries.push({
+        id: `vae:${diffusionType}:${defaultPath}`,
+        type: 'vae' as ModelType,
+        diffusionType,
+        name: defaultName,
+        label: defaultName,
+        url: vaeUrl,
+        size,
+        quant: quantFromName(defaultName),
+        source: source.name,
+        ...(v.provider ? { provider: v.provider } : {}),
+        isDefault: true
+      })
+      dispatchedEntries++
+    }
   }
 
   // P2.3 tripwire: a source-dispatched build that produced ZERO entries while

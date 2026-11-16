@@ -15,8 +15,9 @@
  * is a file path under `data/tmp/resize/`. The ORIGINAL picked file is never
  * written to — non-destructive by construction.
  *
- * No purge logic lives here: `initDataDirs()` wipes the whole `data/tmp` tree
- * on every launch, so processed images are ephemeral per app run by construction.
+ * No purge logic lives here: `initDataDirs()` preserves `data/tmp/resize`
+ * across its per-launch wipe (moving it aside and back), so processed images
+ * survive app restarts and session attachments keep resolving.
  */
 
 import { randomBytes } from 'node:crypto'

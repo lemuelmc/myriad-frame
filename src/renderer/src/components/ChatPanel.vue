@@ -56,6 +56,13 @@ import AdetailerDialog from './AdetailerDialog.vue'
 import IpAdapterDialog from './IpAdapterDialog.vue'
 import ControlNetDialog from './ControlNetDialog.vue'
 import logoTiny from '../../../assets/logo-square-tiny.png'
+import {
+  registerComposerAttach,
+  useGeneratedImageAs,
+  inputChannelEnabled,
+  refChannelEnabled,
+  upscaleEnabled
+} from '../composerImageActions'
 
 const appStore = useAppStore()
 const resizeStore = useResizeStore()
@@ -98,6 +105,9 @@ const progress = ref<{ step: number; total: number } | null>(null)
 // True while the post-generation .avi → .mp4 conversion runs (gen:progress
 // status 'converting') — keeps the busy indicator up with a different label.
 const converting = ref(false)
+// Free-form status line shown alongside the busy indicator on the 'progress'
+// status (e.g. "Extracting video frames…"); cleared on the next terminal event.
+const progressMessage = ref<string | null>(null)
 // Optimistic prompt shown locally the instant Send is clicked, before the main
 // process persists the messages and streams the first progress event.
 const pendingPrompt = ref<string | null>(null)
@@ -246,6 +256,15 @@ const sampling = computed(() => {
   const base = { ...FALLBACK_SAMPLING, ...(cfg.sampling[diffusionType.value] ?? {}) }
   return settingsStore.samplingFor(diffusionType.value, base)
 })
+// Prompt gating for the Generate button: a type whose sampling.json
+// `positive_prompt.required` is false may generate with an empty prompt, so
+// an empty prompt is allowed through. Otherwise the button stays disabled until
+// there is text — mirroring the guard in generate() at line ~1718.
+const canGeneratePrompt = computed(() => {
+  const text = prompt.value.trim()
+  if (text) return true
+  return sampling.value?.positive_prompt.required === false
+})
 // Per-session negative prompt (empty ⇒ inherit the global default).
 const sessionNegative = computed(() => sessionsStore.active?.inputs?.negativePrompt ?? '')
 // Sampling for this session: the flat session override merges into the
@@ -332,10 +351,26 @@ const allowVideoRef = computed(() => sampling.value?.video_reference?.show === t
 const maxVideoRef = computed(() => sampling.value?.video_reference?.max ?? 0)
 const refsEnabled = computed(() => allowRef.value && maxRef.value > 0)
 const inputsEnabled = computed(() => allowInput.value && maxInput.value > 0)
+// Sync the module-level channel-enablement refs so the lightbox (a sibling
+// component) can disable its "Add as input/reference" buttons when the
+// current model doesn't accept that channel.
+watch(inputsEnabled, (v) => { inputChannelEnabled.value = v })
+watch(refsEnabled, (v) => { refChannelEnabled.value = v })
+inputChannelEnabled.value = inputsEnabled.value
+refChannelEnabled.value = refsEnabled.value
 // Sticky video-era channel states (single-valued flags — one path each).
 const audioPath = ref('')
 const controlVideoPath = ref('')
 const endImagePath = ref('')
+// Video-as-input channel: gated on the sampling rule `video_input.show === true`
+// (not on the seedvr_upscale family), so the "Use as video input" hover button
+// and the composer picker show for any model whose config enables the video input
+// channel (seedvr2, mini_max_h3, wan2_2_vace).
+const videoInputPath = ref('')
+const allowVideoInput = computed(() =>
+  sampling.value?.video_input?.show === true &&
+  sampling.value?.mode === 'seedvr_upscale'
+)
 // Sticky repeatable reference-channel states (arrays — one chip per path).
 const audioRefPaths = ref<string[]>([])
 const videoRefPaths = ref<string[]>([])
@@ -405,11 +440,18 @@ const allowIpAdapter = computed(() => sampling.value?.ip_adapter?.show === true)
 // `control_net.show` gates the Control Net button — a separate feature flag,
 // absent/`show: false` ⇒ the button is hidden (v-if, not disabled).
 const allowControlNet = computed(() => sampling.value?.control_net?.show === true)
+// `image_upscaler.show` gates the hover/lightbox "Upscale image…" button — a
+// separate feature flag; absent/`show: false` ⇒ the button is disabled.
+const allowUpscale = computed(() => sampling.value?.image_upscaler?.show === true)
+// Keep the lightbox's upscale button in sync with this model's gate.
+watch(allowUpscale, (v) => { upscaleEnabled.value = v })
+upscaleEnabled.value = allowUpscale.value
 // Clear the video-era channel states when their gate turns off.
-watch([allowAudio, allowControlVideo, allowEndImage], ([a, c, e]) => {
+watch([allowAudio, allowControlVideo, allowEndImage, allowVideoInput], ([a, c, e, v]) => {
   if (!a) audioPath.value = ''
   if (!c) controlVideoPath.value = ''
   if (!e) endImagePath.value = ''
+  if (!v) videoInputPath.value = ''
 })
 // Clear the repeatable reference-channel states when their gate turns off.
 watch([allowAudioRef, allowVideoRef], ([ar, vr]) => {
@@ -996,6 +1038,36 @@ const depDownloads = computed<{ key: string; label: string; state: ModelDownload
   return out
 })
 
+// Re-resolve the active session's VAE entry from the FRESH default-VAE
+// settings. The model watcher (below) derives every companion dependency once
+// on model change, but it never re-runs when the user changes the default VAE
+// in Settings → VAE while a session is open — so without this the composer
+// keeps spawning the previously-resolved VAE and the new setting is ignored.
+function reresolveVaeForActiveSession(st: { defaultVae?: Record<string, string> }): void {
+  const entry = modelEntry.value
+  if (!entry) return
+  const dt = entry.diffusionType
+  if (!dt) return
+  const hubName = hubEntryNameFor(entry)
+  const vaeFamily = requiredCompanionsFor(dt, 'vae', hubName)[0].from
+  const vaeName = st.defaultVae?.[vaeFamily]
+  const vaeCfg = appStore.configs?.hub.repo.vae[vaeFamily]
+  const defaultVaeName =
+    typeof vaeCfg === 'string'
+      ? vaeCfg.split('/').pop() ?? vaeCfg
+      : (vaeCfg?.default.split('/').pop() ?? vaeCfg?.default ?? '')
+  const next =
+    (appStore.catalog?.entries ?? []).find((e) => e.type === 'vae' && e.diffusionType === vaeFamily && e.name === vaeName) ??
+    (appStore.catalog?.entries ?? []).find((e) => e.type === 'vae' && e.diffusionType === vaeFamily && e.name === defaultVaeName) ??
+    (appStore.catalog?.entries ?? []).find((e) => e.type === 'vae' && e.diffusionType === vaeFamily && e.isDefault) ??
+    (appStore.catalog?.entries ?? []).find((e) => e.type === 'vae' && e.diffusionType === vaeFamily) ??
+    null
+  if (next !== vaeEntry.value) {
+    vaeEntry.value = next
+    if (next) void ensureDownloaded(next).catch(() => {})
+  }
+}
+
 // when the model changes, pick sensible defaults for vae / encoder / resolution
 // and kick off background downloads. Watching the entry itself (not just the
 // diffusionType) ensures switching between quantizations of the same family
@@ -1246,6 +1318,15 @@ watch(
   { immediate: true }
 )
 
+watch(
+  () => settingsStore.settings.defaultVae,
+  async (defaults) => {
+    const st = await window.api.settingsGet()
+    reresolveVaeForActiveSession(st)
+  },
+  { deep: true }
+)
+
 watch(resolutions, (r) => {
   // Skip while a restore is in flight: this guard runs in the same flush as
   // the model watcher but before its post-await continuation, so during a
@@ -1419,6 +1500,12 @@ function attachPicked(paths: string[], channel: 'reference' | 'input'): void {
   }
 }
 
+// Video outputs also carry m.image (vid_gen runs — .avi / converted .mp4),
+// and the .image-wrap hover row renders for them. --init-img / --ref-image
+// expect image files, so the buttons must stay disabled for video paths.
+// Mirrors the extension check in ImageFromPath.vue (isVideo / isAvi).
+const isVideoFile = (p: string) => /\.(mp4|webm|mov|avi)$/i.test(p)
+
 /**
  * Offer the non-destructive resize/crop editor for freshly picked images
  * (plans/image-resize-crop.md). The confirm asks ONCE for the whole selection;
@@ -1445,6 +1532,11 @@ async function attachWithOptionalEdit(picked: string[], channel: 'reference' | '
   }
 }
 
+// Register the attach callback so the lightbox (a sibling component) can
+// trigger the same flow. The component is always mounted (no v-if in
+// App.vue), so the callback remains valid for the app's lifetime.
+registerComposerAttach(attachWithOptionalEdit)
+
 async function addRefs(): Promise<void> {
   await attachWithOptionalEdit(await window.api.pickImages(), 'reference')
 }
@@ -1453,6 +1545,10 @@ function removeRef(p: string): void {
 }
 
 async function addInputs(): Promise<void> {
+  if (videoInputPath.value) {
+    toast('Only one input type per process is allowed', 'warning')
+    return
+  }
   await attachWithOptionalEdit(await window.api.pickImages(), 'input')
 }
 function removeInput(p: string): void {
@@ -1489,6 +1585,35 @@ async function addEndImage(): Promise<void> {
 }
 function clearEndImage(): void {
   endImagePath.value = ''
+}
+// SeedVR2 upscale source video — picked via the channel `accepts` globs
+// through the parameterized pickMedia invoke. XOR-guarded against images.
+async function addVideoInput(): Promise<void> {
+  const accepts = sampling.value?.video_input.accepts
+  const extensions = accepts
+    ? accepts.map((g) => g.replace(/^\*\./, ''))
+    : ['mp4', 'mov', 'avi']
+  const picked = await window.api.pickMedia([{ name: 'Video', extensions }])
+  if (!picked.length) return
+  if (inputImages.value.length > 0) {
+    toast('Only one input type per process is allowed', 'warning')
+    return
+  }
+  videoInputPath.value = picked[0]
+}
+function clearVideoInput(): void {
+  videoInputPath.value = ''
+}
+// Attach a *generated* video (from a prior vid_gen run) to the SeedVR2
+// input slot (--input-frames, extracted in gen:start). Mirrors the
+// addVideoInput() XOR guard: if an image input is already attached,
+// reject the video with the same "one input type" warning.
+async function attachGeneratedVideoAsInput(path: string): Promise<void> {
+  if (inputImages.value.length > 0) {
+    toast('Only one input type per process is allowed', 'warning')
+    return
+  }
+  videoInputPath.value = path
 }
 // ---------- repeatable reference channels (MiniMax-H3 Ref2VA) ----------
 // Reference audio (--ref-audio, repeatable standalone WAV reference) — append
@@ -1596,7 +1721,10 @@ async function generate(): Promise<void> {
     return
   }
   const text = prompt.value.trim()
-  if (!text) {
+  // A type may opt into prompt-less generation (sampling.json `positive_prompt.required:
+  // false`); only then is an empty prompt allowed through. Otherwise the
+  // Generate button is blocked upstream and this still rejects a stray send.
+  if (!text && sampling.value?.positive_prompt.required !== false) {
     toast('Enter a prompt', 'error')
     return
   }
@@ -1732,6 +1860,9 @@ async function generate(): Promise<void> {
       ...(audioPath.value ? { audioPath: audioPath.value } : {}),
       ...(controlVideoPath.value ? { controlVideoPath: controlVideoPath.value } : {}),
       ...(endImagePath.value ? { endImagePath: endImagePath.value } : {}),
+      // video_input (SeedVR2): the video file is NOT an sd-cli flag — main
+      // validates it (existsSync) and keeps it on req for pre/post-processing.
+      ...(videoInputPath.value ? { videoInputPath: videoInputPath.value } : {}),
       // Repeatable reference channels (--ref-audio / --ref-video, MiniMax-H3
       // Ref2VA) — main re-validates, dedupes and caps them the same way.
       ...(audioRefPaths.value.length ? { audioReferencePaths: [...audioRefPaths.value] } : {}),
@@ -1863,6 +1994,7 @@ async function preview(): Promise<void> {
       resolution: resolution.value ? { width: resolution.value.width, height: resolution.value.height } : { width: s?.width.default ?? 1024, height: s?.height.default ?? 1024 },
       referencePaths: [...refImages.value],
       inputImagePaths: [...inputImages.value],
+      ...(videoInputPath.value ? { videoInputPath: videoInputPath.value } : {}),
       usePrevious: usePrevious.value,
       previousImageMode: previousMode.value,
       previousImagePath: usePrevious.value ? sessionsStore.lastGeneratedImage : undefined,
@@ -1981,11 +2113,12 @@ async function removeLastMessage(): Promise<void> {
 function onGenProgress(p: {
   sessionId: string
   messageId: string
-  status: 'running' | 'done' | 'stopped' | 'error' | 'converting'
+  status: 'running' | 'done' | 'stopped' | 'error' | 'converting' | 'progress'
   step?: number
   totalSteps?: number
   image?: { path: string; name: string; durationMs?: number }
   error?: string
+  message?: string
 }): void {
   // Every generation failure toasts — even when it belongs to a background
   // session — because the chat bubble shows only a generic failure line; the
@@ -1996,7 +2129,7 @@ function onGenProgress(p: {
   // Per-session state first — recorded for EVERY session (background ones
   // included) so switching away and back keeps the busy indicator consistent
   // (plans/session-switch-busy-state.md).
-  if (p.status === 'running') {
+  if (p.status === 'running' || p.status === 'progress') {
     genStore.markRunning(p.sessionId, p.step, p.totalSteps)
   } else if (p.status === 'converting') {
     genStore.markConverting(p.sessionId)
@@ -2017,22 +2150,35 @@ function onGenProgress(p: {
   if (p.status === 'converting') {
     converting.value = true
   }
+  // 'progress' — pre-generation feedback (e.g. frame extraction): keep busy +
+  // show the free-form message, no step update, no busy reset.
+  if (p.status === 'progress') {
+    progressMessage.value = p.message?.trim() || null
+  }
   if (p.status === 'done') {
     busy.value = false
     progress.value = null
     converting.value = false
+    progressMessage.value = null
     toast('Image generated', 'ok')
   }
   if (p.status === 'stopped') {
     busy.value = false
     progress.value = null
     converting.value = false
+    progressMessage.value = null
     toast('Generation stopped', 'info')
   }
   if (p.status === 'error') {
     busy.value = false
     progress.value = null
     converting.value = false
+    progressMessage.value = null
+  }
+  // A subsequent 'progress' event replaces the message; any non-'progress'
+  // event clears it.
+  if (p.status !== 'progress') {
+    progressMessage.value = null
   }
   // Real messages are now flowing from main — load them and drop the
   // optimistic placeholders.
@@ -2164,9 +2310,10 @@ function fmtBytes(n: number): string {
             </div>
             <div class="status muted">
               <span class="spinner"></span>
-              <template v-if="converting">Converting…</template>
+              <template v-if="progressMessage">{{ progressMessage }}</template>
+              <template v-else-if="converting">Converting…</template>
               <template v-else>Generating</template>
-              <template v-if="!converting && progress && progress.total"> · step {{ progress.step }}/{{ progress.total }}</template>
+              <template v-if="!converting && !progressMessage && progress && progress.total"> · step {{ progress.step }}/{{ progress.total }}</template>
             </div>
           </div>
         </div>
@@ -2187,10 +2334,11 @@ function fmtBytes(n: number): string {
               <ImageFromPath v-for="(r, i) in m.refs" :key="i" :path="r" :alt="'reference ' + (i + 1)" :max="120" />
             </div>
             <!-- Video-era channel chips (display-only, like refs). -->
-            <div v-if="m.audioPath || m.controlVideoPath || m.endImagePath || m.audioReferencePaths?.length || m.videoReferencePaths?.length" class="refs">
+            <div v-if="m.audioPath || m.controlVideoPath || m.endImagePath || m.videoInputPath || m.audioReferencePaths?.length || m.videoReferencePaths?.length" class="refs">
               <span v-if="m.audioPath" class="chip-label mono" :title="m.audioPath">♪ {{ mediaBaseName(m.audioPath) }}</span>
               <span v-if="m.controlVideoPath" class="chip-label mono" :title="m.controlVideoPath">▣ {{ mediaBaseName(m.controlVideoPath) }}</span>
               <span v-if="m.endImagePath" class="chip-label mono" :title="m.endImagePath">⇥ {{ mediaBaseName(m.endImagePath) }}</span>
+              <span v-if="m.videoInputPath" class="chip-label mono" :title="m.videoInputPath">▶ {{ mediaBaseName(m.videoInputPath) }}</span>
               <span v-for="p in m.audioReferencePaths ?? []" :key="'ar' + p" class="chip-label mono" :title="p">♪ {{ mediaBaseName(p) }}</span>
               <span v-for="p in m.videoReferencePaths ?? []" :key="'vr' + p" class="chip-label mono" :title="p">▣ {{ mediaBaseName(p) }}</span>
             </div>
@@ -2200,9 +2348,10 @@ function fmtBytes(n: number): string {
             >
               <span class="spinner"></span>
               <span class="muted">
-                <template v-if="converting">Converting…</template>
+                <template v-if="progressMessage">{{ progressMessage }}</template>
+                <template v-else-if="converting">Converting…</template>
                 <template v-else>Generating</template>
-                <template v-if="!converting && progress && progress.total">
+                <template v-if="!converting && !progressMessage && progress && progress.total">
                   · step {{ progress.step }}/{{ progress.total }}
                 </template>
               </span>
@@ -2210,29 +2359,72 @@ function fmtBytes(n: number): string {
             </div>
             <div v-else-if="m.image" class="image-wrap">
               <ImageFromPath :path="m.image.path" alt="generated image" :max="480" clickable :duration-ms="m.image.durationMs" />
-              <button
-                class="icon save-image"
-                title="Save image as…"
-                @click="saveImageAs(m.image.path)"
-              >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <path d="M7 10l5 5 5-5" />
-                  <path d="M12 15V3" />
-                </svg>
-              </button>
-              <button
-                class="icon upscale-image"
-                title="Upscale image…"
-                @click="upscalerStore.openDialog(m.image.path)"
-              >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M15 3h6v6" />
-                  <path d="M9 21H3v-6" />
-                  <path d="M21 3l-7 7" />
-                  <path d="M3 21l7-7" />
-                </svg>
-              </button>
+              <div class="image-actions">
+                <button
+                  class="icon save-image"
+                  title="Save image as…"
+                  @click="saveImageAs(m.image.path)"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <path d="M7 10l5 5 5-5" />
+                    <path d="M12 15V3" />
+                  </svg>
+                </button>
+                <button
+                  v-if="allowUpscale"
+                  class="icon upscale-image"
+                  title="Upscale image…"
+                  @click="upscalerStore.openDialog(m.image.path)"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M15 3h6v6" />
+                    <path d="M9 21H3v-6" />
+                    <path d="M21 3l-7 7" />
+                    <path d="M3 21l7-7" />
+                  </svg>
+                </button>
+                <button
+                  v-if="inputsEnabled && !isVideoFile(m.image.path)"
+                  class="icon add-input"
+                  title="Use as image input"
+                  @click="useGeneratedImageAs(m.image.path, 'input')"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2" />
+                    <path d="M12 8v8" />
+                    <path d="M8 12h8" />
+                  </svg>
+                </button>
+                <button
+                  v-if="refsEnabled && !isVideoFile(m.image.path)"
+                  class="icon add-reference"
+                  title="Use as image reference"
+                  @click="useGeneratedImageAs(m.image.path, 'reference')"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2" />
+                    <circle cx="8.5" cy="8.5" r="1.5" />
+                    <path d="m21 15-5-5L5 21" />
+                  </svg>
+                </button>
+                <!-- Shown over generated VIDEO previews (seedvr2 / mini_max_h3 / wan2_2_vace
+                      / z_image — any family whose config enables video_input). Same hover row
+                      as Save/Upscale/Add input/Add reference, so it's reachable for both
+                      <video> and .avi poster previews. Videos can't open the lightbox. -->
+                <button
+                  v-if="m.role === 'assistant' && m.image && isVideoFile(m.image.path) && allowVideoInput"
+                  class="icon video-as-input"
+                  title="Use as video input"
+                  aria-label="Use as video input"
+                  @click="attachGeneratedVideoAsInput(m.image.path)"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="2" y="4" width="20" height="16" rx="2" />
+                    <path d="m10 9 5 3-5 3z" />
+                  </svg>
+                </button>
+              </div>
             </div>
             <div v-if="m.status === 'stopped'" class="status muted">Generation stopped</div>
             <div v-if="m.status === 'error'" class="status error">Generation failed — details in Settings → Logs</div>
@@ -2267,7 +2459,7 @@ function fmtBytes(n: number): string {
     </div>
     <footer class="composer-wrap">
       <div class="composer">
-        <div v-if="refImages.length || inputImages.length || audioPath || controlVideoPath || endImagePath || audioRefPaths.length || videoRefPaths.length" class="refs">
+        <div v-if="refImages.length || inputImages.length || audioPath || controlVideoPath || endImagePath || videoInputPath || audioRefPaths.length || videoRefPaths.length" class="refs">
           <div v-for="p in refImages" :key="'r' + p" class="ref-thumb">
             <ImageFromPath :path="p" :max="72" />
             <button class="icon remove" title="Remove" @click="removeRef(p)">×</button>
@@ -2290,6 +2482,10 @@ function fmtBytes(n: number): string {
           <div v-if="endImagePath" class="ref-thumb chip" :title="endImagePath">
             <span class="chip-label mono">⇥ {{ mediaBaseName(endImagePath) }}</span>
             <button class="icon remove" title="Remove" @click="clearEndImage()">×</button>
+          </div>
+          <div v-if="videoInputPath" class="ref-thumb chip" :title="videoInputPath">
+            <span class="chip-label mono">▶ {{ mediaBaseName(videoInputPath) }}</span>
+            <button class="icon remove" title="Remove" @click="clearVideoInput()">×</button>
           </div>
           <!-- Repeatable reference-channel chips: one per path, sticky like
                the video-era chips — they ride every Send until removed. -->
@@ -2326,7 +2522,7 @@ function fmtBytes(n: number): string {
             @dragleave="onDragLeave($event)"
             @drop="onDrop($event)"
           ></textarea>
-          <button class="gen-btn" :class="{ stop: busy }" :disabled="!busy && !prompt.trim()" @click="busy ? stop() : generate()">
+          <button class="gen-btn" :class="{ stop: busy }" :disabled="!busy && !canGeneratePrompt" @click="busy ? stop() : generate()">
             <svg v-if="!busy" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
               <path d="M8 5v14l11-7z" />
             </svg>
@@ -2417,6 +2613,20 @@ function fmtBytes(n: number): string {
               <rect x="3" y="3" width="18" height="18" rx="2" />
               <path d="m9 9 6 6" />
               <path d="M15 9v6H9" />
+            </svg>
+          </button>
+          <button
+            v-if="allowVideoInput"
+            class="icon"
+            :class="{ active: !!videoInputPath }"
+            title="Video to upscale (SeedVR2)"
+            aria-label="Video to upscale"
+            :disabled="busy"
+            @click="addVideoInput()"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="4" width="20" height="16" rx="2" />
+              <path d="m10 9 5 3-5 3z" />
             </svg>
           </button>
           <!-- Repeatable reference channels (MiniMax-H3 Ref2VA): reference
@@ -2965,10 +3175,20 @@ function fmtBytes(n: number): string {
   display: inline-block;
   line-height: 0;
 }
-.save-image,
-.upscale-image {
+/* Hover-row buttons: packed into a flex container aligned to the top-right
+   corner of the image. Hidden buttons leave no gap — the row flows naturally. */
+.image-actions {
   position: absolute;
   top: 8px;
+  right: 8px;
+  display: inline-flex;
+  gap: 8px;
+}
+.save-image,
+.upscale-image,
+.add-input,
+.add-reference,
+.video-as-input {
   width: 30px;
   height: 30px;
   display: inline-flex;
@@ -2983,19 +3203,24 @@ function fmtBytes(n: number): string {
   transition: opacity 0.15s, background 0.15s;
   cursor: pointer;
 }
-.save-image {
-  right: 8px;
-}
-.upscale-image {
-  right: 44px;
-}
 .image-wrap:hover .save-image,
-.image-wrap:hover .upscale-image {
+.image-wrap:hover .upscale-image,
+.image-wrap:hover .add-input:not(:disabled),
+.image-wrap:hover .add-reference:not(:disabled),
+.image-wrap:hover .video-as-input {
   opacity: 1;
 }
 .save-image:hover,
-.upscale-image:hover {
+.upscale-image:hover,
+.add-input:hover:not(:disabled),
+.add-reference:hover:not(:disabled),
+.video-as-input:hover {
   background: rgba(0, 0, 0, 0.7);
+}
+.add-input:disabled,
+.add-reference:disabled {
+  opacity: 0.3;
+  cursor: default;
 }
 .ref-thumb .remove {
   position: absolute;

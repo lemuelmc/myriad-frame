@@ -43,10 +43,22 @@ const natural = ref({ w: 0, h: 0 })
 // 'preset'   — a resolution preset locks the crop aspect AND sets the output size
 // 'custom'   — free crop + free width/height override
 // 'original' — crop only, output at the cropped region's native resolution
-const mode = ref<'preset' | 'custom' | 'original'>('original')
+// 'resize'   — scale the entire image to W×H (crop box disabled), optional aspect lock
+const mode = ref<'preset' | 'custom' | 'original' | 'resize'>('original')
 const presetName = ref('')
 const width = ref(0)
 const height = ref(0)
+
+// Aspect-lock state (resize mode only):
+const lockAspect = ref(true)
+
+// Source aspect ratio (w/h of the natural image):
+const sourceAspect = computed(() =>
+  natural.value.w > 0 && natural.value.h > 0 ? natural.value.w / natural.value.h : null
+)
+
+// Live preview data URL (resize mode only):
+const previewSrc = ref('')
 
 const presets = computed<ResolutionEntry[]>(() =>
   store.diffusionType ? appStore.resolutionsFor(store.diffusionType) : []
@@ -96,10 +108,13 @@ watch(
     presetName.value = ''
     width.value = natural.value.w
     height.value = natural.value.h
+    lockAspect.value = true
+    previewSrc.value = ''
     cropper = new Cropper(imgEl.value, {
       viewMode: 1,
       autoCropArea: 1,
-      background: false
+      background: false,
+      crop: onCropEvent
     })
     ready.value = true
   },
@@ -109,12 +124,34 @@ watch(
 // Aspect lock follows the mode: presets lock to their ratio, everything else crops freely.
 watch(mode, (m) => {
   if (!cropper) return
+  if (m === 'resize') {
+    // The crop box serves as the resize target — keep it enabled.
+    // Aspect ratio is set by pickResize() or the lockAspect watcher.
+    previewSrc.value = ''
+    return
+  }
+  cropper.enable()
   const p = presets.value.find((x) => x.name === presetName.value)
   if (m === 'preset' && p) cropper.setAspectRatio(p.width / p.height)
   else cropper.setAspectRatio(NaN)
 })
 
+// In resize mode, the aspect-lock checkbox controls the crop box's aspect ratio.
+watch(lockAspect, (locked) => {
+  if (mode.value !== 'resize') return
+  if (locked && sourceAspect.value !== null) cropper?.setAspectRatio(sourceAspect.value)
+  else cropper?.setAspectRatio(NaN)
+})
+
 function pickPreset(p: ResolutionEntry): void {
+  if (mode.value === 'resize') {
+    // In resize mode: set W/H to the preset dimensions, stay in resize mode.
+    presetName.value = p.name
+    width.value = p.width
+    height.value = p.height
+    cropper?.setAspectRatio(p.width / p.height)
+    return
+  }
   mode.value = 'preset'
   presetName.value = p.name
   width.value = p.width
@@ -137,6 +174,102 @@ function pickOriginal(): void {
   presetName.value = ''
   cropper?.setAspectRatio(NaN)
 }
+
+function pickResize(): void {
+  mode.value = 'resize'
+  presetName.value = ''
+  lockAspect.value = true
+  // Seed W/H from the natural image size:
+  width.value = natural.value.w
+  height.value = natural.value.h
+  // The crop box serves as the resize target — keep it enabled.
+  // Lock the aspect ratio to the source image's ratio:
+  if (sourceAspect.value !== null) cropper?.setAspectRatio(sourceAspect.value)
+  // Reset the crop box to the full image:
+  cropper?.reset()
+  // Clear any stale preview:
+  previewSrc.value = ''
+}
+
+/**
+ * Scale the entire source image to w×h on a fresh canvas.
+ * Independent of the cropper's crop box — used by both the live preview
+ * and saveCurrent() in 'resize' mode.
+ */
+function resizeCanvas(w: number, h: number): HTMLCanvasElement | null {
+  const img = imgEl.value
+  if (!img || img.naturalWidth === 0) return null
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+  ctx.drawImage(img, 0, 0, w, h)
+  return canvas
+}
+
+/**
+ * Read the raw typed value from the DOM event target (not the reactive model,
+ * which is stale mid-keystroke). Only the linked box is clamped — the box the
+ * user is typing into is written verbatim so multi-digit values accumulate.
+ *
+ * NOTE: we deliberately do NOT call syncCropBoxFromDims() here. In resize mode
+ * the W/H inputs are the single source of truth; pushing values into the
+ * cropper makes it adjust/clamp the box, then its async `crop` event (fired via
+ * requestAnimationFrame) reads the box back and overwrites the user's number.
+ * The cropper is only a visual aid — dragging the box still updates the inputs
+ * via onCropEvent().
+ */
+function onResizeWidthInput(e: Event): void {
+  const raw = parseInt((e.target as HTMLInputElement).value, 10)
+  width.value = Number.isNaN(raw) ? 0 : raw
+  if (lockAspect.value && sourceAspect.value !== null) {
+    height.value = clampResizeDim(Math.round(raw / sourceAspect.value))
+  }
+}
+
+function onResizeHeightInput(e: Event): void {
+  const raw = parseInt((e.target as HTMLInputElement).value, 10)
+  height.value = Number.isNaN(raw) ? 0 : raw
+  if (lockAspect.value && sourceAspect.value !== null) {
+    width.value = clampResizeDim(Math.round(raw * sourceAspect.value))
+  }
+}
+
+function clampResizeDim(v: number): number {
+  if (!Number.isFinite(v) || v < CUSTOM_MIN) return CUSTOM_MIN
+  return Math.min(CUSTOM_MAX, Math.round(v))
+}
+
+/**
+ * Cropperjs `crop` event handler — in resize mode, maps the crop box
+ * dimensions to W/H values (in natural image coordinates). The crop box
+ * IS the resize target: dragging it sets the output dimensions.
+ */
+function onCropEvent(): void {
+  if ((mode.value !== 'resize' && mode.value !== 'custom') || !cropper) return
+  const cropBox = cropper.getCropBoxData()
+  const canvasData = cropper.getCanvasData()
+  if (!cropBox || !canvasData || canvasData.width === 0) return
+  const w = Math.round((cropBox.width / canvasData.width) * natural.value.w)
+  const h = Math.round((cropBox.height / canvasData.height) * natural.value.h)
+  width.value = clampResizeDim(w)
+  height.value = clampResizeDim(h)
+}
+
+// ---------- debounced live preview (resize mode) ----------
+let previewTimer: ReturnType<typeof setTimeout> | null = null
+
+watch([width, height], () => {
+  if (mode.value !== 'resize') return
+  if (previewTimer) clearTimeout(previewTimer)
+  previewTimer = setTimeout(() => {
+    const w = clampResizeDim(width.value)
+    const h = clampResizeDim(height.value)
+    const canvas = resizeCanvas(w, h)
+    previewSrc.value = canvas ? canvas.toDataURL('image/png') : ''
+  }, 200)
+})
 
 // ---------- cropperjs tool buttons ----------
 function zoom(delta: number): void {
@@ -182,21 +315,29 @@ function endPan(): void {
  * save was aborted (invalid input / crop / IPC failure — already toasted).
  */
 async function saveCurrent(): Promise<string | null> {
-  if (!cropper || !src.value) return null
-  const options =
-    mode.value === 'original'
-      ? undefined
-      : {
-          width: Math.min(CUSTOM_MAX, Math.max(CUSTOM_MIN, Math.round(width.value))),
-          height: Math.min(CUSTOM_MAX, Math.max(CUSTOM_MIN, Math.round(height.value)))
-        }
-  if (options && (!options.width || !options.height)) {
-    toast('Enter a valid width and height', 'error')
-    return null
+  if (!src.value) return null
+  let canvas: HTMLCanvasElement | null
+  if (mode.value === 'resize') {
+    const w = Math.min(CUSTOM_MAX, Math.max(CUSTOM_MIN, Math.round(width.value)))
+    const h = Math.min(CUSTOM_MAX, Math.max(CUSTOM_MIN, Math.round(height.value)))
+    canvas = resizeCanvas(w, h)
+  } else {
+    if (!cropper) return null
+    const options =
+      mode.value === 'original'
+        ? undefined
+        : {
+            width: Math.min(CUSTOM_MAX, Math.max(CUSTOM_MIN, Math.round(width.value))),
+            height: Math.min(CUSTOM_MAX, Math.max(CUSTOM_MIN, Math.round(height.value)))
+          }
+    if (options && (!options.width || !options.height)) {
+      toast('Enter a valid width and height', 'error')
+      return null
+    }
+    canvas = cropper.getCroppedCanvas(options)
   }
-  const canvas = cropper.getCroppedCanvas(options)
   if (!canvas) {
-    toast('Crop failed — adjust the crop box and try again', 'error')
+    toast('Processing failed — adjust and try again', 'error')
     return null
   }
   try {
@@ -225,6 +366,7 @@ function cancel(): void {
 }
 
 onBeforeUnmount(() => {
+  if (previewTimer) clearTimeout(previewTimer)
   cropper?.destroy()
   cropper = null
   ready.value = false
@@ -265,6 +407,14 @@ onBeforeUnmount(() => {
           >
             Custom size
           </button>
+          <button
+            class="rz-mode"
+            :class="{ active: mode === 'resize' }"
+            type="button"
+            @click="pickResize()"
+          >
+            Resize
+          </button>
         </div>
         <div v-if="mode === 'custom'" class="rz-dims">
           <label class="rz-field">
@@ -276,6 +426,38 @@ onBeforeUnmount(() => {
             <input v-model.number="height" type="number" :min="16" :max="4096" />
           </label>
         </div>
+        <div v-if="mode === 'resize'">
+          <div class="rz-dims">
+            <label class="rz-field">
+              <span>Width</span>
+              <input
+                :value="width"
+                type="number"
+                :min="16"
+                :max="4096"
+                @input="onResizeWidthInput($event)"
+              />
+            </label>
+            <label class="rz-field">
+              <span>Height</span>
+              <input
+                :value="height"
+                type="number"
+                :min="16"
+                :max="4096"
+                @input="onResizeHeightInput($event)"
+              />
+            </label>
+          </div>
+          <label class="rz-lock">
+            <input v-model="lockAspect" type="checkbox" />
+            <span>Lock aspect ratio</span>
+          </label>
+          <div class="rz-hint-text">Source: {{ natural.w }}×{{ natural.h }}</div>
+          <div v-if="previewSrc" class="rz-preview">
+            <img :src="previewSrc" alt="Preview" />
+          </div>
+        </div>
         <template v-if="presets.length">
           <div class="rz-section">Presets — {{ store.diffusionType }}</div>
           <div class="rz-presets">
@@ -283,7 +465,7 @@ onBeforeUnmount(() => {
               v-for="p in presets"
               :key="p.name"
               class="rz-preset"
-              :class="{ active: mode === 'preset' && presetName === p.name }"
+              :class="{ active: (mode === 'preset' || mode === 'resize') && presetName === p.name }"
               type="button"
               @click="pickPreset(p)"
             >
@@ -524,5 +706,31 @@ onBeforeUnmount(() => {
 .rz-btn.primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+.rz-lock {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+.rz-lock input {
+  accent-color: var(--accent);
+}
+.rz-hint-text {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+.rz-preview {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0;
+}
+.rz-preview img {
+  max-height: 120px;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 4px;
 }
 </style>

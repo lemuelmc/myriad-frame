@@ -205,6 +205,15 @@ export interface HubEncoderEntry {
   source?: string
   /** Optional domain override (see `source`); `source` wins when both are set. */
   domain?: string
+  /**
+   * Optional repo-relative folder of `url` whose direct children are scanned
+   * for additional downloadable encoders (e.g. '/split_files/text_encoders').
+   * When set, the catalog lists every .gguf file in that folder alongside the
+   * configured default so the user can download / re-download / set-default
+   * any of them. Absent → only the configured default is scanned (legacy
+   * behavior). '/' selects the repo root's direct children.
+   */
+  path?: string
 }
 
 /** VAE entry from hub.json repo.vae. */
@@ -214,6 +223,14 @@ export interface HubVaeEntry {
   url: string
   /** repo-relative file path (or full URL) of the default VAE */
   default: string
+  /**
+   * Optional repo-relative folder whose direct children are scanned for VAE
+   * rows (a scan instruction, not the resolved default). Absent → the repo
+   * root's direct children (`/`). Direct children only — no recursion. The
+   * configured `default` is always emitted as a row marked `isDefault`,
+   * regardless of `path`.
+   */
+  path?: string
   /**
    * Optional model-source override: a source name (`huggingface`) or a domain
    * (`huggingface.co`) that forces source selection regardless of the URL
@@ -538,8 +555,8 @@ export interface SamplingChannel {
 
 /** One sampling.json per-diffusion_type entry (descriptor shape). */
 export interface SamplingDefaults {
-  /** generation mode: 'img_gen' (default, no -M flag) or 'vid_gen' (-M vid_gen) */
-  mode: 'img_gen' | 'vid_gen'
+  /** generation mode: 'img_gen' (default, no -M flag), 'vid_gen' (-M vid_gen), or 'seedvr_upscale' (-M vid_upscale) */
+  mode: 'img_gen' | 'vid_gen' | 'seedvr_upscale'
   /** how the model file is passed to sd-cli: 'standalone' (default) passes
    *  weights-only files via `--diffusion-model`, with conditioners/VAE as
    *  separate files; 'all_in_one' passes a full checkpoint (conditioners +
@@ -585,12 +602,19 @@ export interface SamplingDefaults {
   width: SamplingField<number>
   height: SamplingField<number>
   negative: SamplingField<string | null>
+  /** positive (main) prompt gating: `show` is display-only; `required` gates
+   *  the Generate button — when false a type may run with an empty prompt, so
+   *  the renderer does not block and buildArgs emits no `--prompt` */
+  positive_prompt: { show: boolean; required: boolean }
   /** flow-model shift; `null` default ⇒ no `--flow-shift` flag (sd-cli auto) */
   flow_shift: SamplingField<number | null>
   /** inpainting / outpainting support (composer Inpaint/Outpaint buttons) */
   allow_inpainting: { show: boolean }
   /** paint-tool support (composer Paint button) */
   allow_painting: { show: boolean }
+  /** image upscale (hover/lightbox "Upscale image…" button) — `show` gates the
+   *  button (configurations/sampling.json) */
+  image_upscaler: { show: boolean }
   /** previous-image chaining (composer 'Use previous image' checkbox):
    *  `show` gates the checkbox + its As input/As Reference dropdown and
    *  `default` is the checkbox's initial checked state */
@@ -610,6 +634,10 @@ export interface SamplingDefaults {
   /** arbitrary key=value model args — `--model-args`; `null` ⇒ omit the flag
    *  (sd-cli default); `show` gates the per-session override row */
   model_args: SamplingField<string | null>
+  /** SeedVR2 upscale factor — `--upscale-factor` (seedvr_upscale only) */
+  upscale_factor: SamplingField<number | null>
+  /** SeedVR2 temporal chunk size — `--vsr-temporal-chunk-size` (seedvr_upscale only) */
+  vsr_temporal_chunk_size: SamplingField<number | null>
 }
 
 export type SamplingConfig = Record<string, SamplingDefaults>
@@ -654,6 +682,10 @@ export interface SamplingOverrideValues {
    *  appended after all app-emitted flags (user args win on duplicates).
    *  ''/null ⇒ nothing appended */
   args?: string | null
+  /** SeedVR2 upscale factor (--upscale-factor); null/absent ⇒ omit the flag */
+  upscale_factor?: number | null
+  /** SeedVR2 temporal chunk size (--vsr-temporal-chunk-size); null/absent ⇒ omit */
+  vsr_temporal_chunk_size?: number | null
 }
 
 /**
@@ -689,16 +721,20 @@ export const FALLBACK_SAMPLING: SamplingDefaults = {
   width: { show: true, default: 1024 },
   height: { show: true, default: 1024 },
   negative: { show: true, default: null },
+  positive_prompt: { show: true, required: true },
   flow_shift: { show: true, default: null },
   allow_inpainting: { show: false },
   allow_painting: { show: false },
+  image_upscaler: { show: false },
   use_previous_image: { show: false, default: false },
   upscale: { show: false, default: false },
   upscaler_steps: { show: false, default: null },
   adetailer: { show: false },
   ip_adapter: { show: false },
   control_net: { show: false },
-  model_args: { show: false, default: null }
+  model_args: { show: false, default: null },
+  upscale_factor: { show: false, default: null },
+  vsr_temporal_chunk_size: { show: false, default: null }
 }
 
 /** Merge flat scalar overrides into a descriptor record (shared semantics). */
@@ -757,6 +793,8 @@ export function applySamplingOverrides(
     const trimmed = typeof rawModelArgs === 'string' ? rawModelArgs.trim() : ''
     out.model_args = { ...out.model_args, default: trimmed ? trimmed : null }
   }
+  if (o.upscale_factor !== undefined) out.upscale_factor = { ...out.upscale_factor, default: o.upscale_factor }
+  if (o.vsr_temporal_chunk_size !== undefined) out.vsr_temporal_chunk_size = { ...out.vsr_temporal_chunk_size, default: o.vsr_temporal_chunk_size }
   return out
 }
 
@@ -894,6 +932,10 @@ export interface ApplicationConfig {
   debug?: {
     /** When true, enables the sd-cli command preview (gen:preview) in the composer */
     preview?: boolean
+    /** When true (default), the app cleans up intermediate artifacts after a
+     * generation completes or fails (e.g. the extracted frames dir for
+     * seedvr_upscale video input). Set to false to retain those artifacts. */
+    cleanup?: boolean
   }
 }
 
@@ -1031,6 +1073,8 @@ export interface ChatMessage {
   endImagePath?: string
   /** reference video frame directories (--ref-video) — display-only */
   videoReferencePaths?: string[]
+  /** source video path (seedvr_upscale) — display-only */
+  videoInputPath?: string
   status?: 'ok' | 'stopped' | 'error'
   /** legacy only — raw error text is no longer persisted or rendered; errors live in the log + toasts */
   error?: string
@@ -1489,8 +1533,16 @@ export interface GenerationRequest {
   endImagePath?: string
   /** reference video frame directories (--ref-video; repeatable, MiniMax-H3 Ref2VA) */
   videoReferencePaths?: string[]
-  /** generation mode: 'vid_gen' ⇒ `-M vid_gen` + the video flags; absent ⇒ img_gen */
-  genMode?: 'vid_gen'
+  /** generation mode: 'vid_gen' ⇒ `-M vid_gen` + the video flags, or 'seedvr_upscale' ⇒ `-M vid_upscale`; absent ⇒ img_gen */
+  genMode?: 'vid_gen' | 'seedvr_upscale'
+  /** extracted frames directory (--input-frames; seedvr_upscale video input) */
+  inputFramesDir?: string
+  /** SeedVR2 upscale factor (--upscale-factor); null/absent ⇒ omit the flag */
+  upscaleFactor?: number | null
+  /** SeedVR2 temporal chunk size (--vsr-temporal-chunk-size); null/absent ⇒ omit */
+  vsrTemporalChunkSize?: number | null
+  /** source video file path (seedvr_upscale; display + main-process validation) */
+  videoInputPath?: string
   /** video frame count (--video-frames); null/absent ⇒ no flag (sd-cli default 1) */
   frames?: number | null
   /** video frame rate (--fps); null/absent ⇒ no flag (sd-cli default 24) */
@@ -1644,12 +1696,15 @@ export interface GenProgress {
    * after sd-cli exited (post-processing, not sampling). The renderer keeps
    * the busy indicator up and shows a "Converting…" hint; no step update.
    */
-  status: 'running' | 'done' | 'stopped' | 'error' | 'converting'
+  status: 'running' | 'done' | 'stopped' | 'error' | 'converting' | 'progress'
   step?: number
   totalSteps?: number
   image?: ChatImage
   /** short toast-friendly failure line; the full detail lands in data/logs/latest.log */
   error?: string
+  /** short free-form status line (e.g. "Extracting video frames…"); shown
+   * alongside the busy indicator on the 'progress' status; no step update */
+  message?: string
   /** total generation time in ms (spawn → done, incl. any ffmpeg conversion);
    *  emitted only on the terminal 'done' status */
   durationMs?: number

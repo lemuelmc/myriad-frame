@@ -1,5 +1,5 @@
 {
-  "updatedOn": "2026-11-14 00:00:00",
+  "updatedOn": "2026-11-16 00:00:00",
   "inference_types": {
     "image": {"text_input": true, "accepts": ["*.jpg, *.jpeg, *.png"]},
     "video": {"text_input": true, "accepts": ["*.jpg, *.jpeg, *.png"]},
@@ -13,7 +13,8 @@
     "text_image_to_video": {"text_input": true, "accepts": ["*.mp4, *.mov, *.avi"]},
     "audio_to_video": {"text_input": true, "accepts": ["*.jpg, *.jpeg, *.png, *.mp3, *.ogg, *.wav, *.aiff, *.flac"]},
     "llm": {"text_input": true, "accepts": ["*.jpg, *.jpeg, *.png"]},
-    "glpyh": {"text_input": true, "accepts": ["*.jpg, *.jpeg, *.png"]}
+    "glpyh": {"text_input": true, "accepts": ["*.jpg, *.jpeg, *.png"]},
+    "video_upscaler": {"text_input": false, "accepts": ["*.jpg, *.jpeg, *.png, *.mp4, *.mov, *.avi"]}
   },
   "model_families": [
     { "name": "qwen_image_2_1", "label": "Qwen Image 2.1", "type": "image_unified" },
@@ -48,10 +49,12 @@
     { "name": "iris_3b", "label": "Iris 3B", "type": "text_to_image" },
     { "name": "ming_image", "label": "Ming Image", "type": "text_to_image" },
     { "name": "mini_max_h3", "label": "MiniMax-H3", "type": "video_all_in_one" },
+    { "name": "mini_max_h3_image", "label": "MiniMax-H3 Image", "type": "text_to_image" },
     { "name": "boogu_image", "label": "Boogu Image", "type": "text_to_image" },
     { "name": "qwen3_vl_8b_instruct", "label": "Qwen3 VL 8b Instruct", "type": "llm"},
     { "name": "qwen3_vl_4b_instruct", "label": "Qwen3 VL 4b Instruct", "type": "llm"},
-    { "name": "fibo_2_0", "label": "Fibo 2.0", "type": "text_to_image" }
+    { "name": "fibo_2_0", "label": "Fibo 2.0", "type": "text_to_image" },
+    { "name": "seedvr2", "label": "SeedVR2", "type": "video_upscaler" }
   ],
   "llm_models": [
     { "name": "gemma_3_1b_it", "label": "Gemma 3 1B IT" }
@@ -124,104 +127,136 @@
     {"name": "ckpt", "label": "Ckpt"},
     {"name": "alibaba_pai", "label": "Alibaba-pai"},
     {"name": "webui", "label": "WebUI"},
-    {"name": "thibaud", "label": "Thibaud"}
+    {"name": "thibaud", "label": "Thibaud"},
+    {"name": "elix3r", "label": "elix3r"}
   ],
   "repo": {
     "vae": {
       "qwen_image_2_1": {
         "provider": "unsloth",
         "url": "https://huggingface.co/unsloth/Qwen-Image-2.1-FP8",
-        "default": "vae/qwen_image_2.1_vae_bf16.safetensors"
+        "default": "vae/qwen_image_2.1_vae_bf16.safetensors",
+        "path": "/vae"
       },
       "z_image": {
         "provider": "comfy_org",
         "url": "https://huggingface.co/Comfy-Org/Z-Image",
-        "default": "split_files/vae/ae.safetensors"
+        "default": "split_files/vae/ae.safetensors",
+        "path": "/split_files/vae"
       },
       "sd3_5": {
         "provider": "huaweilin",
         "url": "https://huggingface.co/huaweilin/stable-diffusion-3.5-large-vae",
-        "default": "vae/diffusion_pytorch_model.safetensors"
+        "default": "vae/diffusion_pytorch_model.safetensors",
+        "path": "/vae"
       },
       "krea2": {
         "provider": "comfy_org",
         "url": "https://huggingface.co/Comfy-Org/Wan-2.1",
-        "default": "split_files/vae/wan_2.1_vae.safetensors"
+        "default": "split_files/vae/wan_2.1_vae.safetensors",
+        "path": "/split_files"
       },
       "sdxl": {
         "provider": "stabilityai",
         "url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0",
-        "default": "vae/diffusion_pytorch_model.fp16.safetensors"
+        "default": "vae/diffusion_pytorch_model.fp16.safetensors",
+        "path": "/vae"
       },
       "anima": {
         "provider": "circlestone_labs",
         "url": "https://huggingface.co/circlestone-labs/Anima",
-        "default": "split_files/vae/qwen_image_vae.safetensors"
+        "default": "split_files/vae/qwen_image_vae.safetensors",
+        "path": "/split_files/vae"
       },
       "qwen_image_edit": {
         "provider": "comfy_org",
         "url": "https://huggingface.co/Comfy-Org/Qwen-Image",
-        "default": "split_files/vae/qwen_image_vae.safetensors"
+        "default": "split_files/vae/qwen_image_vae.safetensors",
+        "path": "/split_files/vae"
       },
       "flux_1_kontext": {
         "provider": "second-state",
         "url": "https://huggingface.co/second-state/FLUX.1-dev-GGUF",
-        "default": "ae.safetensors"
+        "default": "ae.safetensors",
+        "path": "/"
       },
       "flux_1": {
          "provider": "second-state",
           "url": "https://huggingface.co/second-state/FLUX.1-dev-GGUF",
-          "default": "ae.safetensors"
+          "default": "ae.safetensors",
+          "path": "/"
       },
       "flux_2": {
         "provider": "unsloth",
         "url": "https://huggingface.co/unsloth/FLUX.2-VAE",
-        "default": "split_files/vae/flux2-vae.safetensors"
+        "default": "split_files/vae/flux2-vae.safetensors",
+        "path": "/split_files/vae"
       },
       "flux_3": {
         "provider": "unsloth",
         "url": "https://huggingface.co/unsloth/FLUX.2-VAE",
-        "default": "split_files/vae/flux2-vae.safetensors"
+        "default": "split_files/vae/flux2-vae.safetensors",
+        "path": "/split_files/vae"
       },
       "moss_image": {
         "provider": "comfy_org",
         "url": "https://huggingface.co/Comfy-Org/MOSS-Image",
-        "default": "vae/flux2-vae.safetensors"
+        "default": "vae/flux2-vae.safetensors",
+        "path": "/vae"
       },
       "wan2_1": {
         "provider": "comfy_org",
         "url": "https://huggingface.co/Comfy-Org/Wan-2.1",
-        "default": "split_files/vae/wan_2.1_vae.safetensors"
+        "default": "split_files/vae/wan_2.1_vae.safetensors",
+        "path": "/split_files/vae"
       },
       "wan2_2": {
         "provider": "comfy_org",
         "url": "https://huggingface.co/Comfy-Org/Wan-2.2",
-        "default": "split_files/vae/wan2.2_vae.safetensors"
+        "default": "split_files/vae/wan2.2_vae.safetensors",
+        "path": "/split_files/vae"
       },
       "ltx_2_5": {
         "provider": "unsloth",
         "url": "https://huggingface.co/unsloth/LTX-2.5-GGUF",
-        "default": "vae/ltx-2.5-video-vae-conv-bf16.safetensors"
+        "default": "vae/ltx-2.5-video-vae-conv-bf16.safetensors",
+        "path": "/vae"
       },
       "ernie_image": {
         "provider": "comfy_org",
         "url": "https://huggingface.co/Comfy-Org/ERNIE-Image",
-        "default": "vae/flux2-vae.safetensors"
+        "default": "vae/flux2-vae.safetensors",
+        "path": "/vae"
       },
       "hunyuan_video_1_5": {
         "provider": "comfy_org",
         "url": "https://huggingface.co/Comfy-Org/Hunyuan-Video-1.5",
-        "default": "split_files/vae/hunyuanvideo15_vae_fp16.safetensors"
+        "default": "split_files/vae/hunyuanvideo15_vae_fp16.safetensors",
+        "path": "/split_files/vae"
       },
       "ming_image": {
         "provider": "comfy_org",
         "url": "https://huggingface.co/Comfy-Org/Ming-Image",
-        "default": "/vae/ming_image_vae_bf16.safetensors"
+        "default": "/vae/ming_image_vae_bf16.safetensors",
+        "path": "/vae"
       },
       "mini_max_h3": {
         "provider": "comfy_org",
         "url": "https://huggingface.co/Comfy-Org/MiniMax-H3",
-        "default": "/vae/minimax_h3_video_vae_fp16.safetensors"
+        "default": "/vae/minimax_h3_video_vae_fp16.safetensors",
+        "path": "/vae"
+      },
+      "mini_max_h3_image": {
+        "provider": "comfy_org",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3-Image",
+        "default": "/vae/minimax_h3_image_vae_fp16.safetensors",
+        "path": "/vae"
+      },
+      "seedvr2": {
+        "provider": "comfy_org",
+        "url": "https://huggingface.co/Comfy-Org/SeedVR2",
+        "default": "/vae/seedvr2_ema_vae_fp16.safetensors",
+        "path": "/vae"
       }
     },
     "audio_vae": {
@@ -241,13 +276,15 @@
         "provider": "unsloth",
         "label": "Qwen3 VL 8B Instruct",
         "url": "https://huggingface.co/unsloth/Qwen3-VL-8B-Instruct-GGUF",
-        "default": "Qwen3-VL-8B-Instruct-Q4_K_S.gguf"
+        "default": "Qwen3-VL-8B-Instruct-Q4_K_S.gguf",
+        "path": "/"
       },
       "z_image": {
         "provider": "unsloth",
         "label": "Qwen3 4b Instruct",
         "url": "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF",
-        "default": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+        "default": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        "path": "/"
       },
       "sd3_5": {
         "provider": "comfy_org",
@@ -263,19 +300,22 @@
         "provider": "qwen",
         "label": "Qwen3 VL 4B Instruct",
         "url": "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF",
-        "default": "Qwen3VL-4B-Instruct-Q4_K_M.gguf"
+        "default": "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+        "path": "/"
       },
       "anima": {
         "provider": "circlestone_labs",
         "label": "Anima Text Encoder",
         "url": "https://huggingface.co/circlestone-labs/Anima",
-        "default": "split_files/text_encoders/qwen_3_06b_base.safetensors"
+        "default": "split_files/text_encoders/qwen_3_06b_base.safetensors",
+        "path": "/split_files/text_encoders"
       },
       "qwen_image_edit": {
         "provider": "comfy_org",
         "label": "Qwen Image Encoder",
         "url": "https://huggingface.co/Comfy-Org/Qwen-Image",
-        "default": "split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors"
+        "default": "split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+        "path": "/split_files/text_encoders"
       },
       "flux_1_kontext": {
         "provider": "comfyanonymous",
@@ -299,64 +339,76 @@
         "provider": "unsloth",
         "label": "Unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF",
         "url": "https://huggingface.co/unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF",
-        "default": "Mistral-Small-3.2-24B-Instruct-2506-Q4_0.gguf"
+        "default": "Mistral-Small-3.2-24B-Instruct-2506-Q4_0.gguf",
+        "path": "/"
       },
       "flux_3": {
         "provider": "qwen",
         "label": "Qwen3-VL-4B-Instruct-GGUF",
         "url": "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF",
-        "default": "Qwen3VL-4B-Instruct-Q4_K_M.gguf"
+        "default": "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+        "path": "/"
       },
       "moss_image": {
         "provider": "unsloth",
         "url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF",
-        "default": "Qwen3.5-9B-Q4_K_M.gguf"
+        "default": "Qwen3.5-9B-Q4_K_M.gguf",
+        "path": "/"
       },
       "wan2_1": {
         "provider": "city96",
         "url": "https://huggingface.co/city96/umt5-xxl-encoder-gguf",
         "default": "umt5-xxl-encoder-Q8_0.gguf",
+        "path": "/",
         "use_as": "t5xxl"
       },
       "ltx_2_5": {
-        "provider": "unsloth",
-        "url": "https://huggingface.co/unsloth/LTX-2.5-GGUF",
-        "default": "text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors"
+        "provider": "elix3r",
+        "url": "https://huggingface.co/elix3r/gemma4-12b-with-proj-ltx-2.5-GGUF",
+        "default": "gemma4-12b-with-proj-ltx-2.5-Q4_K_M.gguf",
+        "path": "/"
       },
       "mistral_3_3b_instruct_2512": {
         "provider": "unsloth",
         "url": "https://huggingface.co/unsloth/Ministral-3-3B-Instruct-2512-GGUF",
-        "default": "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf"
+        "default": "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
+        "path": "/"
       },
       "qwen2_5_vl_7b_instruct": {
         "provider": "mradermacher",
         "url": "https://huggingface.co/mradermacher/Qwen2.5-VL-7B-Instruct-GGUF",
-        "default": "Qwen2.5-VL-7B-Instruct.Q4_K_M.gguf"
+        "default": "Qwen2.5-VL-7B-Instruct.Q4_K_M.gguf",
+        "path": "/"
       },
       "byt5_small_glyphxl": {
         "provider": "comfy_org",
         "url": "https://huggingface.co/Comfy-Org/Hunyuan-Video-1.5",
-        "default": "split_files/text_encoders/byt5_small_glyphxl_fp16.safetensors"
+        "default": "split_files/text_encoders/byt5_small_glyphxl_fp16.safetensors",
+        "path": "/split_files/text_encoders"
       },
       "qwen3_vl_8b_instruct": {
         "provider": "unsloth",
         "url": "https://huggingface.co/unsloth/Qwen3-VL-8B-Instruct-GGUF",
-        "default": "Qwen3-VL-8B-Instruct-Q4_K_M.gguf"
+        "default": "Qwen3-VL-8B-Instruct-Q4_K_M.gguf",
+        "path": "/"
       },
       "ming_image": {
         "provider": "realrebelai",
         "url": "https://huggingface.co/realrebelai/Ming-Image_GGUFs",
-        "default": "/Text%20Encoders%20(UPDATED)/Ming-Image-0.1-Ling-Mini-2.0-Q4_K_M.gguf"
+        "default": "Text Encoders (UPDATED)/Ming-Image-0.1-Ling-Mini-2.0-Q4_K_M.gguf",
+        "path": "/Text Encoders (UPDATED)"
       },
       "mini_max_h3": {
         "provider": "realrebelai",
         "url": "https://huggingface.co/realrebelai/MiniMax-H3_GGUFs",
-        "default": "qwen3vl-32B-MiniMax-H3-Q4_K_M.gguf"
+        "default": "qwen3vl-32B-MiniMax-H3-Q4_K_M.gguf",
+        "path": "/"
       },
       "qwen3_vl_4b_instruct": {
         "provider": "qwen",
         "url": "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF",
-        "default": "Qwen3VL-4B-Instruct-Q4_K_M.gguf"
+        "default": "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+        "path": "/"
       }
     },
     "audio_encoder": {
@@ -1688,6 +1740,42 @@
           "encoder": { "from": "qwen3_vl_4b_instruct" },
           "vision": { "from": "qwen3_vl_4b_instruct" }
         }
+      },
+      {
+        "provider": "comfy_org",
+        "name": "comfy_org_minimax_h3_image",
+        "label": "Comfy-Org/MiniMax-H3 Image",
+        "description": "MiniMax-H3 Image text-to-image diffusion model",
+        "inference_type": "text_to_image",
+        "quant_type": "safetensor",
+        "family": "mini_max_h3_image",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3-Image",
+        "path": "/diffusion_models",
+        "requires": {
+          "encoder": {"from": "mini_max_h3"}
+        }
+      },
+      {
+        "provider": "comfy_org",
+        "name": "comfy_org_seedvr2",
+        "label": "Comfy-Org/SeedVR2",
+        "description": "SeedVR2 video upscaling diffusion model",
+        "inference_type": "video_upscaler",
+        "quant_type": "safetensor",
+        "family": "seedvr2",
+        "url": "https://huggingface.co/Comfy-Org/SeedVR2",
+        "path": "/diffusion_models"
+      },
+      {
+        "provider": "abiray",
+        "name": "abiray_ltx_2_5_distilled_gguf",
+        "label": "Abiray/LTX 2.5 Distilled GGUF",
+        "description": "Distilled LTX 2.5 GGUF quantization",
+        "inference_type": "text_image_to_video",
+        "quant_type": "gguf",
+        "family": "ltx_2_5",
+        "url": "https://huggingface.co/Abiray/LTX-2.5-Distilled-GGUF",
+        "path": "/"
       }
     ]
   }

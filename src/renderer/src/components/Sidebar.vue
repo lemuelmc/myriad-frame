@@ -141,7 +141,6 @@ function fmtDate(ts: number): string {
 
     <div class="sessions">
       <div class="sessions-bar">
-        <span class="muted">Sessions</span>
         <div class="search-wrap">
           <input
             ref="searchInput"

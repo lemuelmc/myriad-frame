@@ -51,7 +51,7 @@ const merged = computed<SamplingDefaults | null>(() => {
 
 // Row visibility: the descriptor's `show` flag gates the session-override row
 // (defaults still apply even when the row is hidden).
-const show = (key: 'steps' | 'high_steps' | 'cfg' | 'high_cfg' | 'strength' | 'sampler' | 'high_sampler' | 'scheduler' | 'flow_shift' | 'frames' | 'frame_rate' | 'upscale' | 'upscaler_steps' | 'model_args'): boolean =>
+const show = (key: 'steps' | 'high_steps' | 'cfg' | 'high_cfg' | 'strength' | 'sampler' | 'high_sampler' | 'scheduler' | 'flow_shift' | 'frames' | 'frame_rate' | 'upscale' | 'upscaler_steps' | 'model_args' | 'upscale_factor' | 'vsr_temporal_chunk_size'): boolean =>
   merged.value?.[key]?.show ?? true
 
 const draft = reactive<SessionSamplingOverride>({
@@ -70,7 +70,9 @@ const draft = reactive<SessionSamplingOverride>({
   upscale: false,
   upscaler_steps: null,
   modelArgs: '',
-  args: ''
+  args: '',
+  upscale_factor: null,
+  vsr_temporal_chunk_size: null
 })
 
 // ---------- seed ----------
@@ -125,6 +127,8 @@ function save(): void {
   // Model args: '' / null ⇒ no flag (the session stores null and main omits
   // --model-args at spawn); a non-empty trimmed string is preserved.
   out.modelArgs = (draft.modelArgs?.trim() || null)
+  out.upscale_factor = nz(draft.upscale_factor)
+  out.vsr_temporal_chunk_size = nz(draft.vsr_temporal_chunk_size)
   // Universal args: '' / null ⇒ nothing appended at spawn; a non-empty
   // trimmed string is preserved (main splits it into tokens).
   out.args = (draft.args?.trim() || null)
@@ -186,6 +190,8 @@ onMounted(async () => {
     // Model args: the merged descriptor default (a concrete string or null);
     // null ⇒ an empty field (empty = explicit "none": no --model-args flag).
     draft.modelArgs = m.model_args?.default ?? ''
+    draft.upscale_factor = m.upscale_factor?.default ?? null
+    draft.vsr_temporal_chunk_size = m.vsr_temporal_chunk_size?.default ?? null
     // Universal args: session-only (never a sampling.json field) — prefill
     // from the saved session override; absent ⇒ an empty field.
     draft.args = sessionsStore.active?.inputs?.sampling?.args ?? ''
@@ -294,6 +300,16 @@ function reset(): void {
           <input v-model="draft.modelArgs" type="text" placeholder="(none)" />
         </label>
         <p v-if="show('model_args')" class="faint">Model args: free-form key=value list passed as --model-args (e.g. chroma_use_dit_mask). Empty = no flag.</p>
+        <label v-if="show('upscale_factor')" class="kv-row">
+          <span>Upscale factor</span>
+          <input v-model.number="draft.upscale_factor" type="number" min="1" step="1" />
+        </label>
+        <p v-if="show('upscale_factor')" class="faint">Upscale factor: positive integer (output = input × factor). Required by SeedVR2.</p>
+        <label v-if="show('vsr_temporal_chunk_size')" class="kv-row">
+          <span>Temporal chunk size</span>
+          <input v-model.number="draft.vsr_temporal_chunk_size" type="number" min="1" step="4" />
+        </label>
+        <p v-if="show('vsr_temporal_chunk_size')" class="faint">Temporal chunk size: frames processed together (1, 5, 9, 13, …). 1 = least memory.</p>
         <label class="kv-row">
           <span>Seed</span>
           <input

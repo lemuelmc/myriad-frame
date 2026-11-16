@@ -9,6 +9,12 @@ import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useLightboxStore } from '../stores/lightbox'
 import { useUpscalerStore } from '../stores/upscaler'
 import { saveImageAs } from '../saveImage'
+import {
+  useGeneratedImageAs,
+  inputChannelEnabled,
+  refChannelEnabled,
+  upscaleEnabled
+} from '../composerImageActions'
 
 const store = useLightboxStore()
 const upscalerStore = useUpscalerStore()
@@ -87,6 +93,23 @@ watch(
    { immediate: true }
  )
 
+// Close the lightbox first, then trigger the attach action. Closing before
+// acting ensures the ConfirmDialog (z-index 1800) renders cleanly over the
+// chat — the lightbox backdrop (z-index 2500) would otherwise cover it.
+// store.close() restores focus to the triggering thumbnail.
+function onAddAsInput(): void {
+ const path = store.path
+ if (!path) return
+ store.close()
+ void useGeneratedImageAs(path, 'input')
+}
+function onAddAsReference(): void {
+ const path = store.path
+ if (!path) return
+ store.close()
+ void useGeneratedImageAs(path, 'reference')
+}
+
 onBeforeUnmount(() => {
   document.body.style.overflow = ''
   window.removeEventListener('keydown', onKeydown, true)
@@ -132,10 +155,10 @@ onBeforeUnmount(() => {
           </svg>
         </button>
         <button
+          v-if="fullSrc && upscaleEnabled"
           class="icon lightbox-tool"
           title="Upscale image…"
           aria-label="Upscale image"
-          :disabled="!fullSrc"
           @click="upscalerStore.openDialog(store.path!)"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -143,6 +166,32 @@ onBeforeUnmount(() => {
             <path d="M9 21H3v-6" />
             <path d="M21 3l-7 7" />
             <path d="M3 21l7-7" />
+          </svg>
+        </button>
+        <button
+          v-if="fullSrc && inputChannelEnabled"
+          class="icon lightbox-tool"
+          title="Use as image input"
+          aria-label="Use as image input"
+          @click="onAddAsInput"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <path d="M12 8v8" />
+            <path d="M8 12h8" />
+          </svg>
+        </button>
+        <button
+          v-if="fullSrc && refChannelEnabled"
+          class="icon lightbox-tool"
+          title="Use as image reference"
+          aria-label="Use as image reference"
+          @click="onAddAsReference"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <circle cx="8.5" cy="8.5" r="1.5" />
+            <path d="m21 15-5-5L5 21" />
           </svg>
         </button>
         <div v-if="$slots.tools" class="tools-strip">
@@ -224,6 +273,10 @@ onBeforeUnmount(() => {
 }
 .lightbox-tool:hover:not(:disabled) {
   background: rgba(0, 0, 0, 0.7);
+}
+.lightbox-tool:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .tools-strip {
   flex-shrink: 0;

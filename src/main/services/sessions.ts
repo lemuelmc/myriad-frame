@@ -236,6 +236,12 @@ export function createSessionsService(): SessionsService {
       const fps = num(patch.sampling.frame_rate)
       if (fps !== undefined && fps > 0) dst.frame_rate = fps
       else if (patch.sampling.frame_rate !== undefined) dst.frame_rate = null
+      const uf = num(patch.sampling.upscale_factor)
+      if (uf !== undefined && uf > 0) dst.upscale_factor = uf
+      else if (patch.sampling.upscale_factor !== undefined) dst.upscale_factor = null
+      const tcs = num(patch.sampling.vsr_temporal_chunk_size)
+      if (tcs !== undefined && tcs > 0) dst.vsr_temporal_chunk_size = tcs
+      else if (patch.sampling.vsr_temporal_chunk_size !== undefined) dst.vsr_temporal_chunk_size = null
       const sd = patch.sampling.seed
       // Seed: a finite integer in [0, SEED_MAX] stores as a fixed seed
       // (floored); null / undefined / anything else drops the key — absent =

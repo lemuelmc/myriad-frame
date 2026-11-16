@@ -269,3 +269,38 @@ export async function convertToMp4(input: string): Promise<string> {
   })
   return output
 }
+
+/**
+ * Extract a video into numbered PNG frames using the bundled ffmpeg.
+ * Frames are written to `framesDir/%06d.png` in source order.
+ * `-fps_mode passthrough` preserves the source frame rate (no
+ * duplication / dropping).
+ */
+export async function extractFrames(videoPath: string, framesDir: string): Promise<void> {
+  const binary = await ensureFfmpeg()
+  mkdirSync(framesDir, { recursive: true })
+  // Debug aid (same pattern as convertToMp4)
+  if (createSettingsService().get().debug) {
+    const quoteArg = (a: string): string =>
+      /\s/.test(a) && !(a.startsWith('"') && a.endsWith('"')) ? `"${a}"` : a
+    console.log(`[ffmpeg] ${[binary, ...[
+      '-i', videoPath, '-fps_mode', 'passthrough', join(framesDir, '%06d.png')
+    ].map(quoteArg)].join(' ')}`)
+  }
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(binary, [
+      '-i', videoPath,
+      '-fps_mode', 'passthrough',
+      join(framesDir, '%06d.png')
+    ], { windowsHide: true })
+    let stderr = ''
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr = (stderr + chunk.toString('utf8')).slice(-4000)
+    })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(`ffmpeg frame extraction failed (exit ${code}): ${stderr.slice(-500).trim()}`))
+    })
+  })
+}

@@ -50,6 +50,8 @@ export interface SdCliPaths {
   /** inpaint/outpaint mask — emitted as `--mask` when set; main never sets
    *  `mask` without `initImage` (masks apply to img2img-style runs only) */
   mask?: string
+  /** extracted frames directory — emitted as `--input-frames` (seedvr_upscale) */
+  inputFramesDir?: string
   /**
    * Per-session LoRA config; omitted entirely when the session's mode is
    * 'off' (or unset) — neither flag is emitted then. LoRA SELECTION is
@@ -145,19 +147,74 @@ export function buildArgs(req: GenerationRequest, p: SdCliPaths): string[] {
   // default img_gen).
   const args: string[] = []
   if (req.genMode === 'vid_gen') args.push('-M', 'vid_gen')
+  // SeedVR2 seedvr_upscale — a minimal flag set (seedvr2.md): no prompt,
+  // no steps/cfg/sampler, no width/height. The input is EITHER an image
+  // (--init-img) OR an extracted frames directory (--input-frames);
+  // gen:start enforces the XOR.
+  // The sd-cli flag is `-M vid_upscale` (the CLI-level mode name).
+  if (req.genMode === 'seedvr_upscale') {
+    args.push('-M', 'vid_upscale')
+    args.push(
+      p.modelBehavior === 'all_in_one' ? '--model' : '--diffusion-model',
+      p.model
+    )
+    // VAE companion (seedvr2_ema_vae_fp16.safetensors)
+    for (const item of p.vae ?? []) {
+      const flag = item.useAs.trim().replace(/^-+/, '')
+      if (flag) args.push(`--${flag}`, item.path)
+    }
+    // Input: image OR video frames (mutually exclusive — gen:start guard)
+    if (p.initImage) args.push('--init-img', p.initImage)
+    if (p.inputFramesDir) args.push('--input-frames', p.inputFramesDir)
+    // Upscale factor (required by sd-cli; positive integer)
+    if (typeof req.upscaleFactor === 'number' && req.upscaleFactor > 0) {
+      args.push('--upscale-factor', String(req.upscaleFactor))
+    }
+    // Temporal chunk size + FPS: video only (seedvr2.md: "No FPS or temporal
+    // chunk setting is needed for an image"). Gated on inputFramesDir so an
+    // image-only run (--init-img) never emits them.
+    if (p.inputFramesDir) {
+      if (typeof req.vsrTemporalChunkSize === 'number' && req.vsrTemporalChunkSize > 0) {
+        args.push('--vsr-temporal-chunk-size', String(req.vsrTemporalChunkSize))
+      }
+      if (typeof req.frameRate === 'number' && req.frameRate > 0) {
+        args.push('--fps', String(req.frameRate))
+      }
+    }
+    // Seed (fixed or random — same pattern as the general path)
+    args.push('--seed', String(isValidSeed(req.seed) ? Math.floor(req.seed) : randomSeed()))
+    // Performance flags (Settings → Performance) — same call the general path
+    // makes at line 414. Gated on req.performance.enabled by the caller.
+    pushPerformanceArgs(args, req.performance)
+    // Universal args — free-form sd-cli CLI string from the session's sampling
+    // override (the dialog's "Args" row). Parsed into whitespace-separated
+    // tokens and appended after every app-emitted flag (before --output), so
+    // a user token wins on duplicates. Empty/omitted ⇒ nothing appended.
+    const extraArgs = req.args?.trim()
+    if (extraArgs) {
+      for (const token of extraArgs.split(/\s+/)) {
+        if (token) args.push(token)
+      }
+    }
+    args.push('--output', p.output)
+    return args
+  }
   args.push(
     p.modelBehavior === 'all_in_one' ? '--model' : '--diffusion-model',
     p.model
   )
   // WAN MoE pair: the high-noise expert rides right after the primary.
   if (p.highNoiseModel) args.push('--high-noise-diffusion-model', p.highNoiseModel)
+  // Positive prompt: emitted only when non-empty. A type whose sampling.json
+  // `positive_prompt.required` is false may run with an empty prompt, so an
+  // empty/omitted req.prompt omits the --prompt flag entirely (sd-cli default
+  // "" applies).
+  if (req.prompt && req.prompt.trim()) {
+    args.push('--prompt', quotePrompt(req.prompt))
+  }
+  // Steps: nullable — null/0/negative ⇒ no --steps flag (sd-cli default 20
+  // applies); only a positive value is honored.
   args.push(
-    '--prompt', quotePrompt(req.prompt),
-    // Steps: nullable — null/0/negative ⇒ no --steps flag (sd-cli default 20
-    // applies); only a positive value is honored.
-    ...(typeof req.steps === 'number' && Number.isFinite(req.steps) && req.steps > 0
-      ? ['--steps', String(req.steps)]
-      : []),
     // CFG scale: nullable — null ⇒ no --cfg-scale flag (sd-cli default 7.0).
     ...(typeof req.cfg === 'number' && Number.isFinite(req.cfg)
       ? ['--cfg-scale', String(req.cfg)]
@@ -173,6 +230,13 @@ export function buildArgs(req: GenerationRequest, p: SdCliPaths): string[] {
     // random seed per run (sd-cli's own default is a FIXED 42, so random
     // mode must keep emitting a seed).
     '--seed', String(isValidSeed(req.seed) ? Math.floor(req.seed) : randomSeed())
+  )
+  // Steps: nullable — null/0/negative ⇒ no --steps flag (sd-cli default 20
+  // applies); only a positive value is honored.
+  args.push(
+    ...(typeof req.steps === 'number' && Number.isFinite(req.steps) && req.steps > 0
+      ? ['--steps', String(req.steps)]
+      : [])
   )
   // Video flags — only for vid_gen runs, positive values only (0/null ⇒ the
   // sd-cli default applies: --video-frames 1, --fps 24).

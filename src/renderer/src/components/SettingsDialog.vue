@@ -514,7 +514,34 @@ async function setDefaultVae(name: string): Promise<void> {
   if (name) map[vaeType.value] = name
   else delete map[vaeType.value]
   await settingsStore.save({ defaultVae: map })
-} 
+}
+const vaeFiles = computed(() => settingsStore.modelLists.vae ?? [])
+const vaeInstalledNames = computed(() => new Set(vaeFiles.value.map((f) => f.name)))
+async function downloadVae(e: CatalogEntry): Promise<void> {
+  try {
+    await settingsStore.downloadModel('vae', e.url, e.provider, false, e.diffusionType)
+    toast(`Downloaded ${e.name}`, 'ok')
+  } catch (err) {
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
+  }
+}
+/** Force a re-download of a VAE that is already installed (replaces the on-disk file). */
+async function redownloadVae(e: CatalogEntry): Promise<void> {
+  try {
+    await settingsStore.downloadModel('vae', e.url, e.provider, true, e.diffusionType)
+    toast(`Redownloaded ${e.name}`, 'ok')
+  } catch (err) {
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
+  }
+}
+function vaeDlState(e: CatalogEntry) {
+  return settingsStore.modelDownloads[`vae:${e.url}`]
+}
+async function removeVae(f: ModelFile): Promise<void> {
+  const ok = await confirm(`Delete ${f.name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
+  if (!ok) return
+  await settingsStore.removeModel('vae', f.name, f.provider, f.diffusionType)
+}
 
 // ---------- encoder ----------
 const encoderType = ref(diffusionTypes.value[0] ?? '')
@@ -1710,7 +1737,7 @@ onMounted(async () => {
               <option v-for="t in diffusionTypes" :key="t" :value="t">{{ t }}</option>
             </select>
             <p class="muted">
-              Choose the default VAE used for {{ vaeType }}. Download it from the VAE dropdown in the chat composer.
+              Browse the VAEs available for {{ vaeType }}, download the ones you want, and set the default. The default VAE is used in the chat composer unless you pick a different one.
             </p>
             <input
               v-model="vaeQuery"
@@ -1718,22 +1745,65 @@ onMounted(async () => {
               type="text"
               placeholder="Filter VAE — space, '-' and '_' are equivalent"
             />
+            <h4>Installed</h4>
             <ul class="file-list">
-              <li v-for="e in filteredVaeEntries" :key="e.id">
-                <span class="mono">{{ e.name }}</span>
-                <DownloadProgress
-                  v-if="installedDlState('vae', e.name)"
-                  class="grow"
-                  :downloaded-bytes="installedDlState('vae', e.name)!.downloadedBytes"
-                  :total-bytes="installedDlState('vae', e.name)!.totalBytes"
-                />
-                <button
-                  class="set-default"
-                  :class="{ active: defaultVae === e.name }"
-                  @click="setDefaultVae(e.name)"
-                >
-                  {{ defaultVae === e.name ? 'Default' : 'Set default' }}
+              <li v-for="f in vaeFiles" :key="rowKey(f)">
+                <span class="mono">{{ f.name }}</span>
+                <span class="faint">{{ fmtBytes(f.size) }}</span>
+                <button class="icon danger" title="Delete" @click="removeVae(f)">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14" />
+                  </svg>
                 </button>
+              </li>
+              <li v-if="!vaeFiles.length" class="muted">No VAEs downloaded yet.</li>
+            </ul>
+
+            <h4>Available from hub</h4>
+            <ul class="file-list">
+              <li v-for="e in filteredVaeEntries" :key="e.id" class="dl-item">
+                <div class="dl-item-top">
+                  <span class="mono">{{ e.name }}</span>
+                  <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
+                  <template v-if="vaeInstalledNames.has(baseName(e.name))">
+                    <span class="ok-tag">installed</span>
+                    <button
+                      class="icon"
+                      title="Force redownload"
+                      :disabled="!!vaeDlState(e)"
+                      @click="redownloadVae(e)"
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 2v6h-6M3 22v-6h6" />
+                        <path d="M21 13A9 9 0 0 0 5.2 7.2M3 11a9 9 0 0 0 15.8 5.8" />
+                      </svg>
+                    </button>
+                  </template>
+                  <template v-else>
+                    <button
+                      v-if="vaeDlState(e)"
+                      class="dl-btn"
+                      disabled
+                      :title="`${vaeDlState(e)!.downloadedBytes} / ${vaeDlState(e)!.totalBytes} downloaded`"
+                    >
+                      Downloading…
+                    </button>
+                    <button v-else class="dl-btn" @click="downloadVae(e)">Download</button>
+                  </template>
+                  <button
+                    class="set-default"
+                    :class="{ active: defaultVae === e.name }"
+                    @click="setDefaultVae(e.name)"
+                  >
+                    {{ defaultVae === e.name ? 'Default' : 'Set default' }}
+                  </button>
+                </div>
+                <DownloadProgress
+                  v-if="vaeDlState(e)"
+                  class="grow"
+                  :downloaded-bytes="vaeDlState(e)!.downloadedBytes"
+                  :total-bytes="vaeDlState(e)!.totalBytes"
+                />
               </li>
               <li v-if="!vaeEntries.length" class="muted">No VAE entries for this diffusion type.</li>
               <li v-else-if="!filteredVaeEntries.length" class="muted">No VAE entries match "{{ vaeQuery }}"</li>

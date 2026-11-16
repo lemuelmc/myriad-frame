@@ -87,7 +87,10 @@ export function loadApplicationConfig(): ApplicationConfig {
  *   and `use_as` matching `^[A-Za-z0-9][A-Za-z0-9_-]*$` (no leading dash —
  *   it is interpolated into a `--<use_as>` CLI flag); duplicate `use_as`
  *   values and duplicate file basenames within one array are rejected (both
- *   would collide at spawn / on disk). Optional string `provider` / `label`
+ *   would collide at spawn / on disk). Optional string `provider` / `label`;
+ *   optional non-empty string `path` (repo-relative folder restricting the
+ *   hub scan to that folder's direct files; '/' restricts it to the repo
+ *   root's direct files)
  * - `repo.vision` values: objects with non-empty string `url` (`https://`)
  *   and non-empty string `default`; optional string `provider` / `label`
  * - `repo.diffusion` entries: objects with non-empty string `provider`,
@@ -232,6 +235,9 @@ export function validateHubConfig(cfg: unknown): string | undefined {
     if (vo['provider'] !== undefined && typeof vo['provider'] !== 'string') {
       return `repo.vae["${key}"].provider must be a string when present`
     }
+    if (vo['path'] !== undefined && typeof vo['path'] !== 'string') {
+      return `repo.vae["${key}"].path must be a string when present`
+    }
   }
 
   const encoder = repoObj['encoder']
@@ -303,6 +309,9 @@ export function validateHubConfig(cfg: unknown): string | undefined {
     }
     if (eo['label'] !== undefined && typeof eo['label'] !== 'string') {
       return `repo.encoder["${key}"].label must be a string when present`
+    }
+    if (eo['path'] !== undefined && typeof eo['path'] !== 'string') {
+      return `repo.encoder["${key}"].path must be a string when present`
     }
     // Entry-level `use_as` — the CLI flag for the SINGLE-file (`default`)
     // shape (e.g. `t5xxl` for the wan umt5-xxl encoder). Same flag-safe

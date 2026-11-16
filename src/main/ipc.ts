@@ -5,9 +5,10 @@
  * (commercial or private) provided the license notice and copyright are preserved.
  */
 
+import { randomUUID } from 'node:crypto'
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import log from 'electron-log/main'
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, renameSync } from 'node:fs'
 import { open as fsOpen } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import type {
@@ -75,7 +76,7 @@ import { saveResized } from './services/resize'
 import { createRuntimeService } from './services/runtime'
 import { createSessionsService } from './services/sessions'
 import { createSettingsService } from './services/settings'
-import { convertToMp4, ensureFfmpeg } from './services/ffmpeg'
+import { convertToMp4, ensureFfmpeg, extractFrames } from './services/ffmpeg'
 import { defaultModelInstalled, enhancePrompt, stopActiveEnhance } from './services/llm'
 import { ensureLlmRuntime, llmStatus } from './services/llm-runtime'
 import { isStreamableVideo, mediaUrlFor } from './services/media'
@@ -111,7 +112,20 @@ const sessions = createSessionsService()
 const runtime = createRuntimeService()
 const sdcli = createSdCliService()
 
-/** in-flight generations: sessionId -> { gen, sessionId, messageId, converting? } */
+/**
+ * Whether intermediate-artifact cleanup is enabled. Gated on `application.json`
+ * `debug.cleanup` (default true): when false, the app retains generated
+ * artifacts such as the extracted frames dir for seedvr_upscale video input.
+ */
+function cleanupEnabled(): boolean {
+  try {
+    return loadApplicationConfig().debug?.cleanup !== false
+  } catch {
+    return true
+  }
+}
+
+/** in-flight generations: sessionId -> { gen, sessionId, messageId, converting?, inputFramesDir? } */
 const activeGens = new Map<
   string,
   {
@@ -120,6 +134,8 @@ const activeGens = new Map<
     messageId: string
     /** true while the post-generation .avi → .mp4 conversion runs */
     converting?: boolean
+    /** extracted frames directory (seedvr_upscale video input) — cleaned up on gen:stop */
+    inputFramesDir?: string
   }
 >()
 
@@ -1171,6 +1187,7 @@ export function registerIpc(): void {
         req.args = typeof rawArgs === 'string' && rawArgs.trim() !== '' ? rawArgs.trim() : undefined
         const posNum = (v: number | null | undefined): number | undefined => typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined
         if (sampling.mode === 'vid_gen') req.genMode = 'vid_gen'
+        else if (sampling.mode === 'seedvr_upscale') req.genMode = 'seedvr_upscale'
         req.frames = posNum(sampling.frames?.default)
         req.frameRate = posNum(sampling.frame_rate?.default)
         req.highSteps = posNum(sampling.high_steps?.default)
@@ -1178,6 +1195,18 @@ export function registerIpc(): void {
         req.highSampler = typeof sampling.high_sampler?.default === 'string' && sampling.high_sampler.default.trim() ? sampling.high_sampler.default.trim() : undefined
         req.upscale = sampling.upscale?.default === true
         req.upscalerSteps = posNum(sampling.upscaler_steps?.default)
+        // SeedVR2 seedvr_upscale: resolve upscale_factor + vsr_temporal-chunk
+        // from the merged descriptors. Display-only preview: no frame
+        // extraction — the XOR guard below only clears the image input so the
+        // preview does not show both --init-img and --input-frames.
+        if (req.genMode === 'seedvr_upscale') {
+          req.upscaleFactor = posNum(sampling.upscale_factor?.default)
+          req.vsrTemporalChunkSize = posNum(sampling.vsr_temporal_chunk_size?.default)
+          if (req.videoInputPath && existsSync(req.videoInputPath)) {
+            req.inputFramesDir = '<extracted-frames-dir>'
+            initImage = undefined
+          }
+        }
         const latentUpscalerRes = req.upscale ? resolveCompanionPaths('latent_upscaler', latentUpscalerCompanions, req.latentUpscaler, req.latentUpscalerProvider, (f) => hubRepo.latent_upscaler?.[f]?.default ?? '') : { resolved: [], missing: [] }
         const latentUpscalerDeclared = !!req.latentUpscaler || latentUpscalerCompanions.some((c) => !!hubRepo.latent_upscaler?.[c.from]?.default)
         if (req.upscale && latentUpscalerDeclared && latentUpscalerRes.resolved.length === 0) { reject(new Error(`Latent upscaler not found`)); return }
@@ -1197,9 +1226,18 @@ export function registerIpc(): void {
         {
           const ad = session.inputs?.adetailer
           if (ad?.enabled && ad.model) {
-            const resolvedPath = models.pathFor('adetailer', ad.model, ad.provider, undefined)
+            const resolvedPath = models.pathFor('adetailer', ad.model, ad.provider, 'adetailer')
             if (basename(resolvedPath) !== ad.model) { reject(new Error(`ADetailer model mismatch: expected ${ad.model}, resolved to ${basename(resolvedPath)}`)); return }
-            if (!existsSync(resolvedPath)) { reject(new Error(`ADetailer model not found: ${ad.model}`)); return }
+            // Preview path: don't require the file to exist — just resolve the
+            // path so buildArgs can emit --ad-model with the (still-to-be-
+            // downloaded) path. Real spawn in gen:start will still enforce
+            // existence.
+            if (!existsSync(resolvedPath)) {
+              const row = catalogEntriesForLocation('adetailer', 'adetailer', ad.provider, ad.model)[0]
+              if (row?.url) {
+                void models.download('adetailer', row.url, () => {}, row.provider ?? ad.provider ?? 'default').catch(() => {})
+              }
+            }
             const opts: Record<string, number | string> = {}
             if (typeof ad.inputSize === 'number') opts.inputSize = ad.inputSize
             if (typeof ad.confidence === 'number') opts.confidence = ad.confidence
@@ -1263,7 +1301,13 @@ export function registerIpc(): void {
           }
         }
 
-        const output = newOutputPath(req.sessionId, 'preview', req.genMode === 'vid_gen' ? 'avi' : 'png')
+        // seedvr_upscale: the output extension follows the input type — video →
+        // .avi, image → .png.
+        const outExt: 'png' | 'avi' =
+          req.genMode === 'vid_gen' ? 'avi'
+          : req.genMode === 'seedvr_upscale' ? (req.videoInputPath && existsSync(req.videoInputPath) ? 'avi' : 'png')
+          : 'png'
+        const output = newOutputPath(req.sessionId, 'preview', outExt)
         const paths = {
           model: modelPath,
           modelBehavior,
@@ -1280,6 +1324,7 @@ export function registerIpc(): void {
           ipAdapter: ipAdapterSpawn,
           controlNet: controlNetSpawn,
           initImage,
+          inputFramesDir: req.inputFramesDir,
           mask: maskPath,
           references: existingRefs,
           audioPath,
@@ -1733,6 +1778,18 @@ export function registerIpc(): void {
     req.audioReferencePaths = audioRefPaths
     req.videoReferencePaths = videoRefPaths
 
+    // video_input channel: the video file is NOT emitted as an sd-cli flag.
+    // It is validated (existsSync) and kept on req for pre-processing
+    // (before the sd-cli spawn) or post-processing (after the sd-cli spawn
+    // completes). The video_reference channel (--ref-video) is separate and
+    // accepts a frames DIRECTORY (man.txt:293) — no interaction here.
+    // NOTE: the seedvr_upscale block (ipc.ts:2195) does its own existsSync
+    // check on req.videoInputPath; this early validation is for non-seedvr
+    // modes (e.g. mini_max_h3) where no such check exists today.
+    if (req.videoInputPath && !existsSync(req.videoInputPath)) {
+      req.videoInputPath = undefined
+    }
+
     const existingRefs = refs.filter((r) => existsSync(r))
     let initImage: string | undefined
     let maskPath: string | undefined
@@ -1887,6 +1944,7 @@ export function registerIpc(): void {
     const posNum = (v: number | null | undefined): number | undefined =>
       typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined
     if (sampling.mode === 'vid_gen') req.genMode = 'vid_gen'
+    else if (sampling.mode === 'seedvr_upscale') req.genMode = 'seedvr_upscale'
     req.frames = posNum(sampling.frames?.default)
     req.frameRate = posNum(sampling.frame_rate?.default)
     req.highSteps = posNum(sampling.high_steps?.default)
@@ -1995,8 +2053,7 @@ export function registerIpc(): void {
           'adetailer',
           ad.model,
           ad.provider, // provider scopes the on-disk slot so two providers
-          undefined // shipping the same basename resolve to different dirs
-          // adetailer has no diffusion-type variation
+          'adetailer' // adetailer uses family-scoped layout: data/models/adetailer/<provider>/<name>
         )
         // Basename validation: the resolved path must carry the session's
         // model name as its basename (the family-scoped pathFor chain may
@@ -2007,7 +2064,10 @@ export function registerIpc(): void {
           )
         }
         if (!existsSync(resolvedPath)) {
-          throw new Error(`ADetailer model not found: ${ad.model} - download it in Settings -> Adetailer`)
+          // Self-heal: try to kick the download before failing.
+          const row = catalogEntriesForLocation('adetailer', 'adetailer', ad.provider, ad.model)[0]
+          const kicked = !!row?.url && (void models.download('adetailer', row.url, () => {}, row.provider ?? ad.provider ?? 'default').catch(() => {}), true)
+          throw new Error(`ADetailer model not found: ${ad.model}` + (kicked ? ' — downloading it now; try again in a moment' : ' — download it in Settings → Adetailer'))
         }
         // Build --extra-ad-args from the session's AdetailerSettings
         const opts: Record<string, number | string> = {}
@@ -2134,6 +2194,8 @@ export function registerIpc(): void {
       ...(endImagePath ? { endImagePath } : {}),
       ...(audioRefPaths.length ? { audioReferencePaths: audioRefPaths } : {}),
       ...(videoRefPaths.length ? { videoReferencePaths: videoRefPaths } : {}),
+      // display-only: seedvr_upscale source video
+      ...(req.videoInputPath ? { videoInputPath: req.videoInputPath } : {}),
       createdAt: Date.now()
     }
     sessions.addMessage(req.sessionId, userMsg)
@@ -2146,11 +2208,94 @@ export function registerIpc(): void {
     }
     sessions.addMessage(req.sessionId, assistantMsg)
 
+    // SeedVR2 seedvr_upscale: the input is EITHER an image (--init-img) OR a
+    // video (--input-frames after ffmpeg extraction). Both → reject; neither
+    // → reject (sd-cli would have no source to upscale).
+    // NOTE: `initImage` is the authoritative image check — `existingInputs`
+    // is already empty here (its element was spliced out when initImage was
+    // assigned at line ~1828–1832).
+    // Resolved input type → output extension (seedvr2.md): video → .avi,
+    // image → .png. Declared OUTSIDE the mode block (at handler scope) so it
+    // is in scope at the newOutputPath() call in section 6.3, which sits
+    // after the block below closes.
+    let seedvrVideo = false
+    if (req.genMode === 'seedvr_upscale') {
+      const hasImage = !!initImage
+      const hasVideo = !!req.videoInputPath && existsSync(req.videoInputPath)
+      if (hasImage && hasVideo) {
+        sendProgress(req.sessionId, assistantMsg.id, {
+          status: 'error',
+          error: 'Only one input type per process is allowed'
+        })
+        sessions.updateMessage(req.sessionId, assistantMsg.id, { status: 'error' })
+        return assistantMsg.id
+      }
+      if (!hasImage && !hasVideo) {
+        sendProgress(req.sessionId, assistantMsg.id, {
+          status: 'error',
+          error: 'Select an image or video to upscale'
+        })
+        sessions.updateMessage(req.sessionId, assistantMsg.id, { status: 'error' })
+        return assistantMsg.id
+      }
+      if (hasVideo) {
+        // Extract frames to data/tmp/<sessionId>/frames-<random-id>/.
+        // The gen:start handler has no top-level try/catch, so a failed
+        // extraction must be caught HERE and surfaced the same way the
+        // XOR / neither guards above do — otherwise the assistant message
+        // stays in status 'ok' with no image and no error event.
+        // Progress reporting: tell the user extraction is in progress.
+        sendProgress(req.sessionId, assistantMsg.id, {
+          status: 'progress',
+          message: 'Extracting video frames…'
+        })
+        const framesDir = join(dataRoot(), 'tmp', req.sessionId, `frames-${randomUUID()}`)
+        try {
+          await extractFrames(req.videoInputPath!, framesDir)
+          // Extraction complete — clear the progress message.
+          sendProgress(req.sessionId, assistantMsg.id, {
+            status: 'progress',
+            message: 'Frames extracted. Starting generation…'
+          })
+        } catch (e) {
+          // Clean up partial frames before surfacing the error.
+          rmSync(framesDir, { recursive: true, force: true })
+          // Clear the progress message before showing the error.
+          sendProgress(req.sessionId, assistantMsg.id, {
+            status: 'progress',
+            message: 'Frame extraction failed'
+          })
+          sendProgress(req.sessionId, assistantMsg.id, {
+            status: 'error',
+            error: (e as Error).message || 'Frame extraction failed'
+          })
+          sessions.updateMessage(req.sessionId, assistantMsg.id, { status: 'error' })
+          return assistantMsg.id
+        }
+        req.inputFramesDir = framesDir
+        // Drop the image input (video wins): clear the local that feeds
+        // buildArgs. `existingInputs` is already empty (spliced at line ~1831),
+        // so only `initImage` needs clearing.
+        initImage = undefined
+        // Video input → the output is a .avi (→ .mp4). Image input → .png.
+        seedvrVideo = true
+      }
+      // upscale_factor + vsr_temporal_chunk_size from the merged descriptors
+      req.upscaleFactor = posNum(sampling.upscale_factor?.default)
+      req.vsrTemporalChunkSize = posNum(sampling.vsr_temporal_chunk_size?.default)
+    }
+
     // vid_gen runs produce a Motion-JPEG .avi — the bundled runtime has no
     // ffmpeg muxer and man.txt lists ".avi, .webm, and animated .webp" as the
     // single-file video outputs. Requesting .mp4 makes sd-cli APPEND .avi to
     // the path (name.mp4.avi) while the app probes the missing .mp4 file.
-    const output = newOutputPath(req.sessionId, assistantMsg.id, req.genMode === 'vid_gen' ? 'avi' : 'png')
+    // seedvr_upscale: the output extension follows the input type — video →
+    // .avi (→ .mp4 via convertToMp4), image → .png (seedvr2.md).
+    const outExt: 'png' | 'avi' =
+      req.genMode === 'vid_gen' ? 'avi'
+      : req.genMode === 'seedvr_upscale' ? (seedvrVideo ? 'avi' : 'png')
+      : 'png'
+    const output = newOutputPath(req.sessionId, assistantMsg.id, outExt)
     const paths = {
       model: modelPath,
       modelBehavior,
@@ -2186,6 +2331,8 @@ export function registerIpc(): void {
       // emits --control-net + --control-image + (optional) --control-strength.
       controlNet: controlNetSpawn,
       initImage,
+      // extracted frames directory (--input-frames; seedvr_upscale video input)
+      inputFramesDir: req.inputFramesDir,
       // inpaint/outpaint mask — always set together with initImage (main
       // never emits --mask without --init-img)
       mask: maskPath,
@@ -2273,6 +2420,12 @@ export function registerIpc(): void {
               image: { path: finalPath, name: basename(finalPath) },
               durationMs
             })
+            // seedvr_upscale video input: delete the extracted frames dir
+            // (intermediate artifact; a 30 s 1080p clip ≈ 1–3 GB of PNGs).
+            // Gated on application.json debug.cleanup (default true).
+            if (req.inputFramesDir && cleanupEnabled()) {
+              rmSync(req.inputFramesDir, { recursive: true, force: true })
+            }
         }
         void finish()
       },
@@ -2283,6 +2436,11 @@ export function registerIpc(): void {
         log.error(`[gen] generation failed (session ${req.sessionId}): ${message}`)
         activeGens.delete(req.sessionId)
         sessions.updateMessage(req.sessionId, assistantMsg.id, { status: 'error' })
+        // seedvr_upscale video input: delete the extracted frames dir even on
+        // failure (intermediate artifact). Gated on application.json debug.cleanup.
+        if (req.inputFramesDir && cleanupEnabled()) {
+          rmSync(req.inputFramesDir, { recursive: true, force: true })
+        }
         sendProgress(req.sessionId, assistantMsg.id, {
           status: 'error',
           error: shortGenError(message) || 'Generation failed'
@@ -2290,7 +2448,7 @@ export function registerIpc(): void {
       }
     })
 
-    activeGens.set(req.sessionId, { gen, sessionId: req.sessionId, messageId: assistantMsg.id })
+    activeGens.set(req.sessionId, { gen, sessionId: req.sessionId, messageId: assistantMsg.id, inputFramesDir: req.inputFramesDir })
     return assistantMsg.id
   })
 
@@ -2301,6 +2459,12 @@ export function registerIpc(): void {
     // exited while the entry stays alive (gen:state accuracy) — stopping
     // then must be a no-op, never a spurious 'stopped' event mid-conversion.
     if (entry.gen.child.exitCode !== null || entry.gen.child.signalCode !== null) return
+    // seedvr_upscale video input: clean up extracted frames on stop
+    // (intermediate artifact; a 30 s 1080p clip ≈ 1–3 GB of PNGs).
+    // Gated on application.json debug.cleanup (default true).
+    if (entry.inputFramesDir && cleanupEnabled()) {
+      rmSync(entry.inputFramesDir, { recursive: true, force: true })
+    }
     sdcli.stop(entry.gen)
     sessions.updateMessage(entry.sessionId, entry.messageId, { status: 'stopped' })
     sendProgress(entry.sessionId, entry.messageId, { status: 'stopped' })
@@ -2503,9 +2667,24 @@ export function initDataDirs(): void {
   // partial file behind — a fresh full re-download is always performed. The
   // wipe happens before startAllPending() (fired from index.ts after
   // registerIpc()) so background retries start clean.
+  //
+  // data/tmp/resize is preserved across the wipe: it holds user-cropped/
+  // resized images that a session references by path. Wiping them leaves those
+  // attachments pointing at a now-missing file ("media unavailable"), so the
+  // folder is moved aside, the rest of tmp is wiped, then it is moved back.
+  const resizePath = join(root, 'tmp', 'resize')
+  let movedResize: string | null = null
+  if (existsSync(resizePath)) {
+    movedResize = join(root, 'tmp', `.resize-preserve-${Date.now()}`)
+    renameSync(resizePath, movedResize)
+  }
   mkdirSync(join(root, 'tmp'), { recursive: true })
   rmSync(join(root, 'tmp'), { recursive: true, force: true })
   mkdirSync(join(root, 'tmp'), { recursive: true })
+  if (movedResize) {
+    renameSync(movedResize, resizePath)
+    movedResize = null
+  }
   mkdirSync(join(root, 'tmp', 'ffmpeg'), { recursive: true })
   mkdirSync(join(root, 'tmp', 'llm'), { recursive: true })
   ensureModelDirs()
