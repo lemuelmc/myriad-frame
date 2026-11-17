@@ -74,6 +74,9 @@ export const useUpscalerStore = defineStore('upscaler', {
           diffusionType,
           tileSize
         })
+        // The main process appends the upscaled image as a new assistant
+        // message to the session — reload the session so the renderer sees it.
+        void sessionsStore.refreshActive()
         this.succeeded(result)
       } catch (err) {
         this.failed((err as Error).message)

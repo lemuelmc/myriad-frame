@@ -45,7 +45,7 @@ export function getAppRoot(): string {
 }
 
 function readJson<T>(file: string): T {
-  const raw = readFileSync(file, 'utf-8')
+  const raw = readFileSync(file, 'utf-8').replace(/^\uFEFF/, '')
   return JSON.parse(raw) as T
 }
 
