@@ -13,6 +13,9 @@
   --danger: #ff6b6b;
   --ok: #43d17c;
   --warn: #ffb454;
+  /* Custom family tag accent (hub.json model_families[].tags) — a warm amber
+     distinct from the blue accent, neutral text, and green/red status colors. */
+  --family-tag: #e0a83f;
   --radius: 8px;
   --radius-sm: 5px;
   --shadow: 0 8px 32px rgba(0, 0, 0, 0.45);

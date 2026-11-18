@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Myriad Frame — Electron + Vue 3 desktop front-end for sd-cli (stable-diffusion.cpp).
  * Author: Lemuel Raganas
  * License: Apache License 2.0 — permissive; allows use, modification, and distribution
@@ -113,6 +113,46 @@ export function loadApplicationConfig(): ApplicationConfig {
  * `validateRuntimeConfig`): a typo'd upstream key is ignored by consumers
  * rather than blocking every update.
  */
+/**
+ * Validate the split-file shape on a hub entry object (`vo`): when
+ * `default_split_files` is present it must be a non-empty array of non-empty
+ * strings, it MUST carry a non-empty `default_split_file_name`, and it MUST
+ * NOT coexist with a `default` or a `defaults[]` bundle (the split-file entry
+ * is the default — design decision #2). Returns an error message when invalid,
+ * or undefined when the entry carries no split shape (unchanged).
+ */
+function validateSplitShape(vo: Record<string, unknown>, section: string): string | undefined {
+  const splitRaw: unknown = vo['default_split_files']
+  if (splitRaw === undefined) return undefined
+  if (!Array.isArray(splitRaw)) {
+    return `${section}.default_split_files must be an array when present`
+  }
+  const files = splitRaw as unknown[]
+  if (files.length === 0) {
+    return `${section}.default_split_files must be a non-empty array when present`
+  }
+  for (let i = 0; i < files.length; i++) {
+    if (typeof files[i] !== 'string' || files[i] === '') {
+      return `${section}.default_split_files[${i}] must be a non-empty string`
+    }
+  }
+  const name = vo['default_split_file_name']
+  if (typeof name !== 'string' || name === '') {
+    return `${section}.default_split_file_name must be a non-empty string when default_split_files is present`
+  }
+  // Mutual exclusion with `default` (design decision #2).
+  if (typeof vo['default'] === 'string' && vo['default'] !== '') {
+    return `${section}.default_split_files must not coexist with a non-empty "default"`
+  }
+  // Mutual exclusion with the encoder `defaults[]` bundle: the split branch
+  // `continue`s before bundle handling, so a combined entry would silently
+  // drop the bundle files.
+  if (vo['defaults'] !== undefined) {
+    return `${section}.default_split_files must not coexist with a "defaults" bundle`
+  }
+  return undefined
+}
+
 export function validateHubConfig(cfg: unknown): string | undefined {
   if (cfg === null || typeof cfg !== 'object' || Array.isArray(cfg)) {
     return 'hub config must be a JSON object'
@@ -206,6 +246,31 @@ export function validateHubConfig(cfg: unknown): string | undefined {
   }
   const repoObj = repo as Record<string, unknown>
 
+  // Optional: absent is valid; present-must-be-valid (repo.gated â€” gate tags
+  // for individual HuggingFace repos).
+  const gated = repoObj['gated']
+  if (gated !== undefined) {
+    if (!Array.isArray(gated)) return 'repo.gated must be an array'
+    for (let i = 0; i < gated.length; i++) {
+      const g = gated[i]
+      if (g === null || typeof g !== 'object' || Array.isArray(g)) {
+        return `repo.gated[${i}] must be an object`
+      }
+      const go = g as Record<string, unknown>
+      if (typeof go['url'] !== 'string' || go['url'] === '') {
+        return `repo.gated[${i}].url must be a non-empty string`
+      }
+      if (!Array.isArray(go['type']) || go['type'].length === 0) {
+        return `repo.gated[${i}].type must be a non-empty array`
+      }
+      for (const t of go['type'] as unknown[]) {
+        if (t !== 'token:tos' && t !== 'token:auth') {
+          return `repo.gated[${i}].type must contain only "token:tos" or "token:auth"`
+        }
+      }
+    }
+  }
+
   const vae = repoObj['vae']
   if (vae === null || typeof vae !== 'object' || Array.isArray(vae)) {
     return 'hub config "repo.vae" must be an object'
@@ -229,8 +294,13 @@ export function validateHubConfig(cfg: unknown): string | undefined {
     ) {
       return `repo.vae["${key}"].url must be a non-empty string starting with https://`
     }
-    if (typeof vo['default'] !== 'string' || vo['default'] === '') {
-      return `repo.vae["${key}"].default must be a non-empty string`
+    // Split-file shape: `default_split_files` + `default_split_file_name`
+    // replaces the single `default` (mutually exclusive — see the shared
+    // validator).
+    const splitErr = validateSplitShape(vo, `repo.vae["${key}"]`)
+    if (splitErr) return splitErr
+    if (vo['default_split_files'] === undefined && (typeof vo['default'] !== 'string' || vo['default'] === '')) {
+      return `repo.vae["${key}"].default must be a non-empty string (or carry a default_split_files split shape)`
     }
     if (vo['provider'] !== undefined && typeof vo['provider'] !== 'string') {
       return `repo.vae["${key}"].provider must be a string when present`
@@ -256,14 +326,20 @@ export function validateHubConfig(cfg: unknown): string | undefined {
     ) {
       return `repo.encoder["${key}"].url must be a non-empty string starting with https://`
     }
+    // Split-file shape: `default_split_files` + `default_split_file_name`
+    // replaces the single `default` (mutually exclusive with `default` and
+    // with the `defaults[]` bundle — see the shared validator).
+    const splitErr = validateSplitShape(eo, `repo.encoder["${key}"]`)
+    if (splitErr) return splitErr
     // Single-file (`default`) or bundle (`defaults`) — exactly one of the two
     // shapes is required; both may coexist (the catalog then emits entries for
-    // both), but neither may be malformed.
+    // both), but neither may be malformed. When the split shape is present the
+    // `default`/`defaults` requirement is waived (the split entry is default).
     const defaultOk = typeof eo['default'] === 'string' && eo['default'] !== ''
     const defaultsRaw: unknown = eo['defaults']
     const defaultsOk = Array.isArray(defaultsRaw) && defaultsRaw.length > 0
-    if (!defaultOk && !defaultsOk) {
-      return `repo.encoder["${key}"] must carry a non-empty "default" string or a non-empty "defaults" array`
+    if (!defaultOk && !defaultsOk && eo['default_split_files'] === undefined) {
+      return `repo.encoder["${key}"] must carry a non-empty "default" string, a non-empty "defaults" array, or a default_split_files split shape`
     }
     // Validate the bundle whenever the key is present — even alongside a
     // valid `default` — so a malformed bundle is never silently half-consumed.
@@ -340,8 +416,13 @@ export function validateHubConfig(cfg: unknown): string | undefined {
       ) {
         return `repo.vision["${key}"].url must be a non-empty string starting with https://`
       }
-      if (typeof vo['default'] !== 'string' || vo['default'] === '') {
-        return `repo.vision["${key}"].default must be a non-empty string`
+      // Split-file shape: `default_split_files` + `default_split_file_name`
+      // replaces the single `default` (mutually exclusive — see the shared
+      // validator).
+      const splitErr = validateSplitShape(vo, `repo.vision["${key}"]`)
+      if (splitErr) return splitErr
+      if (vo['default_split_files'] === undefined && (typeof vo['default'] !== 'string' || vo['default'] === '')) {
+        return `repo.vision["${key}"].default must be a non-empty string (or carry a default_split_files split shape)`
       }
       if (vo['provider'] !== undefined && typeof vo['provider'] !== 'string') {
         return `repo.vision["${key}"].provider must be a string when present`
@@ -401,8 +482,13 @@ export function validateHubConfig(cfg: unknown): string | undefined {
       ) {
         return `repo.audio_encoder["${key}"].url must be a non-empty string starting with https://`
       }
-      if (typeof vo['default'] !== 'string' || vo['default'] === '') {
-        return `repo.audio_encoder["${key}"].default must be a non-empty string`
+      // Split-file shape: `default_split_files` + `default_split_file_name`
+      // replaces the single `default` (mutually exclusive — see the shared
+      // validator).
+      const splitErr = validateSplitShape(vo, `repo.audio_encoder["${key}"]`)
+      if (splitErr) return splitErr
+      if (vo['default_split_files'] === undefined && (typeof vo['default'] !== 'string' || vo['default'] === '')) {
+        return `repo.audio_encoder["${key}"].default must be a non-empty string (or carry a default_split_files split shape)`
       }
       if (vo['provider'] !== undefined && typeof vo['provider'] !== 'string') {
         return `repo.audio_encoder["${key}"].provider must be a string when present`
@@ -433,8 +519,13 @@ export function validateHubConfig(cfg: unknown): string | undefined {
       ) {
         return `repo.audio_vae["${key}"].url must be a non-empty string starting with https://`
       }
-      if (typeof vo['default'] !== 'string' || vo['default'] === '') {
-        return `repo.audio_vae["${key}"].default must be a non-empty string`
+      // Split-file shape: `default_split_files` + `default_split_file_name`
+      // replaces the single `default` (mutually exclusive — see the shared
+      // validator).
+      const splitErr = validateSplitShape(vo, `repo.audio_vae["${key}"]`)
+      if (splitErr) return splitErr
+      if (vo['default_split_files'] === undefined && (typeof vo['default'] !== 'string' || vo['default'] === '')) {
+        return `repo.audio_vae["${key}"].default must be a non-empty string (or carry a default_split_files split shape)`
       }
       if (vo['provider'] !== undefined && typeof vo['provider'] !== 'string') {
         return `repo.audio_vae["${key}"].provider must be a string when present`

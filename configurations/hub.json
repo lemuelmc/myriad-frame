@@ -17,44 +17,45 @@
     "video_upscaler": {"text_input": false, "accepts": ["*.jpg, *.jpeg, *.png, *.mp4, *.mov, *.avi"]}
   },
   "model_families": [
-    { "name": "qwen_image_2_1", "label": "Qwen Image 2.1", "type": "image_unified" },
-    { "name": "z_image", "label": "Z-Image Turbo", "type": "text_to_image" },
-    { "name": "sd3_5", "label": "SD3.5", "type": "text_to_image" },
-    { "name": "krea2", "label": "Krea 2", "type": "text_to_image" },
-    { "name": "sdxl", "label": "SDXL-1.0", "type": "text_to_image"},
-    { "name": "anima", "label": "Anima", "type": "text_to_image"},
-    { "name": "qwen_image_edit", "label": "Qwen Image Edit", "type": "image_edit" },
-    { "name": "flux_1", "label": "Flux 1", "type": "text_to_image"},
-    { "name": "flux_2", "label": "Flux 2", "type": "text_to_image"},
-    { "name": "flux_3", "label": "Flux 3", "type": "text_to_image"},
-    { "name": "flux_1_kontext", "label": "Flux 1 Kontext", "type": "image_edit"},
-    { "name": "moss_image", "label": "Moss Image", "type": "text_to_image"},
-    { "name": "wan2_1", "label": "WAN2.1", "type": "video" },
-    { "name": "wan2_2", "label": "WAN2.2", "type": "video" },
-    { "name": "wan2_2_ti2v", "label": "WAN2.2", "type": "image_to_video" },
-    { "name": "wan2_2_t2v", "label": "WAN2.2", "type": "text_to_video" },
-    { "name": "wan2_2_i2v", "label": "WAN2.2", "type": "image_to_video" },
-    { "name": "wan2_2_vace", "label": "WAN2.2", "type": "video_all_in_one" },
-    { "name": "wan2_2_s2v", "label": "WAN2.2", "type": "audio_to_video" },
-    { "name": "ltx_2_5", "label": "LTX 2.5", "type": "text_image_to_video", "runtime": "<= 1025" },
-    { "name": "sd1_5", "label": "SD1.5", "type": "text_to_image"},
-    { "name": "chroma", "label": "Chroma", "type": "text_to_image"},
-    { "name": "ernie_image", "label": "ERNIE Image", "type": "text_to_image"},
-    { "name": "mistral_3_3b_instruct_2512", "label": "Mistral-3-3B-Instruct-2512", "type": "llm" },
-    { "name": "highdream_o1_image", "label": "HiDream O1", "type": "image_unified" },
-    { "name": "hunyuan_video_1_5", "label": "Hunyuan Video 1.5", "type": "text_to_video" },
-    { "name": "qwen2_5_vl_7b_instruct", "label": "Qwen2.5-VL-7b-Instruct", "type": "llm"},
-    { "name": "byt5_small_glyphxl", "label": "byt5_small_glyphxl", "type": "glpyh"},
-    { "name": "ideogram_4", "label": "Ideogram 4", "type": "text_to_image" },
-    { "name": "iris_3b", "label": "Iris 3B", "type": "text_to_image" },
-    { "name": "ming_image", "label": "Ming Image", "type": "text_to_image" },
-    { "name": "mini_max_h3", "label": "MiniMax-H3", "type": "video_all_in_one" },
-    { "name": "mini_max_h3_image", "label": "MiniMax-H3 Image", "type": "text_to_image" },
-    { "name": "boogu_image", "label": "Boogu Image", "type": "text_to_image" },
-    { "name": "qwen3_vl_8b_instruct", "label": "Qwen3 VL 8b Instruct", "type": "llm"},
-    { "name": "qwen3_vl_4b_instruct", "label": "Qwen3 VL 4b Instruct", "type": "llm"},
-    { "name": "fibo_2_0", "label": "Fibo 2.0", "type": "text_to_image" },
-    { "name": "seedvr2", "label": "SeedVR2", "type": "video_upscaler" }
+    { "name": "qwen_image_2_1", "label": "Qwen Image 2.1", "type": "image_unified", "description": "High-quality text-to-image with strong prompt adherence and image editing" },
+    { "name": "z_image", "label": "Z-Image Turbo", "type": "text_to_image", "description": "Fast single-step text-to-image generation" },
+    { "name": "sd3_5", "label": "SD3.5", "type": "text_to_image", "description": "Stability AI's latest text-to-image model with advanced prompting" },
+    { "name": "krea2", "label": "Krea 2", "type": "text_to_image", "description": "Real-time AI image generation with creative control" },
+    { "name": "sdxl", "label": "SDXL-1.0", "type": "text_to_image", "description": "High-quality Stable Diffusion XL for photorealistic and artistic images" },
+    { "name": "anima", "label": "Anima", "type": "text_to_image", "description": "Anime-style image generation with rich visual detail" },
+    { "name": "qwen_image_edit", "label": "Qwen Image Edit", "type": "image_edit", "description": "Edit and refine images using natural language instructions" },
+    { "name": "flux_1", "label": "Flux 1", "type": "text_to_image", "description": "High-fidelity text-to-image with exceptional detail and composition" },
+    { "name": "flux_2", "label": "Flux 2", "type": "text_to_image", "description": "Advanced Flux model with improved realism and prompt adherence" },
+    { "name": "flux_3", "label": "Flux 3", "type": "text_to_image", "description": "Latest Flux generation with enhanced quality and speed" },
+    { "name": "flux_1_kontext", "label": "Flux 1 Kontext", "type": "image_edit", "description": "Flux-based image inpainting and context-aware editing" },
+    { "name": "moss_image", "label": "Moss Image", "type": "text_to_image", "description": "Versatile text-to-image model with strong artistic capability" },
+    { "name": "wan2_1", "label": "WAN2.1", "type": "video", "description": "Video generation all-in-one with high motion quality" },
+    { "name": "wan2_2", "label": "WAN2.2", "type": "video", "description": "Video generation with enhanced motion and temporal consistency" },
+    { "name": "wan2_2_ti2v", "label": "WAN2.2", "type": "image_to_video", "description": "Animate static images into dynamic video sequences" },
+    { "name": "wan2_2_t2v", "label": "WAN2.2", "type": "text_to_video", "description": "Generate video from text descriptions with high motion quality" },
+    { "name": "wan2_2_i2v", "label": "WAN2.2", "type": "image_to_video", "description": "Transform images into video with controlled motion" },
+    { "name": "wan2_2_vace", "label": "WAN2.2", "type": "video_all_in_one", "description": "Video editing and generation all-in-one with flexible inputs" },
+    { "name": "wan2_2_s2v", "label": "WAN2.2", "type": "audio_to_video", "description": "Generate video synchronized to audio input" },
+    { "name": "ltx_2_5", "label": "LTX 2.5", "type": "text_image_to_video", "description": "Text and image-guided video generation with fast rendering" },
+    { "name": "sd1_5", "label": "SD1.5", "type": "text_to_image", "description": "Classic Stable Diffusion for fast, reliable image generation" },
+    { "name": "chroma", "label": "Chroma", "type": "text_to_image", "description": "Vibrant, color-rich image generation with artistic flair" },
+    { "name": "ernie_image", "label": "ERNIE Image", "type": "text_to_image", "description": "Baidu's Chinese-language optimized text-to-image model" },
+    { "name": "mistral_3_3b_instruct_2512", "label": "Mistral-3-3B-Instruct-2512", "type": "llm", "description": "Lightweight LLM for prompt enhancement and instruction following" },
+    { "name": "highdream_o1_image", "label": "HiDream O1", "type": "image_unified", "description": "Unified image model with high-quality generation capability" },
+    { "name": "hunyuan_video_1_5", "label": "Hunyuan Video 1.5", "type": "text_to_video", "description": "Tencent's text-to-video model with cinematic quality" },
+    { "name": "qwen2_5_vl_7b_instruct", "label": "Qwen2.5-VL-7b-Instruct", "type": "llm", "description": "Vision-language model for image understanding and captioning" },
+    { "name": "byt5_small_glyphxl", "label": "byt5_small_glyphxl", "type": "glpyh", "description": "Glyph-aware text encoding for stylized typography generation" },
+    { "name": "ideogram_4", "label": "Ideogram 4", "type": "text_to_image", "description": "Premium text-to-image with excellent typography and composition" },
+    { "name": "iris_3b", "label": "Iris 3B", "type": "text_to_image", "description": "Compact text-to-image model with balanced quality and speed" },
+    { "name": "ming_image", "label": "Ming Image", "type": "text_to_image", "description": "Chinese-style image generation with cultural aesthetics" },
+    { "name": "mini_max_h3", "label": "MiniMax-H3", "type": "video_all_in_one", "description": "All-in-one video generation with stereo audio support" },
+    { "name": "mini_max_h3_image", "label": "MiniMax-H3 Image", "type": "text_to_image", "description": "MiniMax image generation with high fidelity and detail" },
+    { "name": "boogu_image", "label": "Boogu Image", "type": "text_to_image", "description": "Boogu DiT with Qwen3-VL encoder for text-to-image generation" },
+    { "name": "qwen3_vl_8b_instruct", "label": "Qwen3 VL 8b Instruct", "type": "llm", "description": "Large vision-language model for advanced image understanding" },
+    { "name": "qwen3_vl_4b_instruct", "label": "Qwen3 VL 4b Instruct", "type": "llm", "description": "Compact vision-language model for efficient image analysis" },
+    { "name": "fibo_2_0", "label": "Fibo 2.0", "type": "text_to_image", "description": "Fast image generation with editing capability via FLUX.2 VAE" },
+    { "name": "seedvr2", "label": "SeedVR2", "type": "video_upscaler", "description": "Video upscaling with spatial latent enhancement" },
+    { "name": "pixart_sigma", "label": "PixArt Sigma", "type": "text_to_image", "description": "PixArt-Sigma DiT-based text-to-image model", "tags": ["experimental"] }
   ],
   "llm_models": [
     { "name": "gemma_3_1b_it", "label": "Gemma 3 1B IT" }
@@ -128,9 +129,13 @@
     {"name": "alibaba_pai", "label": "Alibaba-pai"},
     {"name": "webui", "label": "WebUI"},
     {"name": "thibaud", "label": "Thibaud"},
-    {"name": "elix3r", "label": "elix3r"}
+    {"name": "elix3r", "label": "elix3r"},
+    {"name": "pixart_alpha", "label": "PixArt-alpha"}
   ],
   "repo": {
+    "gated": [
+      {"url": "https://huggingface.co/elix3r/*", "type": ["token:tos"]}
+    ],
     "vae": {
       "qwen_image_2_1": {
         "provider": "unsloth",
@@ -256,6 +261,12 @@
         "provider": "comfy_org",
         "url": "https://huggingface.co/Comfy-Org/SeedVR2",
         "default": "/vae/seedvr2_ema_vae_fp16.safetensors",
+        "path": "/vae"
+      },
+      "pixart_sigma": {
+        "provider": "pixart_alpha",
+        "url": "https://huggingface.co/PixArt-alpha/PixArt-Sigma-XL-2-1024-MS",
+        "default": "/vae/diffusion_pytorch_model.safetensors",
         "path": "/vae"
       }
     },
@@ -409,6 +420,17 @@
         "url": "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF",
         "default": "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
         "path": "/"
+      },
+      "pixart_sigma": {
+        "provider": "pixart_alpha",
+        "url": "https://huggingface.co/PixArt-alpha/PixArt-Sigma-XL-2-1024-MS",
+        "path": "/text_encoder",
+        "default_split_files": [
+          "/text_encoder/model-00001-of-00002.safetensors",
+          "/text_encoder/model-00002-of-00002.safetensors"
+        ],
+        "default_split_file_name": "model.safetensors",
+        "use_as": "t5xxl"
       }
     },
     "audio_encoder": {
@@ -1776,6 +1798,17 @@
         "family": "ltx_2_5",
         "url": "https://huggingface.co/Abiray/LTX-2.5-Distilled-GGUF",
         "path": "/"
+      },
+      {
+        "provider": "pixart_alpha",
+        "name": "pixart_alpha_pixart_sigma_xl_2_1024_ms",
+        "label": "PixArt-alpha/PixArt Sigma XL-2",
+        "description": "PixArt-Sigma XL-2 1024-MS DiT text-to-image model (Experimental)",
+        "inference_type": "text_to_image",
+        "quant_type": "safetensor",
+        "family": "pixart_sigma",
+        "url": "https://huggingface.co/PixArt-alpha/PixArt-Sigma-XL-2-1024-MS",
+        "path": "/transformer"
       }
     ]
   }

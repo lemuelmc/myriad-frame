@@ -85,6 +85,103 @@ export function accessForFamily(diffusionType: string): 'auth' | 'gated' | undef
   const access = models.find((m) => m.name === diffusionType)?.access
   return access === 'auth' || access === 'gated' ? access : undefined
 }
+/**
+ * Resolve the gate types for a catalog entry's URL from the FRESH hub config
+ * (`repo.gated[]`): wildcard prefix-match the entry URL against each pattern;
+ * the first match wins. Returns the matched entry's `type` array, or undefined
+ * when no pattern matches.
+ */
+export function gateTypesForUrl(url: string): ('token:tos' | 'token:auth')[] | undefined {
+  const appStore = useAppStore()
+  const gated = appStore.configs?.hub.repo.gated ?? []
+  for (const g of gated) {
+    if (g.url.endsWith('*')) {
+      if (url.startsWith(g.url.slice(0, -1))) return g.type
+    } else if (url === g.url) {
+      return g.type
+    }
+  }
+  return undefined
+}
+
+/**
+ * Combined gate badge for a catalog entry: repo.gated[] URL match takes
+ * precedence over model_families[].access. Returns 'Gated' (token + ToS),
+ * 'Auth' (token only), or null (free).
+ */
+export function gateBadgeFor(e: CatalogEntry): 'Auth' | 'Gated' | null {
+  const types = gateTypesForUrl(e.url)
+  if (types) {
+    return types.includes('token:tos') ? 'Gated' : 'Auth'
+  }
+  // Fallback: family-level access (existing behavior)
+  const a = accessForFamily(e.diffusionType)
+  if (!a) return null
+  return a === 'gated' ? 'Gated' : 'Auth'
+}
+
+
+/** The human-readable family label (e.g. "Qwen Image 2.1") from the fresh hub config. */
+export function familyLabel(diffusionType: string): string | undefined {
+  const appStore = useAppStore()
+  return appStore.configs?.hub.model_families.find((m) => m.name === diffusionType)?.label
+}
+
+/** The layman family description from the fresh hub config. */
+export function familyDescription(diffusionType: string): string | undefined {
+  const appStore = useAppStore()
+  return appStore.configs?.hub.model_families.find((m) => m.name === diffusionType)?.description
+}
+
+/**
+ * The custom tags stamped on a diffusion family in hub.json
+ * (`model_families[].tags`, e.g. ["experimental"]). Read from the FRESH hub
+ * config (`app:configs`) — the same stale-cache immunity as `familyLabel` —
+ * so a newly configured family's tags appear immediately, without a catalog
+ * rescan. Returns `[]` when the family has no `tags` (or the field is
+ * malformed), so callers can `v-for` over it directly.
+ */
+export function familyTags(diffusionType: string): string[] {
+  const appStore = useAppStore()
+  const tags = appStore.configs?.hub.model_families.find((m) => m.name === diffusionType)?.tags
+  return Array.isArray(tags) ? tags : []
+}
+
+
+/**
+ * The human-readable provider label (e.g. "CircleStone Labs") for a catalog
+ * entry provider key, read from the fresh hub config (app:configs), so the model
+ * chip shows a friendly provider name instead of the raw key. Falls back to the
+ * raw key, or "Unknown" when no provider is present.
+ */
+export function familyProviderLabel(provider: string | undefined): string {
+  const appStore = useAppStore()
+  const providers = appStore.configs?.hub.providers ?? []
+  if (!provider) return "Unknown"
+  const match = providers.find((p) => p.name === provider)
+  return match?.label ?? provider
+}
+
+const INFERENCE_TYPE_LABELS: Record<string, string> = {
+  text_to_image: 'Image',
+  image_unified: 'Image',
+  image_to_image: 'Image',
+  image_edit: 'Image Edit',
+  image_to_video: 'Image → Video',
+  text_to_video: 'Text → Video',
+  video: 'Video',
+  video_all_in_one: 'Video (All-in-One)',
+  text_image_to_video: 'Text/Image → Video',
+  audio_to_video: 'Audio → Video',
+  video_upscaler: 'Video Upscaler',
+  llm: 'LLM',
+  glpyh: 'Glyph',
+}
+
+/** Map a raw inference type key to a display-friendly label. */
+export function inferenceTypeLabel(type: string): string {
+  return INFERENCE_TYPE_LABELS[type] ?? type
+}
 
 /** A bundle descriptor: a full catalog entry plus the guaranteed `useAs` flag name. */
 export type EncoderBundleEntry = CatalogEntry & { useAs: string }

@@ -237,7 +237,7 @@ async function runInitPipeline(win: BrowserWindow): Promise<void> {
   // swallowed inside the check (an offline launch must not nag). The notify
   // callback broadcasts `app:available` to all windows; each send is guarded
   // like `send` above so a fast-closed window cannot crash the check.
-  void checkForAppUpdate((available) => {
+  void checkForAppUpdate().then((available) => {
     if (!available) return
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send('app:available', available)

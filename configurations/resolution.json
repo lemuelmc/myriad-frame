@@ -252,6 +252,15 @@
       {"label": "3:2 Portrait (2K)", "aspect": "3:2", "orientation": "portrait", "width": 1696, "height": 2528 },
       {"label": "4:3 Portrait (2K)", "aspect": "4:3", "orientation": "portrait", "width": 1792, "height": 2400 },
       {"label": "9:16 Portrait (2K)", "aspect": "9:16", "orientation": "portrait", "width": 1536, "height": 2752 }
+    ],
+    "pixart_sigma": [
+      {"label": "1:1 Square (1K)", "aspect": "1:1", "orientation": "none", "width": 1024, "height": 1024 },
+      {"label": "4:3 Landscape (1K)", "aspect": "4:3", "orientation": "landscape", "width": 1152, "height": 864 },
+      {"label": "3:2 Landscape (1K)", "aspect": "3:2", "orientation": "landscape", "width": 1248, "height": 832 },
+      {"label": "16:9 Landscape (1K)", "aspect": "16:9", "orientation": "landscape", "width": 1536, "height": 864 },
+      {"label": "3:2 Portrait (1K)", "aspect": "3:2", "orientation": "portrait", "width": 832, "height": 1248 },
+      {"label": "4:3 Portrait (1K)", "aspect": "4:3", "orientation": "portrait", "width": 864, "height": 1152 },
+      {"label": "9:16 Portrait (1K)", "aspect": "9:16", "orientation": "portrait", "width": 864, "height": 1536 }
     ]
   }
 }

@@ -10,7 +10,7 @@ import type { CatalogEntry } from '@shared/types'
 import { useAppStore } from '../stores/app'
 import { useSettingsStore } from '../stores/settings'
 import { matchesSearch, providerLabel } from '../search'
-import { accessForFamily } from '../deps'
+import { gateBadgeFor, familyLabel, familyDescription, familyTags, inferenceTypeLabel } from '../deps'
 import { toast } from '../toast'
 
 const props = defineProps<{ selected: CatalogEntry | null }>()
@@ -91,7 +91,14 @@ const totalCount = computed(() => groupEntries(diffusionEntries.value).length)
 // hub.json order followed by HF tree order, which is not stable across scans.
 const rows = computed<PickerRow[]>(() => {
   const q = search.value
-  const list = diffusionEntries.value.filter((e) => !q || matchesSearch(e, q, hubProviders.value))
+  const list = diffusionEntries.value.filter((e) =>
+    !q ||
+    matchesSearch(e, q, hubProviders.value, [
+      familyLabel(e.diffusionType),
+      familyDescription(e.diffusionType),
+      ...familyTags(e.diffusionType),
+    ])
+  )
   return groupEntries(list).sort((a, b) => {
     const pa = a.primary
     const pb = b.primary
@@ -119,14 +126,13 @@ function baseName(name: string): string {
  * token requirement.
  */
 function accessBadge(e: CatalogEntry): 'Auth' | 'Gated' | null {
-  const a = accessForFamily(e.diffusionType)
-  if (!a) return null
-  return a === 'gated' ? 'Gated' : 'Auth'
+  return gateBadgeFor(e)
 }
 
 /** Hover text for the access badge — what it requires + where to configure the token. */
 function accessTitle(e: CatalogEntry): string {
-  return accessForFamily(e.diffusionType) === 'gated'
+  const badge = gateBadgeFor(e)
+  return badge === 'Gated'
     ? 'Gated model — requires a token AND accepting the terms/license on the model page. Configure a token (Settings → Tokens)'
     : 'Requires authentication — configure a token (Settings → Tokens)'
 }
@@ -215,7 +221,7 @@ onBeforeUnmount(() => {
           v-model="query"
           class="picker-search"
           type="text"
-          placeholder="Search by name, family, quant, provider, description…"
+          placeholder="Search by name, family, description, quant, provider…"
         />
 
         <div v-if="!totalCount" class="empty-state">
@@ -239,9 +245,14 @@ onBeforeUnmount(() => {
             >
               <div class="item-main">
                 <div class="title-row">
-                  <span class="mono model-name">{{ baseName(row.label) }}</span>
-                  <span class="tag">{{ row.primary.diffusionType }}</span>
-                  <span v-if="row.primary.quant" class="tag">{{ row.primary.quant }}</span>
+                  <span class="family-label">{{ familyLabel(row.primary.diffusionType) ?? baseName(row.label) }}</span>
+                  <span class="tag" :title="inferenceTypeLabel(row.primary.diffusionType)">{{ inferenceTypeLabel(row.primary.diffusionType) }}</span>
+                  <span
+                    v-for="tag in familyTags(row.primary.diffusionType)"
+                    :key="tag"
+                    class="tag family-tag"
+                  >{{ tag }}</span>
+                  <span v-if="row.primary.quant" class="tag" :title="row.primary.description">{{ row.primary.quant }}</span>
                   <span
                     v-if="row.isMoe"
                     class="tag"
@@ -261,13 +272,14 @@ onBeforeUnmount(() => {
                   <span v-else-if="isInstalled(row)" class="status-tag status-ok">Downloaded</span>
                   <span v-else class="status-tag status-none">Not Downloaded</span>
                 </div>
+                <div v-if="familyDescription(row.primary.diffusionType)" class="item-desc">
+                  {{ familyDescription(row.primary.diffusionType) }}
+                </div>
                 <div class="item-sub">
                   <span class="provider">{{ providerLabel(row.primary.provider, hubProviders) }}</span>
                   <span v-if="row.primary.size" class="faint"> · {{ fmtBytes(row.primary.size) }}</span>
-                  <template v-if="row.primary.description">
-                    <span class="sep">·</span>
-                    <span class="desc">{{ row.primary.description }}</span>
-                  </template>
+                  <span class="sep">·</span>
+                  <span class="mono faint">{{ baseName(row.primary.name) }}</span>
                 </div>
               </div>
               <button
@@ -372,12 +384,10 @@ onBeforeUnmount(() => {
   row-gap: 4px;
   flex-wrap: wrap;
 }
-.model-name {
-  font-size: 13px;
+.family-label {
+  font-size: 14px;
+  font-weight: 600;
   color: var(--text);
-  /* Long filenames wrap instead of clipping — the name is the primary
-     scanning key, so it must never be ellipsized away. */
-  overflow-wrap: anywhere;
 }
 .tag {
   font-size: 11px;
@@ -387,6 +397,14 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-sm);
   padding: 0 6px;
   white-space: nowrap;
+}
+/* Custom family tag (hub.json model_families[].tags) — a warm accent tone
+   distinct from the neutral quant/inference tags and the accent-colored
+   access badge, so a family's own tags read as their own category. */
+.tag.family-tag {
+  color: var(--family-tag);
+  border-color: var(--family-tag);
+  background: color-mix(in srgb, var(--family-tag) 12%, transparent);
 }
 /* Auth/access marker — accent-colored so it stands out from the neutral
    family/quant tags. Covers BOTH the CivitAI source badge and the hub.json
@@ -412,21 +430,30 @@ onBeforeUnmount(() => {
   color: var(--ok);
   border-color: var(--ok);
 }
+.item-desc {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .item-sub {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.5;
-  color: var(--text-dim);
+  color: var(--text-faint);
 }
 .item-sub .provider {
   font-weight: 600;
+  color: var(--text-dim);
 }
 .item-sub .sep {
   margin: 0 5px;
   color: var(--text-faint);
 }
-.item-sub .desc {
-  overflow-wrap: anywhere;
+.item-sub .mono {
+  font-family: var(--font-mono);
 }
 .set-default {
   flex-shrink: 0;

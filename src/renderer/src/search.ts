@@ -65,8 +65,21 @@ export function baseName(name: string): string {
   return name.split('/').pop() ?? name
 }
 
-export function matchesSearch(e: CatalogEntry, q: string, providers: HubProvider[]): boolean {
+export function matchesSearch(
+  e: CatalogEntry,
+  q: string,
+  providers: HubProvider[],
+  extraHaystacks?: (string | undefined)[]
+): boolean {
   const needle = normalizeForSearch(q)
-  const haystacks = [e.name, e.label, e.quant, providerLabel(e.provider, providers), e.description, e.diffusionType]
+  const haystacks = [
+    e.name,
+    e.label,
+    e.quant,
+    providerLabel(e.provider, providers),
+    e.description,
+    e.diffusionType,
+    ...(extraHaystacks ?? []),
+  ]
   return haystacks.some((h) => normalizeForSearch(h ?? '').includes(needle))
 }

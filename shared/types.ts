@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Myriad Frame — Electron + Vue 3 desktop front-end for sd-cli (stable-diffusion.cpp).
  * Author: Lemuel Raganas
  * License: Apache License 2.0 — permissive; allows use, modification, and distribution
@@ -55,6 +55,27 @@ export interface HubDiffusionModel {
    * configured family badges without a catalog rescan.
    */
   access?: 'auth' | 'gated' | null
+  /** Short layman description of the family's capability (shown in the model picker). */
+  description?: string
+  /**
+   * Optional custom tags for the family (e.g. ["experimental"]). Surfaced as
+   * accent-colored badges in the model picker and Settings → Models, read from
+   * the FRESH hub config (`familyTags()` in renderer deps.ts) so a newly
+   * configured family's tags appear without a catalog rescan. Absent/null = no tags.
+   */
+  tags?: string[]
+}
+
+/**
+ * A repo-level gate entry from hub.json `repo.gated[]`: tags individual HuggingFace
+ * repos (not entire families) with download gate requirements. URL patterns use a
+ * trailing `*` for prefix matching (e.g. "https://huggingface.co/elix3r/*").
+ */
+export interface HubGatedEntry {
+  /** Wildcard URL pattern (trailing `*` = prefix match), e.g. "https://huggingface.co/elix3r/*" */
+  url: string
+  /** Gate types that apply to matching repos */
+  type: ('token:tos' | 'token:auth')[]
 }
 
 /**
@@ -214,6 +235,15 @@ export interface HubEncoderEntry {
    * behavior). '/' selects the repo root's direct children.
    */
   path?: string
+  /**
+   * Split-file shape: an array of repo-relative file paths (or full URLs)
+   * that are downloaded individually and concatenated (in order) into a
+   * single file. Mutually exclusive with `default` — an entry carries ONE of
+   * the two.
+   */
+  default_split_files?: string[]
+  /** The combined output filename (e.g. 'model.safetensors'). Required when `default_split_files` is set. */
+  default_split_file_name?: string
 }
 
 /** VAE entry from hub.json repo.vae. */
@@ -221,8 +251,21 @@ export interface HubVaeEntry {
   /** provider key (e.g. 'unsloth', 'black_forest_labs') — selects the download subdirectory */
   provider?: string
   url: string
-  /** repo-relative file path (or full URL) of the default VAE */
-  default: string
+  /**
+   * Single-file shape: repo-relative file path (or full URL) of the default
+   * VAE. Optional — a split-file entry (`default_split_files`) carries no
+   * `default` (the split-file entry is the default).
+   */
+  default?: string
+  /**
+   * Split-file shape: an array of repo-relative file paths (or full URLs)
+   * that are downloaded individually and concatenated (in order) into a
+   * single file. Mutually exclusive with `default` — an entry carries ONE of
+   * the two.
+   */
+  default_split_files?: string[]
+  /** The combined output filename (e.g. 'model.safetensors'). Required when `default_split_files` is set. */
+  default_split_file_name?: string
   /**
    * Optional repo-relative folder whose direct children are scanned for VAE
    * rows (a scan instruction, not the resolved default). Absent → the repo
@@ -250,8 +293,21 @@ export interface HubVisionEntry {
   provider?: string
   label?: string
   url: string
-  /** repo-relative file path (or full URL) of the default vision (mmproj) model */
-  default: string
+  /**
+   * Single-file shape: repo-relative file path (or full URL) of the default
+   * vision (mmproj) model. Optional — a split-file entry (`default_split_files`)
+   * carries no `default` (the split-file entry is the default).
+   */
+  default?: string
+  /**
+   * Split-file shape: an array of repo-relative file paths (or full URLs)
+   * that are downloaded individually and concatenated (in order) into a
+   * single file. Mutually exclusive with `default` — an entry carries ONE of
+   * the two.
+   */
+  default_split_files?: string[]
+  /** The combined output filename (e.g. 'model.safetensors'). Required when `default_split_files` is set. */
+  default_split_file_name?: string
   /**
    * Optional model-source override: a source name (`huggingface`) or a domain
    * (`huggingface.co`) that forces source selection regardless of the URL
@@ -398,8 +454,21 @@ export interface HubAudioEncoderEntry {
   provider?: string
   label?: string
   url: string
-  /** repo-relative file path (or full URL) of the audio encoder */
-  default: string
+  /**
+   * Single-file shape: repo-relative file path (or full URL) of the audio
+   * encoder. Optional — a split-file entry (`default_split_files`) carries no
+   * `default` (the split-file entry is the default).
+   */
+  default?: string
+  /**
+   * Split-file shape: an array of repo-relative file paths (or full URLs)
+   * that are downloaded individually and concatenated (in order) into a
+   * single file. Mutually exclusive with `default` — an entry carries ONE of
+   * the two.
+   */
+  default_split_files?: string[]
+  /** The combined output filename (e.g. 'model.safetensors'). Required when `default_split_files` is set. */
+  default_split_file_name?: string
   /** Optional model-source override (same semantics as the other repo sections). */
   source?: string
   /** Optional domain override (see `source`); `source` wins when both are set. */
@@ -527,6 +596,13 @@ export interface HubConfig {
     clip_vision?: HubClipVisionEntry[]
     /** downloadable Control Net weights; optional so older hub.json overrides without it stay valid */
     control_net?: HubControlNetEntry[]
+    /**
+     * Repo-level gate tags: individual HuggingFace repos can be tagged with
+     * gate types (token:auth = requires API token, token:tos = token + ToS
+     * acceptance). Takes precedence over model_families[].access. Optional so
+     * older hub.json overrides without it stay valid.
+     */
+    gated?: HubGatedEntry[]
   }
 }
 
@@ -613,8 +689,9 @@ export interface SamplingDefaults {
   /** paint-tool support (composer Paint button) */
   allow_painting: { show: boolean }
   /** image upscale (hover/lightbox "Upscale image…" button) — `show` gates the
-   *  button (configurations/sampling.json) */
-  image_upscaler: { show: boolean }
+   *  button (configurations/sampling.json); `accepts` (glob list) restricts the
+   *  button to previewed paths whose extension matches one of the globs */
+  image_upscaler: { show: boolean; accepts?: string[] | null }
   /** previous-image chaining (composer 'Use previous image' checkbox):
    *  `show` gates the checkbox + its As input/As Reference dropdown and
    *  `default` is the checkbox's initial checked state */
@@ -1035,6 +1112,13 @@ export interface CatalogEntry {
    * at download time.
    */
   source?: string
+  /**
+   * Split-file source paths (repo-relative) — present when this entry is a
+   * split-file composite.
+   */
+  splitFiles?: string[]
+  /** The combined output filename for a split-file entry. */
+  splitFileName?: string
 }
 
 export interface HubCatalog {
@@ -1079,6 +1163,100 @@ export interface ChatMessage {
   /** legacy only — raw error text is no longer persisted or rendered; errors live in the log + toasts */
   error?: string
   createdAt: number
+  /**
+   * Full per-generation record — the exact parameters this turn was generated
+   * with. Built by gen:start (ipc.ts) from the resolved request + session
+   * inputs. Optional — legacy messages lack it. Read by "Copy and apply" and
+   * available for future history/export/diff features.
+   */
+  generation?: GenerationRecord
+}
+
+/** A complete snapshot of every parameter a turn was generated with. */
+export interface GenerationRecord {
+  /** timestamp the generation was created (ms since epoch) */
+  createdAt: number
+  /** diffusion model file name + identity */
+  model: string
+  diffusionType: string
+  modelProvider?: string
+  diffusionName?: string
+  /** companion model file names (vae / encoder / vision / tokenizer / audio…) */
+  vae?: string
+  vaeProvider?: string
+  encoder?: string
+  encoderProvider?: string
+  /** encoder bundle (SD3.5-style `defaults[]`): each file with its CLI flag
+   *  name. Present for bundle-based diffusion types (e.g. Qwen Image's
+   *  clip_g + t5xxl); absent for the single-file legacy path. Without this a
+   *  bundle model's full companion set is not preserved in the record. */
+  encoders?: EncoderRef[]
+  vision?: string
+  tokenizer?: string
+  audioEncoder?: string
+  audioVae?: string
+  audioVaeProvider?: string
+  latentUpscaler?: string
+  latentUpscalerProvider?: string
+  /** resolved generation mode (vid_gen / seedvr_upscale) — absent ⇒ img_gen */
+  genMode?: string
+  /** resolution */
+  resolution: { width: number; height: number }
+  /** reference + input image channels (kept separate here; refs array on the
+   *  message merges them — see note) */
+  referencePaths: string[]
+  inputImagePaths: string[]
+  /** video-era channels */
+  audioPath?: string
+  audioReferencePaths?: string[]
+  controlVideoPath?: string
+  endImagePath?: string
+  videoReferencePaths?: string[]
+  videoInputPath?: string
+  /** sampling scalar overrides (the flat values merged into descriptor defaults) */
+  steps?: number | null
+  cfg?: number | null
+  sampler?: string | null
+  scheduler?: string
+  flowShift?: number | '' | null
+  strength?: number | null
+  highSteps?: number | null
+  highCfg?: number | null
+  highSampler?: string | null
+  frames?: number | null
+  frameRate?: number | null
+  upscale?: boolean
+  upscalerSteps?: number | null
+  upscaleFactor?: number | null
+  vsrTemporalChunkSize?: number | null
+  modelArgs?: string
+  /** resolved fixed seed (undefined ⇒ random this run) */
+  seed?: number | null
+  /** universal sd-cli args (session-only) */
+  args?: string
+  /** negative prompt (empty ⇒ inherit global default) */
+  negativePrompt?: string
+  /** global performance flags applied to this generation */
+  performance?: Partial<PerformanceSettings>
+  /** ADetailer / IP-Adapter / Control-Net enabled settings */
+  adetailer?: { adPrompt?: string; adNegativePrompt?: string }
+  ipAdapter?: { model: string; clipVision: string; image: string; strength?: number }
+  controlNet?: { model: string; image: string; strength?: number }
+  /** previous-image chaining */
+  usePrevious?: boolean
+  previousImageMode?: 'input' | 'reference'
+  previousImagePath?: string
+  /** mask / paint state */
+  maskPath?: string
+  initImagePath?: string
+  paintImagePath?: string
+  paintTarget?: 'init' | 'reference'
+  /** the session's saved inputs at generation time (full SessionInputs).
+   *  Retained for history + the sampling/negative restore (which reads the
+   *  snake_case shape setInputs wants); resolution is restored from the
+   *  record's own `resolution` field instead — see §The resolution restore
+   *  (staleness + type) below. */
+  sessionInputs?: SessionInputs
 }
 
 /** Composer inputs a session remembers. Optional — legacy session files lack it. */

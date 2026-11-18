@@ -65,6 +65,7 @@ import { DownloadAbortError, headSize } from './services/download'
 import {
   catalogEntriesForLocation,
   catalogHighNoiseCompanion,
+  catalogMetaForUrl,
   companionTargetsFor,
   createHubService
 } from './services/hub'
@@ -902,6 +903,14 @@ export function registerIpc(): void {
       const p = models.pathFor(type, name, provider, diffusionType, url)
       const exists = existsSync(p)
       const actual = exists ? statSync(p).size : 0
+      // Finding H: a `split:` URL carries no single HTTP resource to HEAD
+      // (https.request throws ERR_INVALID_PROTOCOL), which would reject this
+      // handler and break the Send path's ensureDownloaded await exactly when
+      // the split file IS installed. Skip the HEAD and trust the file — the
+      // same trust semantics the download manager's split short-circuit uses.
+      if (catalogMetaForUrl(url, type)?.splitFiles) {
+        return { ok: exists, actual, expected: 0, exists }
+      }
       // Authenticated probe: the models:verify HEAD runs OUTSIDE the download
       // manager, so the manager's two header threads never reach it. Without
       // headers a private repo's HEAD answers 401 → expected === 0 → the
@@ -1054,35 +1063,56 @@ export function registerIpc(): void {
         if (!existsSync(modelPath)) { reject(new Error(`Diffusion model not found: ${req.model}`)); return }
         const vaeRes = resolveCompanionPaths('vae', vaeCompanions, req.vae, req.vaeProvider, (f) => {
           const v = hubRepo.vae?.[f]
-          return v === undefined ? '' : typeof v === 'string' ? v : v.default
+          return v === undefined ? '' : typeof v === 'string' ? v : (v.default ?? v.default_split_file_name ?? '')
         })
         if (req.vae && vaeRes.resolved.length === 0) { reject(new Error(`VAE not found: ${req.vae}`)); return }
         noteMisses('vae', vaeRes.missing)
 
+        // Finding G: the hub entry's entry-level `use_as` is authoritative for
+        // the encoder flag. pixart_sigma declares no `requires` block, so every
+        // encoder path falls back to COMPANION_USE_AS_DEFAULTS.encoder ('llm')
+        // and would emit `--llm` instead of `--t5xxl`; stamp the entry-level
+        // use_as whenever the family's hub entry carries a non-default one.
+        const encoderUseAsOverride = (family: string): string | undefined => {
+          const ua = hubRepo.encoder?.[family]?.use_as
+          return typeof ua === 'string' && ua !== '' && ua !== COMPANION_USE_AS_DEFAULTS.encoder ? ua : undefined
+        }
         const encoderPaths: { path: string; useAs: string }[] = []
         if (req.encoders && req.encoders.length > 0) {
           for (const enc of req.encoders) {
             const comp = encoderCompanions.find((c) => c.useAs === enc.useAs) ?? encoderCompanions[0]
             const p = models.pathFor('encoder', enc.name, enc.provider, comp.from, expectUrlFor('encoder', comp.from, enc.provider, enc.name))
             if (!existsSync(p)) { reject(new Error(`Encoder not found: ${enc.name}`)); return }
-            encoderPaths.push({ path: p, useAs: enc.useAs })
+            const pickerUseAs = enc.useAs === COMPANION_USE_AS_DEFAULTS.encoder ? encoderUseAsOverride(comp.from) ?? enc.useAs : enc.useAs
+            encoderPaths.push({ path: p, useAs: pickerUseAs })
           }
         } else if (req.encoder) {
           const single = resolveCompanionPaths('encoder', [encoderCompanions[0]], req.encoder, req.encoderProvider)
           if (single.resolved.length === 0) { reject(new Error(`Encoder not found: ${req.encoder}`)); return }
-          encoderPaths.push(...single.resolved)
+          const singleOverride = encoderUseAsOverride(encoderCompanions[0].from)
+          encoderPaths.push(
+            ...singleOverride
+              ? single.resolved.map((r) => ({ path: r.path, useAs: singleOverride }))
+              : single.resolved
+          )
         } else {
-          const auto = resolveCompanionPaths('encoder', encoderCompanions, undefined, undefined, (f) => hubRepo.encoder?.[f]?.default ?? '')
-          encoderPaths.push(...auto.resolved)
+          const auto = resolveCompanionPaths('encoder', encoderCompanions, undefined, undefined, (f) => hubRepo.encoder?.[f]?.default ?? hubRepo.encoder?.[f]?.default_split_file_name ?? '')
+          encoderPaths.push(
+            ...auto.resolved.map((r) => {
+              const comp = encoderCompanions.find((c) => c.useAs === r.useAs)
+              const override = comp ? encoderUseAsOverride(comp.from) : undefined
+              return override ? { path: r.path, useAs: override } : r
+            })
+          )
           noteMisses('encoder', auto.missing)
         }
 
-        const audioEncoderRes = resolveCompanionPaths('audio_encoder', audioEncoderCompanions, req.audioEncoder, undefined, (f) => hubRepo.audio_encoder?.[f]?.default ?? '')
+        const audioEncoderRes = resolveCompanionPaths('audio_encoder', audioEncoderCompanions, req.audioEncoder, undefined, (f) => hubRepo.audio_encoder?.[f]?.default ?? hubRepo.audio_encoder?.[f]?.default_split_file_name ?? '')
         if (req.audioEncoder && audioEncoderRes.resolved.length === 0) { reject(new Error(`Audio encoder not found: ${req.audioEncoder}`)); return }
         noteMisses('audio_encoder', audioEncoderRes.missing)
 
-        const audioVaeRes = resolveCompanionPaths('audio_vae', audioVaeCompanions, req.audioVae, req.audioVaeProvider, (f) => hubRepo.audio_vae?.[f]?.default ?? '')
-        const audioVaeDeclared = !!req.audioVae || audioVaeCompanions.some((c) => !!hubRepo.audio_vae?.[c.from]?.default)
+        const audioVaeRes = resolveCompanionPaths('audio_vae', audioVaeCompanions, req.audioVae, req.audioVaeProvider, (f) => hubRepo.audio_vae?.[f]?.default ?? hubRepo.audio_vae?.[f]?.default_split_file_name ?? '')
+        const audioVaeDeclared = !!req.audioVae || audioVaeCompanions.some((c) => !!hubRepo.audio_vae?.[c.from]?.default || !!hubRepo.audio_vae?.[c.from]?.default_split_file_name)
         if (audioVaeDeclared && audioVaeRes.resolved.length === 0) { reject(new Error(`Audio VAE not found`)); return }
         noteMisses('audio_vae', audioVaeRes.missing)
 
@@ -1098,7 +1128,7 @@ export function registerIpc(): void {
           }
         }
 
-        const visionRes = resolveCompanionPaths('vision', visionCompanions, req.vision, undefined, (f) => hubRepo.vision?.[f]?.default ?? '')
+        const visionRes = resolveCompanionPaths('vision', visionCompanions, req.vision, undefined, (f) => hubRepo.vision?.[f]?.default ?? hubRepo.vision?.[f]?.default_split_file_name ?? '')
         if (req.vision && visionRes.resolved.length === 0) { reject(new Error(`Vision model not found: ${req.vision}`)); return }
         noteMisses('vision', visionRes.missing)
 
@@ -1208,8 +1238,8 @@ export function registerIpc(): void {
             initImage = undefined
           }
         }
-        const latentUpscalerRes = req.upscale ? resolveCompanionPaths('latent_upscaler', latentUpscalerCompanions, req.latentUpscaler, req.latentUpscalerProvider, (f) => hubRepo.latent_upscaler?.[f]?.default ?? '') : { resolved: [], missing: [] }
-        const latentUpscalerDeclared = !!req.latentUpscaler || latentUpscalerCompanions.some((c) => !!hubRepo.latent_upscaler?.[c.from]?.default)
+        const latentUpscalerRes = req.upscale ? resolveCompanionPaths('latent_upscaler', latentUpscalerCompanions, req.latentUpscaler, req.latentUpscalerProvider, (f) => hubRepo.latent_upscaler?.[f]?.default ?? hubRepo.latent_upscaler?.[f]?.default_split_file_name ?? '') : { resolved: [], missing: [] }
+        const latentUpscalerDeclared = !!req.latentUpscaler || latentUpscalerCompanions.some((c) => !!hubRepo.latent_upscaler?.[c.from]?.default || !!hubRepo.latent_upscaler?.[c.from]?.default_split_file_name)
         if (req.upscale && latentUpscalerDeclared && latentUpscalerRes.resolved.length === 0) { reject(new Error(`Latent upscaler not found`)); return }
         noteMisses('latent_upscaler', latentUpscalerRes.missing)
 
@@ -1474,7 +1504,7 @@ export function registerIpc(): void {
       // "default" is the URL itself (resolveCompanionPaths basenames it).
       (f) => {
         const v = hubRepo.vae?.[f]
-        return v === undefined ? '' : typeof v === 'string' ? v : v.default
+        return v === undefined ? '' : typeof v === 'string' ? v : v.default ?? v.default_split_file_name ?? ''
       }
     )
     if (req.vae && vaeRes.resolved.length === 0) {
@@ -1506,6 +1536,17 @@ export function registerIpc(): void {
     // 3. no request names — derive each companion's default from its OWN
     //    family's hub config (only files already on disk are emitted; the
     //    stale-cache self-heal).
+    // Finding G: the hub entry's entry-level `use_as` is authoritative for the
+    // encoder flag. pixart_sigma declares no `requires` block, so every encoder
+    // path falls back to COMPANION_USE_AS_DEFAULTS.encoder ('llm') and would
+    // emit `--llm` instead of `--t5xxl`; stamp the entry-level use_as whenever
+    // the family's hub entry carries a non-default one.
+    const encoderUseAsOverride = (family: string): string | undefined => {
+      const ua = hubRepo.encoder?.[family]?.use_as
+      return typeof ua === 'string' && ua !== '' && ua !== COMPANION_USE_AS_DEFAULTS.encoder
+        ? ua
+        : undefined
+    }
     const encoderPaths: { path: string; useAs: string }[] = []
     if (req.encoders && req.encoders.length > 0) {
       for (const enc of req.encoders) {
@@ -1526,7 +1567,14 @@ export function registerIpc(): void {
             `Encoder not found: ${enc.name}${kicked ? ' — downloading it now; try again in a moment' : ''}`
           )
         }
-        encoderPaths.push({ path: p, useAs: enc.useAs })
+        // The picker-selected path carries the catalog entry's useAs via
+        // enc.useAs; when the request's useAs is the kind default ('llm') and
+        // the family's hub entry carries a non-default use_as, stamp it.
+        const pickerUseAs =
+          enc.useAs === COMPANION_USE_AS_DEFAULTS.encoder
+            ? encoderUseAsOverride(comp.from) ?? enc.useAs
+            : enc.useAs
+        encoderPaths.push({ path: p, useAs: pickerUseAs })
       }
     } else if (req.encoder) {
       const single = resolveCompanionPaths(
@@ -1547,12 +1595,26 @@ export function registerIpc(): void {
           `Encoder not found: ${req.encoder}${kicked ? ' — downloading it now; try again in a moment' : ''}`
         )
       }
-      encoderPaths.push(...single.resolved)
+      const singleOverride = encoderUseAsOverride(encoderCompanions[0].from)
+      encoderPaths.push(
+        ...singleOverride
+          ? single.resolved.map((r) => ({ path: r.path, useAs: singleOverride }))
+          : single.resolved
+      )
     } else {
       const auto = resolveCompanionPaths('encoder', encoderCompanions, undefined, undefined, (f) =>
-        hubRepo.encoder?.[f]?.default ?? ''
+        hubRepo.encoder?.[f]?.default ?? hubRepo.encoder?.[f]?.default_split_file_name ?? ''
       )
-      encoderPaths.push(...auto.resolved)
+      // Stamp the family's entry-level use_as onto each resolved path when the
+      // hub entry carries a non-default one (the auto path's companions all
+      // resolve to 'llm' for a requires-less family).
+      encoderPaths.push(
+        ...auto.resolved.map((r) => {
+          const comp = encoderCompanions.find((c) => c.useAs === r.useAs)
+          const override = comp ? encoderUseAsOverride(comp.from) : undefined
+          return override ? { path: r.path, useAs: override } : r
+        })
+      )
       noteMisses('encoder', auto.missing)
     }
     // Audio encoder (Wan2.2 S2V's wav2vec2) — resolved from the family the
@@ -1563,7 +1625,7 @@ export function registerIpc(): void {
       audioEncoderCompanions,
       req.audioEncoder,
       undefined,
-      (f) => hubRepo.audio_encoder?.[f]?.default ?? ''
+      (f) => hubRepo.audio_encoder?.[f]?.default ?? hubRepo.audio_encoder?.[f]?.default_split_file_name ?? ''
     )
     if (req.audioEncoder && audioEncoderRes.resolved.length === 0) {
       const kicked = kickNamedCompanion(
@@ -1596,12 +1658,12 @@ export function registerIpc(): void {
       audioVaeCompanions,
       req.audioVae,
       req.audioVaeProvider,
-      (f) => hubRepo.audio_vae?.[f]?.default ?? ''
+      (f) => hubRepo.audio_vae?.[f]?.default ?? hubRepo.audio_vae?.[f]?.default_split_file_name ?? ''
     )
     const audioVaeDeclared =
-      !!req.audioVae || audioVaeCompanions.some((c) => !!hubRepo.audio_vae?.[c.from]?.default)
+      !!req.audioVae || audioVaeCompanions.some((c) => !!(hubRepo.audio_vae?.[c.from]?.default ?? hubRepo.audio_vae?.[c.from]?.default_split_file_name))
     if (audioVaeDeclared && audioVaeRes.resolved.length === 0) {
-      const missName = req.audioVae ?? basename(hubRepo.audio_vae?.[audioVaeCompanions[0].from]?.default ?? '')
+      const missName = req.audioVae ?? basename(hubRepo.audio_vae?.[audioVaeCompanions[0].from]?.default ?? hubRepo.audio_vae?.[audioVaeCompanions[0].from]?.default_split_file_name ?? '')
       const kicked = req.audioVae
         ? kickNamedCompanion('audio_vae', audioVaeCompanions[0].from, req.audioVaeProvider, req.audioVae)
         : false
@@ -1654,7 +1716,7 @@ export function registerIpc(): void {
       visionCompanions,
       req.vision,
       undefined,
-      (f) => hubRepo.vision?.[f]?.default ?? ''
+      (f) => hubRepo.vision?.[f]?.default ?? hubRepo.vision?.[f]?.default_split_file_name ?? ''
     )
     if (req.vision && visionRes.resolved.length === 0) {
       const kicked = kickNamedCompanion('vision', visionCompanions[0].from, undefined, req.vision)
@@ -2197,7 +2259,69 @@ export function registerIpc(): void {
       ...(videoRefPaths.length ? { videoReferencePaths: videoRefPaths } : {}),
       // display-only: seedvr_upscale source video
       ...(req.videoInputPath ? { videoInputPath: req.videoInputPath } : {}),
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      // Full per-generation record for history + "Copy and apply".
+      generation: {
+        createdAt: Date.now(),
+        model: req.model,
+        diffusionType: req.diffusionType,
+        modelProvider: req.modelProvider,
+        diffusionName: req.diffusionName,
+        vae: req.vae, vaeProvider: req.vaeProvider,
+        encoder: req.encoder, encoderProvider: req.encoderProvider,
+        vision: req.vision, tokenizer: req.tokenizer,
+        audioEncoder: req.audioEncoder,
+        audioVae: req.audioVae, audioVaeProvider: req.audioVaeProvider,
+        latentUpscaler: req.latentUpscaler, latentUpscalerProvider: req.latentUpscalerProvider,
+        ...(req.genMode ? { genMode: req.genMode } : {}),
+        resolution: req.resolution,
+        // Full arrays from the resolved request — NOT the sliced/spliced
+        // `existingInputs` (capped to 1 at ipc.ts:1723, then spliced out when it
+        // becomes the init image). `req.referencePaths` / `req.inputImagePaths`
+        // are the exact channels the renderer sent and preserve the true
+        // reference-vs-input split for the exact-split restore.
+        referencePaths: [...req.referencePaths],
+        inputImagePaths: [...req.inputImagePaths],
+        // Encoder bundle (SD3.5-style `defaults[]`) — only present when the
+        // renderer sent `req.encoders`; the single-file legacy path is captured
+        // via `encoder`/`encoderProvider` above. Without this a bundle model's
+        // full companion set is not preserved.
+        ...(req.encoders?.length ? { encoders: [...req.encoders] } : {}),
+        ...(req.audioPath ? { audioPath: req.audioPath } : {}),
+        ...(req.audioReferencePaths?.length ? { audioReferencePaths: [...req.audioReferencePaths] } : {}),
+        ...(req.controlVideoPath ? { controlVideoPath: req.controlVideoPath } : {}),
+        ...(req.endImagePath ? { endImagePath: req.endImagePath } : {}),
+        ...(req.videoReferencePaths?.length ? { videoReferencePaths: [...req.videoReferencePaths] } : {}),
+        ...(req.videoInputPath ? { videoInputPath: req.videoInputPath } : {}),
+        steps: req.steps, cfg: req.cfg, sampler: req.sampler,
+        ...(req.scheduler ? { scheduler: req.scheduler } : {}),
+        ...(req.flowShift != null ? { flowShift: req.flowShift } : {}),
+        strength: req.strength,
+        ...(req.highSteps != null ? { highSteps: req.highSteps } : {}),
+        ...(req.highCfg != null ? { highCfg: req.highCfg } : {}),
+        ...(req.highSampler ? { highSampler: req.highSampler } : {}),
+        ...(req.frames != null ? { frames: req.frames } : {}),
+        ...(req.frameRate != null ? { frameRate: req.frameRate } : {}),
+        ...(req.upscale != null ? { upscale: req.upscale } : {}),
+        ...(req.upscalerSteps != null ? { upscalerSteps: req.upscalerSteps } : {}),
+        ...(req.upscaleFactor != null ? { upscaleFactor: req.upscaleFactor } : {}),
+        ...(req.vsrTemporalChunkSize != null ? { vsrTemporalChunkSize: req.vsrTemporalChunkSize } : {}),
+        ...(req.modelArgs ? { modelArgs: req.modelArgs } : {}),
+        // seed is `number | '' | null`; null ⇒ random, '' is NOT a valid seed.
+        seed: typeof req.seed === 'number' ? req.seed : null,
+        ...(req.args ? { args: req.args } : {}),
+        negativePrompt: req.negativePrompt ?? '',
+        ...(req.performance ? { performance: req.performance } : {}),
+        ...(req.adetailer ? { adetailer: req.adetailer } : {}),
+        ...(req.ipAdapter ? { ipAdapter: req.ipAdapter } : {}),
+        ...(req.controlNet ? { controlNet: req.controlNet } : {}),
+        ...(req.usePrevious ? { usePrevious: req.usePrevious, previousImageMode: req.previousImageMode, previousImagePath: req.previousImagePath } : {}),
+        ...(req.maskPath ? { maskPath: req.maskPath, initImagePath: req.initImagePath } : {}),
+        ...(req.paintImagePath ? { paintImagePath: req.paintImagePath, paintTarget: req.paintTarget } : {}),
+        // Retained for history + sampling/negative restore. Resolution is
+        // restored from the record's own `resolution` field, not this copy.
+        sessionInputs: (session?.inputs ?? undefined)
+      }
     }
     sessions.addMessage(req.sessionId, userMsg)
     const assistantMsg: ChatMessage = {

@@ -8,6 +8,8 @@ License: Apache License 2.0 — permissive; allows use, modification, and distri
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type {
   CatalogEntry,
+  ChatMessage,
+  GenerationRecord,
   GenerationRequest,
   ModelType,
   ResolutionEntry,
@@ -32,6 +34,8 @@ import { useSettingsStore, type ModelDownloadState } from '../stores/settings'
 import { useUpscalerStore } from '../stores/upscaler'
 import {
   hubEntryNameFor,
+  familyLabel,
+  familyProviderLabel,
   requiredCompanionsFor,
   requiredEncoderBundle,
   resolveEncoderBundle,
@@ -61,7 +65,9 @@ import {
   useGeneratedImageAs,
   inputChannelEnabled,
   refChannelEnabled,
-  upscaleEnabled
+  upscaleEnabled,
+  upscaleAccepts,
+  pathMatchesAccepts
 } from '../composerImageActions'
 
 const appStore = useAppStore()
@@ -442,10 +448,23 @@ const allowIpAdapter = computed(() => sampling.value?.ip_adapter?.show === true)
 const allowControlNet = computed(() => sampling.value?.control_net?.show === true)
 // `image_upscaler.show` gates the hover/lightbox "Upscale image…" button — a
 // separate feature flag; absent/`show: false` ⇒ the button is disabled.
+// `image_upscaler.accepts` (glob list) further restricts it to previewed paths
+// whose extension matches one of the globs (see `pathMatchesAccepts`).
 const allowUpscale = computed(() => sampling.value?.image_upscaler?.show === true)
-// Keep the lightbox's upscale button in sync with this model's gate.
-watch(allowUpscale, (v) => { upscaleEnabled.value = v })
+const upscaleAcceptsList = computed(() => sampling.value?.image_upscaler?.accepts ?? [])
+// Keep the lightbox's upscale button in sync with this model's gate + accepted
+// path patterns.
+watch([allowUpscale, upscaleAcceptsList], ([v, accepts]) => {
+  upscaleEnabled.value = v
+  upscaleAccepts.value = accepts ?? []
+})
 upscaleEnabled.value = allowUpscale.value
+upscaleAccepts.value = upscaleAcceptsList.value
+// Per-preview upscale enablement: gate on the show flag AND the type of the
+// object being previewed (its path must match the descriptor's `accepts` globs).
+function upscaleAllowedForPath(path: string | null | undefined): boolean {
+  return allowUpscale.value && pathMatchesAccepts(path ?? '', upscaleAccepts.value)
+}
 // Clear the video-era channel states when their gate turns off.
 watch([allowAudio, allowControlVideo, allowEndImage, allowVideoInput], ([a, c, e, v]) => {
   if (!a) audioPath.value = ''
@@ -874,12 +893,17 @@ watch(allowPainting, (v) => {
 })
 
 // selected model label shown in the model chip
+// Friendly format: "Family Name ( Provider )" — the family label from the
+// fresh hub config and the human-readable provider name (e.g.
+// "Anima (CircleStone Labs)"). The quant is demoted to a tooltip so the chip
+// stays short. The picker dialog itself is untouched.
 const modelLabel = computed(() => {
   const e = modelEntry.value
   if (!e) return 'Select model'
-  const parts = [e.label || e.name]
-  if (e.quant) parts.push(e.quant)
-  return parts.join(' · ')
+  const fam = familyLabel(e.diffusionType)
+  const base = fam ?? e.label ?? e.name
+  const prov = familyProviderLabel(e.provider)
+  return prov ? `${base} (${prov})` : base
 })
 
 // Model picker dialog selection: assigns the entry and closes the dialog.
@@ -2202,6 +2226,128 @@ async function copyText(text: string): Promise<void> {
   }
 }
 
+/**
+ * Resolve the catalog entry a GenerationRecord points at, using the same
+ * narrowing the session-input restore watcher uses (name → family → provider).
+ * Returns the same object reference the composer already holds when this is a
+ * retry of the current turn (the common same-entry case), so the caller can
+ * detect the reference-equal no-op.
+ */
+function resolveModelForRecord(g: GenerationRecord): CatalogEntry | null {
+  const catalog = appStore.catalog?.entries ?? []
+  const nameMatches = catalog.filter(
+    (e) => e.type === 'diffusion' && e.name === g.model
+  )
+  const familyMatches = g.diffusionType
+    ? nameMatches.filter((e) => e.diffusionType === g.diffusionType)
+    : []
+  return (
+    (g.modelProvider
+      ? familyMatches.find((e) => e.provider === g.modelProvider) ??
+        nameMatches.find((e) => e.provider === g.modelProvider)
+      : undefined) ??
+    familyMatches[0] ??
+    nameMatches[0] ??
+    null
+  )
+}
+
+/**
+ * Copy and apply — restore a past turn's full generation context (prompt, all
+ * media channels, sampling/negative, resolution, and the selected model + its
+ * companions) into the composer so the user can re-run it with one click.
+ * Reuses the session-input restore watcher's two-branch model resolution
+ * logic (see the watcher above).
+ */
+function copyAndApply(m: ChatMessage): void {
+  const g = m.generation
+
+  // Prompt
+  prompt.value = m.text ?? ''
+
+  // Media channels. Prefer the record's exact reference/input split when the
+  // record exists; otherwise restore the merged `refs` array to references.
+  if (g) {
+    refImages.value = [...(g.referencePaths ?? m.refs ?? [])]
+    inputImages.value = [...(g.inputImagePaths ?? [])]
+  } else {
+    refImages.value = [...(m.refs ?? [])]
+    inputImages.value = []
+  }
+
+  // Previous-image chaining (checkbox + mode dropdown). `usePreviousUser`
+  // is the checkbox's user override (null ⇒ descriptor default); the record
+  // stores the RESOLVED boolean the turn used, so restore it as the user
+  // override. `previousMode` defaults to 'reference'. `previousImagePath`
+  // is NOT restored — it is computed at Send time from
+  // sessionsStore.lastGeneratedImage (the NEW last output, not the
+  // original turn's).
+  if (g) {
+    usePreviousUser.value = g.usePrevious ?? null
+    if (g.previousImageMode) previousMode.value = g.previousImageMode
+  }
+
+  // Video-era channels (single-valued)
+  audioPath.value = m.audioPath ?? ''
+  controlVideoPath.value = m.controlVideoPath ?? ''
+  endImagePath.value = m.endImagePath ?? ''
+  videoInputPath.value = m.videoInputPath ?? ''
+
+  // Repeatable reference channels
+  audioRefPaths.value = [...(m.audioReferencePaths ?? [])]
+  videoRefPaths.value = [...(m.videoReferencePaths ?? [])]
+
+  // --- Sampling / negative restore (synchronous persist via setInputs) ---
+  // These read from the record's sessionInputs because they persist
+  // synchronously (no debounce) — unlike resolution.
+  const ctx = g?.sessionInputs
+  if (ctx && sessionsStore.activeId) {
+    const id = sessionsStore.activeId
+    const patch: SessionInputs = {}
+    patch.negativePrompt = ctx.negativePrompt ?? ''
+    if (ctx.sampling !== undefined) patch.sampling = ctx.sampling  // '' !== undefined, so an explicit null/'' clear still applies
+    void sessionsStore.setInputs(id, patch)
+  }
+
+  // --- Model + resolution restore (full turn reconfiguration) ---
+  // Reuse the session-restore watcher's exact two-branch logic: the same-entry
+  // case is the common one and must apply the resolution directly, because a
+  // reference-equal modelEntry assignment is a no-op that never fires the
+  // watcher.
+  if (g) {
+    const resolved = resolveModelForRecord(g)
+    if (!resolved) {
+      // No match → leave the current selection; the rest of the turn still
+      // restores (prompt, media, sampling, resolution).
+    } else if (modelEntry.value === resolved) {
+      // Same-entry (common) case: assign modelEntry would be a no-op, so the
+      // one-shot marker would never be consumed. Apply the resolution
+      // directly — resolutions.value is already correct (diffusion type did
+      // not change): the listed entry matching width+height, else the saved
+      // custom entry (a custom size is not in the list and must survive),
+      // else the first preset. Mirrors the session-restore watcher.
+      const saved = { ...g.resolution, name: '' }  // name:'' ⇒ not a preset ⇒ custom
+      const matched = resolutions.value.find(
+        (x) => x.width === saved.width && x.height === saved.height
+      )
+      resolution.value = matched ?? saved ?? resolutions.value[0] ?? null
+      isCustomResolution.value = !matchesPresetDimensions(resolution.value, resolutions.value)
+    } else {
+      // Different-entry case: arm the one-shot marker and assign — the model
+      // watcher derives companions AND applies the saved resolution before
+      // clearing the marker.
+      pendingRestoreResolution.value = { ...g.resolution, name: '' }
+      modelEntry.value = resolved
+    }
+  }
+
+  // Scroll the composer into view so the restored chips are visible.
+  nextTick(() => {
+    const wrap = document.querySelector('.composer-wrap') as HTMLElement | null
+    wrap?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  })
+}
+
 function autoGrow(): void {
   const el = textareaEl.value
   if (!el) return
@@ -2324,11 +2470,13 @@ function fmtBytes(n: number): string {
           class="msg"
           :class="[m.role, { pending: m.role === 'assistant' && busy && !m.image && m.status !== 'error' && m.status !== 'stopped' }]"
         >
-          <div class="avatar" :class="m.role">
-            <img v-if="m.role === 'assistant'" :src="logoTiny" alt="Myriad Frame" class="avatar-logo" />
-            <span v-else>🐈‍⬛</span>
-          </div>
-          <div class="bubble">
+          <div class="msg-row">
+            <div class="avatar" :class="m.role">
+              <img v-if="m.role === 'assistant'" :src="logoTiny" alt="Myriad Frame" class="avatar-logo" />
+              <span v-else>🐈‍⬛</span>
+            </div>
+            <div class="bubble-col">
+            <div class="bubble">
             <div v-if="m.text" class="msg-text">{{ m.text }}</div>
             <div v-if="m.refs && m.refs.length" class="refs">
               <ImageFromPath v-for="(r, i) in m.refs" :key="i" :path="r" :alt="'reference ' + (i + 1)" :max="120" />
@@ -2372,7 +2520,7 @@ function fmtBytes(n: number): string {
                   </svg>
                 </button>
                 <button
-                  v-if="allowUpscale"
+                  v-if="upscaleAllowedForPath(m.image.path)"
                   class="icon upscale-image"
                   title="Upscale image…"
                   @click="upscalerStore.openDialog(m.image.path)"
@@ -2429,32 +2577,50 @@ function fmtBytes(n: number): string {
             <div v-if="m.status === 'stopped'" class="status muted">Generation stopped</div>
             <div v-if="m.status === 'error'" class="status error">Generation failed — details in Settings → Logs</div>
           </div>
-          <button
-            v-if="m.text"
-            class="msg-copy"
-            title="Copy message"
-            @click="copyText(m.text)"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="9" y="9" width="13" height="13" rx="2" />
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-            </svg>
-          </button>
-          <button
-            v-if="m.id === lastMessage?.id && !busy"
-            class="msg-delete"
-            title="Delete last message"
-            @click="removeLastMessage()"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M3 6h18" />
-              <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
-              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
-              <path d="M10 11v6" />
-              <path d="M14 11v6" />
-            </svg>
-          </button>
+          <div v-if="m.text || m.role === 'user' || (m.role === 'assistant' && m.image) || m.status === 'error' || m.status === 'stopped'" class="msg-actions">
+            <button
+              v-if="m.text"
+              class="msg-copy"
+              title="Copy message"
+              @click="copyText(m.text)"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            </button>
+            <button
+              v-if="m.role === 'user' && m.text"
+              class="msg-copy"
+              title="Copy and apply"
+              @click="copyAndApply(m)"
+            >
+              <svg xmlns="http://w3.org" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <!-- Back clipboard page -->
+                <rect width="8" height="4" x="8" y="2" rx="1" ry="1"/>
+                <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+                <!-- Checkmark / Apply overlay -->
+                <path d="m9 14 2 2 4-4"/>
+              </svg>
+            </button>
+            <button
+              v-if="m.id === lastMessage?.id && !busy"
+              class="msg-delete"
+              title="Delete last message"
+              @click="removeLastMessage()"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M3 6h18" />
+                <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+                <path d="M10 11v6" />
+                <path d="M14 11v6" />
+              </svg>
+            </button>
+          </div>
         </div>
+      </div>
+      </div>
       </template>
     </div>
     <footer class="composer-wrap">
@@ -3113,14 +3279,38 @@ function fmtBytes(n: number): string {
 }
 .msg {
   display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+.msg.user {
+  align-items: flex-end;
+}
+.msg-row {
+  display: flex;
   align-items: flex-end;
   gap: 10px;
 }
-.msg.user {
+.msg.user .msg-row {
   justify-content: flex-end;
 }
-.msg.assistant {
+.msg.assistant .msg-row {
   justify-content: flex-start;
+}
+/* Action buttons now sit below the bubble. Reveal on hover of the row. */
+.msg-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.msg.user .msg-actions {
+  justify-content: flex-end;
+}
+.msg:hover .msg-actions {
+  opacity: 1;
 }
 .avatar {
   width: 32px;
@@ -3147,7 +3337,11 @@ function fmtBytes(n: number): string {
   color: var(--text-dim);
 }
 .bubble {
-  max-width: 72%;
+  /* No max-width: the bubble is responsive to its content. Images/videos are
+     constrained inside via .image-wrap (min-width: 0) and .chat-img
+     (max-width: 100% !important, overriding ImageFromPath's inline 480px), so
+     content never overflows the rounded bubble. */
+  min-width: 0;
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: 18px;
@@ -3155,6 +3349,21 @@ function fmtBytes(n: number): string {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+/* Wraps the bubble + its action buttons in a column aligned with the bubble,
+   so the Copy/Delete buttons sit directly beneath it (not under the whole
+   avatar+bubble row). */
+.bubble-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.msg.user .bubble-col {
+  align-items: flex-end;
+}
+.msg.assistant .bubble-col {
+  align-items: flex-start;
 }
 .msg.user .bubble {
   background: var(--accent);
@@ -3172,8 +3381,19 @@ function fmtBytes(n: number): string {
 }
 .image-wrap {
   position: relative;
-  display: inline-block;
+  display: block;
+  max-width: 100%;
+  min-width: 0;
   line-height: 0;
+}
+/* Constrain the image so a wide generated image can't overflow the bubble's
+   rounded corner. The generated image carries an inline max-width (480px) via
+   ImageFromPath's :max prop, which beats normal CSS specificity — so this
+   !important overrides it. Images shrink to fit the bubble but never upscale. */
+.image-wrap .chat-img {
+  max-width: 100% !important;
+  height: auto;
+  display: block;
 }
 /* Hover-row buttons: packed into a flex container aligned to the top-right
    corner of the image. Hidden buttons leave no gap — the row flows naturally. */
@@ -3527,7 +3747,6 @@ function fmtBytes(n: number): string {
   background: transparent;
 }
 .msg-copy {
-  align-self: center;
   width: 26px;
   height: 26px;
   display: inline-flex;
@@ -3538,12 +3757,7 @@ function fmtBytes(n: number): string {
   color: var(--text-faint);
   background: transparent;
   border: 1px solid transparent;
-  opacity: 0;
   transition: opacity 0.15s, color 0.15s, border-color 0.15s;
-}
-.msg:hover .msg-copy,
-.msg:hover .msg-delete {
-  opacity: 1;
 }
 .msg-copy:hover {
   color: var(--accent);
@@ -3551,7 +3765,6 @@ function fmtBytes(n: number): string {
   background: transparent;
 }
 .msg-delete {
-  align-self: center;
   width: 26px;
   height: 26px;
   display: inline-flex;
@@ -3562,11 +3775,7 @@ function fmtBytes(n: number): string {
   color: var(--text-faint);
   background: transparent;
   border: 1px solid transparent;
-  opacity: 0;
   transition: opacity 0.15s, color 0.15s, border-color 0.15s;
-}
-.msg:hover .msg-delete {
-  opacity: 1;
 }
 .msg-delete:hover {
   color: var(--danger);

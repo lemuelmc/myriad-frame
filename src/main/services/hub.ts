@@ -362,6 +362,47 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
     // the legacy `--llm`.
     const entryUseAs =
       typeof enc.use_as === 'string' && enc.use_as.trim() !== '' ? enc.use_as.trim() : undefined
+    // Split-file shape: `default_split_files` replaces the single `default`.
+    // Inserted AFTER `entryUseAs` and BEFORE the `rawPath`/`listFiles` block.
+    // A split entry has no `default`; while the default read below is guarded,
+    // the split branch `continue`s before the tree scan (no scan needed — the
+    // files are explicitly listed), so the bundle/default handling never sees
+    // this entry.
+    const splitFiles = Array.isArray(enc.default_split_files)
+      ? enc.default_split_files.filter((s) => typeof s === 'string' && s !== '')
+      : []
+    if (splitFiles.length > 0) {
+      const splitName = typeof enc.default_split_file_name === 'string' && enc.default_split_file_name !== ''
+        ? enc.default_split_file_name
+        : 'model.safetensors'
+      const splitUrl = `split:${repo}/${splitName}`
+      let totalSize = 0
+      for (const f of splitFiles) {
+        const p = source.normalizeFilePath?.(f) ?? f
+        totalSize += await headSize(source.resolveUrl(repo, p)).catch(() => 0)
+      }
+      entries.push({
+        id: `encoder:${diffusionType}:${splitName}`,
+        type: 'encoder' as ModelType,
+        diffusionType,
+        name: splitName,
+        label: splitName,
+        url: splitUrl,
+        size: totalSize,
+        quant: quantFromName(splitName),
+        repo,
+        source: source.name,
+        splitFiles,
+        splitFileName: splitName,
+        ...(enc.provider ? { provider: enc.provider } : {}),
+        // encoder only: use_as flag (entry-level `use_as` stamps the picker-
+        // selected path so gen:start emits `--<use_as> <path>`)
+        ...(entryUseAs ? { useAs: entryUseAs } : {}),
+        isDefault: true
+      })
+      dispatchedEntries++
+      continue // skip the repo tree scan
+    }
     // Optional `path` scan restriction: when set, enumerate the folder's
     // direct children and expose every .gguf in it as a selectable row so the
     // user can download / re-download / set-default any of them (not just the
@@ -475,8 +516,47 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
       continue
     }
     const repo = source.repoFromUrl(vis.url)
-    // `default` may be a full URL or a repo-relative path — normalize through the source
-    const defaultPath = source.normalizeFilePath?.(vis.default) ?? vis.default
+    // Split-file shape: `default_split_files` replaces the single `default`.
+    // Inserted BEFORE the `.default` dereference below — a split entry has no
+    // `default`, and `normalizeFilePath(undefined)` throws a TypeError that the
+    // loop's try/catch does not wrap (it only covers `listFiles`), which would
+    // crash the ENTIRE catalog build.
+    const splitFiles = Array.isArray(vis.default_split_files)
+      ? vis.default_split_files.filter((s) => typeof s === 'string' && s !== '')
+      : []
+    if (splitFiles.length > 0) {
+      const splitName = typeof vis.default_split_file_name === 'string' && vis.default_split_file_name !== ''
+        ? vis.default_split_file_name
+        : 'model.safetensors'
+      const splitUrl = `split:${repo}/${splitName}`
+      let totalSize = 0
+      for (const f of splitFiles) {
+        const p = source.normalizeFilePath?.(f) ?? f
+        totalSize += await headSize(source.resolveUrl(repo, p)).catch(() => 0)
+      }
+      entries.push({
+        id: `vision:${diffusionType}:${splitName}`,
+        type: 'vision' as ModelType,
+        diffusionType,
+        name: splitName,
+        label: splitName,
+        url: splitUrl,
+        size: totalSize,
+        quant: quantFromName(splitName),
+        repo,
+        source: source.name,
+        splitFiles,
+        splitFileName: splitName,
+        ...(vis.provider ? { provider: vis.provider } : {}),
+        isDefault: true
+      })
+      dispatchedEntries++
+      continue // skip the repo tree scan
+    }
+    // `default` may be a full URL or a repo-relative path — normalize through the source.
+    // Guarded: a split-file entry already `continue`d above, so `default` is present here.
+    const defaultPath =
+      typeof vis.default === 'string' ? (source.normalizeFilePath?.(vis.default) ?? vis.default) : ''
     const defaultName = defaultPath.split('/').pop() ?? defaultPath
     const defaultUrl = source.resolveUrl(repo, defaultPath)
     const files = await source.listFiles(repo)
@@ -572,7 +652,46 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
       continue
     }
     const repo = source.repoFromUrl(aud.url)
-    const defaultPath = source.normalizeFilePath?.(aud.default) ?? aud.default
+    // Split-file shape: `default_split_files` replaces the single `default`.
+    // Inserted BEFORE the `.default` dereference below — a split entry has no
+    // `default`, and `normalizeFilePath(undefined)` throws a TypeError that the
+    // loop's try/catch does not wrap (it only covers `listFiles`), which would
+    // crash the ENTIRE catalog build.
+    const splitFiles = Array.isArray(aud.default_split_files)
+      ? aud.default_split_files.filter((s) => typeof s === 'string' && s !== '')
+      : []
+    if (splitFiles.length > 0) {
+      const splitName = typeof aud.default_split_file_name === 'string' && aud.default_split_file_name !== ''
+        ? aud.default_split_file_name
+        : 'model.safetensors'
+      const splitUrl = `split:${repo}/${splitName}`
+      let totalSize = 0
+      for (const f of splitFiles) {
+        const p = source.normalizeFilePath?.(f) ?? f
+        totalSize += await headSize(source.resolveUrl(repo, p)).catch(() => 0)
+      }
+      entries.push({
+        id: `audio_encoder:${diffusionType}:${splitName}`,
+        type: 'audio_encoder' as ModelType,
+        diffusionType,
+        name: splitName,
+        label: splitName,
+        url: splitUrl,
+        size: totalSize,
+        quant: quantFromName(splitName),
+        repo,
+        source: source.name,
+        splitFiles,
+        splitFileName: splitName,
+        ...(aud.provider ? { provider: aud.provider } : {}),
+        isDefault: true
+      })
+      dispatchedEntries++
+      continue // skip the repo tree scan
+    }
+    // Guarded: a split-file entry already `continue`d above, so `default` is present here.
+    const defaultPath =
+      typeof aud.default === 'string' ? (source.normalizeFilePath?.(aud.default) ?? aud.default) : ''
     const defaultName = defaultPath.split('/').pop() ?? defaultPath
     const defaultUrl = source.resolveUrl(repo, defaultPath)
     const size = await headSize(defaultUrl)
@@ -605,7 +724,46 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
       continue
     }
     const repo = source.repoFromUrl(av.url)
-    const defaultPath = source.normalizeFilePath?.(av.default) ?? av.default
+    // Split-file shape: `default_split_files` replaces the single `default`.
+    // Inserted BEFORE the `.default` dereference below — a split entry has no
+    // `default`, and `normalizeFilePath(undefined)` throws a TypeError that the
+    // loop's try/catch does not wrap (it only covers `listFiles`), which would
+    // crash the ENTIRE catalog build.
+    const splitFiles = Array.isArray(av.default_split_files)
+      ? av.default_split_files.filter((s) => typeof s === 'string' && s !== '')
+      : []
+    if (splitFiles.length > 0) {
+      const splitName = typeof av.default_split_file_name === 'string' && av.default_split_file_name !== ''
+        ? av.default_split_file_name
+        : 'model.safetensors'
+      const splitUrl = `split:${repo}/${splitName}`
+      let totalSize = 0
+      for (const f of splitFiles) {
+        const p = source.normalizeFilePath?.(f) ?? f
+        totalSize += await headSize(source.resolveUrl(repo, p)).catch(() => 0)
+      }
+      entries.push({
+        id: `audio_vae:${diffusionType}:${splitName}`,
+        type: 'audio_vae' as ModelType,
+        diffusionType,
+        name: splitName,
+        label: splitName,
+        url: splitUrl,
+        size: totalSize,
+        quant: quantFromName(splitName),
+        repo,
+        source: source.name,
+        splitFiles,
+        splitFileName: splitName,
+        ...(av.provider ? { provider: av.provider } : {}),
+        isDefault: true
+      })
+      dispatchedEntries++
+      continue // skip the repo tree scan
+    }
+    // Guarded: a split-file entry already `continue`d above, so `default` is present here.
+    const defaultPath =
+      typeof av.default === 'string' ? (source.normalizeFilePath?.(av.default) ?? av.default) : ''
     const defaultName = defaultPath.split('/').pop() ?? defaultPath
     const defaultUrl = source.resolveUrl(repo, defaultPath)
     const size = await headSize(defaultUrl)
@@ -638,7 +796,8 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
       continue
     }
     const repo = source.repoFromUrl(lu.url)
-    const defaultPath = source.normalizeFilePath?.(lu.default) ?? lu.default
+    const defaultPath =
+      typeof lu.default === 'string' ? (source.normalizeFilePath?.(lu.default) ?? lu.default) : ''
     const defaultName = defaultPath.split('/').pop() ?? defaultPath
     const defaultUrl = source.resolveUrl(repo, defaultPath)
     const size = await headSize(defaultUrl)
@@ -1286,8 +1445,47 @@ export async function buildCatalog(onProgress?: (msg: string) => void): Promise<
       continue
     }
     const repo = source.repoFromUrl(v.url)
-    // `default` may be a full URL or a repo-relative path — normalize through the source
-    const defaultPath = source.normalizeFilePath?.(v.default) ?? v.default
+    // Split-file shape: `default_split_files` replaces the single `default`.
+    // Inserted BEFORE the `.default` dereference below — a split entry has no
+    // `default`, and `normalizeFilePath(undefined)` throws a TypeError that the
+    // loop's try/catch does not wrap (it only covers `listFiles`), which would
+    // crash the ENTIRE catalog build.
+    const splitFiles = Array.isArray(v.default_split_files)
+      ? v.default_split_files.filter((s) => typeof s === 'string' && s !== '')
+      : []
+    if (splitFiles.length > 0) {
+      const splitName = typeof v.default_split_file_name === 'string' && v.default_split_file_name !== ''
+        ? v.default_split_file_name
+        : 'model.safetensors'
+      const splitUrl = `split:${repo}/${splitName}`
+      let totalSize = 0
+      for (const f of splitFiles) {
+        const p = source.normalizeFilePath?.(f) ?? f
+        totalSize += await headSize(source.resolveUrl(repo, p)).catch(() => 0)
+      }
+      entries.push({
+        id: `vae:${diffusionType}:${splitName}`,
+        type: 'vae' as ModelType,
+        diffusionType,
+        name: splitName,
+        label: splitName,
+        url: splitUrl,
+        size: totalSize,
+        quant: quantFromName(splitName),
+        repo,
+        source: source.name,
+        splitFiles,
+        splitFileName: splitName,
+        ...(v.provider ? { provider: v.provider } : {}),
+        isDefault: true
+      })
+      dispatchedEntries++
+      continue // skip the repo tree scan
+    }
+    // `default` may be a full URL or a repo-relative path — normalize through the source.
+    // Guarded: a split-file entry already `continue`d above, so `default` is present here.
+    const defaultPath =
+      typeof v.default === 'string' ? (source.normalizeFilePath?.(v.default) ?? v.default) : ''
     const defaultName = defaultPath.split('/').pop() ?? defaultPath
 
     // Normalize the optional `path` scan restriction:
@@ -1455,18 +1653,32 @@ export function catalogNameForUrl(url: string): string | undefined {
  * accessors; undefined on a missing/corrupt cache or a URL miss.
  */
 export interface CatalogMeta {
-  source?: string
-  name?: string
-  diffusionType?: string
-  /** the hub diffusion entry's `name` (e.g. comfy_org_boogu_image) */
-  hubName?: string
-}
-
-export function catalogMetaForUrl(url: string, type?: ModelType): CatalogMeta | undefined {
-  const e = catalogEntryForUrl(url, type)
-  if (!e) return undefined
-  return { source: e.source, name: e.name, diffusionType: e.diffusionType, hubName: e.hubName }
-}
+   source?: string
+   name?: string
+   diffusionType?: string
+   /** the hub diffusion entry's `name` (e.g. comfy_org_boogu_image) */
+   hubName?: string
+   /** Split-file source paths (repo-relative) — threaded to the download layer. */
+   splitFiles?: string[]
+   /** The combined output filename for a split-file entry. */
+   splitFileName?: string
+   /** The repo slug (e.g. 'PixArt-alpha/PixArt-Sigma-XL-2-1024-MS') — needed to resolve per-file URLs. */
+   repo?: string
+ }
+ 
+ export function catalogMetaForUrl(url: string, type?: ModelType): CatalogMeta | undefined {
+   const e = catalogEntryForUrl(url, type)
+   if (!e) return undefined
+   return {
+     source: e.source,
+     name: e.name,
+     diffusionType: e.diffusionType,
+     hubName: e.hubName,
+     splitFiles: e.splitFiles,
+     splitFileName: e.splitFileName,
+     repo: e.repo
+   }
+ }
 
 /**
  * The cached catalog entries at a fully-keyed location —
@@ -1613,6 +1825,10 @@ export function companionTargetsFor(kind: CompanionKind, family: string): Compan
     domain?: unknown
     default?: unknown
     defaults?: unknown
+    /** Split-file shape: an array of repo-relative source paths (or full URLs). */
+    default_split_files?: unknown
+    /** The combined output filename for a split-file entry. */
+    default_split_file_name?: unknown
   }
   let sectionObj: Section | undefined
   let legacyUrl: string | undefined
@@ -1652,6 +1868,35 @@ export function companionTargetsFor(kind: CompanionKind, family: string): Compan
   const sourceName = typeof so.source === 'string' ? so.source : undefined
   const domain = typeof so.domain === 'string' ? so.domain : undefined
   const defaultsArr = Array.isArray(so.defaults) ? (so.defaults as { file?: unknown }[]) : undefined
+  // Split-file shape: `default_split_files` replaces the single `default`.
+  // Emit ONE synthetic `split:` URL target (name = the combined output filename)
+  // so the self-heal / requires fan-out works from the FRESH config even while
+  // the cached catalog is stale. No repo tree scan — the files are explicit.
+  const splitFilesRaw = so.default_split_files
+  const splitFiles = Array.isArray(splitFilesRaw)
+    ? (splitFilesRaw as unknown[]).filter((s) => typeof s === 'string' && s !== '')
+    : []
+  if (splitFiles.length > 0) {
+    const splitName = typeof so.default_split_file_name === 'string' && so.default_split_file_name !== ''
+      ? so.default_split_file_name
+      : 'model.safetensors'
+    // A split-file entry is only resolvable when the URL is a real repo URL
+    // (the synthetic `split:` target carries no URL to resolve). Fall back to
+    // no targets when `url` is absent (a legacy plain-URL VAE string has no
+    // `default_split_files`, so this branch is unreachable there).
+    if (url) {
+      const source = getSourceForEntry(url, sourceName ?? domain)
+      if (!source) {
+        console.warn(
+          `[hub] companion section "${kind}/${family}" (${url}): no model source for this URL's host — skipping`
+        )
+        return []
+      }
+      const splitUrl = `split:${source.repoFromUrl(url)}/${splitName}`
+      return [{ type: kind, url: splitUrl, name: splitName, family, ...(provider !== undefined ? { provider } : {}) }]
+    }
+    return []
+  }
   const files: string[] =
     kind === 'encoder' && defaultsArr !== undefined && defaultsArr.length > 0
       ? defaultsArr.map((d) => (typeof d?.file === 'string' ? d.file : '')).filter((f) => f !== '')

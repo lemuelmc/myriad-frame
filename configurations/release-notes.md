@@ -1,5 +1,9 @@
 # Release Notes
 
-## v0.2.4
+## v0.2.5
 
-Enable image_upscaler across all diffusion types and refresh session after upscale
+- Add PixArt-Sigma XL-2 support ( Experimental )
+- Split-file downloads with merge and family tags
+- Copy and apply restore for past generations (with new clipboard icon)
+- Add friendly labels and descriptions to the model picker
+- Add repo-level gate tags to the hub config

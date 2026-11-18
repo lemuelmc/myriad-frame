@@ -144,6 +144,34 @@ async function downloadSingleViaSource(
   // that family happens to hold.
   const meta = catalogMetaForUrl(url, type)
   const source = resolveSourceForUrl(url, meta)
+  // Split-file download: the synthetic `split:` URL is not an HTTP URL —
+  // resolve each file's full URL via the source and delegate to the manager
+  // with the `split` option. When `source` is undefined the `?? f` fallbacks
+  // would emit raw repo-relative paths as URLs (never throw silently here —
+  // a `split:` URL is unresolvable without the meta hint, and a copy-paste
+  // implementer would otherwise send `/text_encoder/model-...safetensors` as
+  // a bare URL).
+  if (meta?.splitFiles && meta.splitFiles.length > 0 && meta.repo) {
+    if (!source) {
+      throw new Error(
+        `Cannot resolve the model source for split-file entry ${url} — the catalog meta carries no usable source hint`
+      )
+    }
+    const splitName = meta.splitFileName ?? 'model.safetensors'
+    const files = meta.splitFiles.map((f) =>
+      source.resolveUrl(meta.repo, source.normalizeFilePath?.(f) ?? f)
+    )
+    // Auth headers for the repo (private repos).
+    const headers = source.getAuthHeaders
+      ? await source.getAuthHeaders(meta.repo).catch(() => ({}))
+      : {}
+    return downloadModel(type, url, provider, force, {
+      filename: splitName,
+      diffusionType: family ?? meta?.diffusionType,
+      headers,
+      split: { files, name: splitName }
+    })
+  }
   if (source) {
     // org/repo slug, derived by the source itself (repoFromUrl — the inverse
     // of resolveUrl) so the auth follow-up (model-downloader-auth.md) looks

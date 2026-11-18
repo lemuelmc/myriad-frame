@@ -24,6 +24,8 @@
 
 import { createHash } from 'node:crypto'
 import {
+  createReadStream,
+  createWriteStream,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -33,12 +35,16 @@ import {
   statSync,
   writeFileSync
 } from 'node:fs'
+import fsp from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
+import { spawn } from 'node:child_process'
 import type { DownloadEntry, DownloadsListResult, ModelType } from '@shared/types'
 import { dataRoot } from './data'
 import { DownloadAbortError, downloadFile, headSize } from './download'
 import { createSettingsService } from './settings'
 import { loadRuntimeConfig } from './config'
+import { getInitState } from './init'
+import { findLlamaCliBinary, ensureLlmRuntime } from './llm-runtime'
 // Name-hygiene helpers live in a neutral leaf module (NOT in models.ts —
 // models.ts already imports this module, and a back-edge would create a
 // module cycle whose safety depends on import order; see modelname.ts).
@@ -541,17 +547,26 @@ export async function downloadModel(
    * Optional params threaded to the transport: `headers` — the source
    * layer's auth/custom headers — `filename` — the stored-filename
    * override for sources whose download URLs carry no filename in the path
-   * (see entryName) — and `diffusionType` — the family-scoped destination
+   * (see entryName) — `diffusionType` — the family-scoped destination
    * key (model-collision-hardening plan §2.3/§3.1), resolved by
-   * downloadViaSource from the cached catalog. `onProgress`/`signal` are
-   * deliberately NOT here: the manager is the sole progress broadcaster and
-   * owns the in-flight AbortController (forwarding either would
-   * double-broadcast / double-abort).
+   * downloadViaSource from the cached catalog — and `split` — a split-file
+   * download: the synthetic `split:` URL carries no single file, so each
+   * source is downloaded individually and concatenated into one.
+   * `onProgress`/`signal` are deliberately NOT here: the manager is the sole
+   * progress broadcaster and owns the in-flight AbortController (forwarding
+   * either would double-broadcast / double-abort).
    */
   opts?: {
     headers?: Record<string, string>
     filename?: string
     diffusionType?: string
+    /** Split-file download: download each file, concatenate, store as one. */
+    split?: {
+      /** Full URLs of the split files, in concatenation order. */
+      files: string[]
+      /** The combined output filename. */
+      name: string
+    }
   }
 ): Promise<string> {
   const prov = provider || 'default'
@@ -573,7 +588,15 @@ export async function downloadModel(
   // download, replacing a legacy truncated file.
   if (!force) {
     const dest = modelDestPath(type, prov, url, opts?.filename, opts?.diffusionType)
-    if (existsSync(dest)) {
+    if (opts?.split) {
+      // Split download: there is no single URL to HEAD, so skip the HEAD-based
+      // size check — trust the destination file if it exists (design decision
+      // #5). A genuine re-download is forced by `force`.
+      if (existsSync(dest)) {
+        removeEntry(url)
+        return dest
+      }
+    } else if (existsSync(dest)) {
       // Authenticated short-circuit probe: without headers a private repo's
       // HEAD answers 401 → headSize resolves 0 → the size check below
       // silently passes anything (auth plan §4 — one of the two in-manager
@@ -600,18 +623,28 @@ export async function downloadModel(
   }
 
   // (3) Enqueue (joins an existing in-flight/queued download of the same URL).
-  return startModelDownload(type, url, prov, force, opts?.headers, opts?.filename, opts?.diffusionType)
+  return startModelDownload(
+    type,
+    url,
+    prov,
+    force,
+    opts?.headers,
+    opts?.filename,
+    opts?.diffusionType,
+    opts?.split
+  )
 }
 
 function startModelDownload(
-  type: ModelType,
-  url: string,
-  provider: string,
-  force: boolean,
-  headers?: Record<string, string>,
-  filename?: string,
-  diffusionType?: string
-): Promise<string> {
+   type: ModelType,
+   url: string,
+   provider: string,
+   force: boolean,
+   headers?: Record<string, string>,
+   filename?: string,
+   diffusionType?: string,
+   split?: { files: string[]; name: string }
+ ): Promise<string> {
   // A second request for a URL already queued/in-flight joins the existing
   // promise — no re-enqueue, no double download. The join is UNCONDITIONAL
   // (model-collision-hardening plan F6): the map is URL-keyed, so two
@@ -652,7 +685,7 @@ function startModelDownload(
     // `diffusionType` is captured by the work closure alongside
     // headers/filename, so a join's dest and a fresh download's dest derive
     // identically (plan §3.1).
-    work: () => runModelDownload(type, url, provider, force, entry, headers, filename, diffusionType)
+    work: () => runModelDownload(type, url, provider, force, entry, headers, filename, diffusionType, split)
   }
   state.modelMap.set(url, entry)
   enqueue(entry)
@@ -665,21 +698,31 @@ function startModelDownload(
 }
 
 async function runModelDownload(
-  type: ModelType,
-  url: string,
-  provider: string,
-  force: boolean,
-  entry: ModelInflight,
-  headers?: Record<string, string>,
-  filename?: string,
-  diffusionType?: string
-): Promise<void> {
-  const name = entryName(url, filename)
-  // Promoted from the wait-list to an active slot: emit the initial 0-byte
-  // progress event now (a merely-queued entry emits nothing).
-  notifyModelProgress(type, url, 0, 0)
-  const tmp = modelTmpPath(type, provider, url)
-  try {
+   type: ModelType,
+   url: string,
+   provider: string,
+   force: boolean,
+   entry: ModelInflight,
+   headers?: Record<string, string>,
+   filename?: string,
+   diffusionType?: string,
+   split?: { files: string[]; name: string }
+ ): Promise<void> {
+   const name = entryName(url, filename)
+   // Promoted from the wait-list to an active slot: emit the initial 0-byte
+   // progress event now (a merely-queued entry emits nothing).
+   notifyModelProgress(type, url, 0, 0)
+   const tmp = modelTmpPath(type, provider, url)
+   try {
+     // Split-file download: each source is fetched to its own temp path, then
+     // all are concatenated (in order) into the main temp path before the final
+     // rename. Kept INSIDE runModelDownload so the catch block's bookkeeping
+     // (modelMap delete, cancelThrottled, setEntryStatus, reject, notifyChange)
+     // and the part-temp cleanup are shared.
+     if (split) {
+       await runSplitModelDownload(type, url, provider, entry, split, headers, diffusionType)
+       return
+     }
     // Same dest derivation as the installed short-circuit (modelDestPath) so
     // a joined download's dest and a fresh download's dest can never disagree
     // (model-collision-hardening plan §3.1).
@@ -760,6 +803,312 @@ async function runModelDownload(
     setEntryStatus(url, 'failed', errMsg(err))
     entry.reject(err)
     notifyChange()
+  }
+}
+
+/**
+ * Split-file download: fetch each source to its own unique temp path
+ * (`${mainTmp}.${i}.part`), concatenate them (in order) into the main temp
+ * path, then rename into place. Progress is aggregate across all files — the
+ * initial size estimate comes from a HEAD of each file, but the running
+ * denominator is refined from each part's ACTUAL `content-length` (the
+ * `onProgress` callback's `totalBytes`), so a HEAD that resolves 0 (offline /
+ * 401) never corrupts the progress bar.
+ *
+ * Kept here (a sibling of `runModelDownload`) rather than inlined so the code
+ * reads as a complete unit; the CALLER (`runModelDownload`) shares the catch
+ * block's bookkeeping — modelMap delete, cancelThrottled, setEntryStatus,
+ * reject, notifyChange — and the part-temp cleanup on failure.
+ */
+async function runSplitModelDownload(
+  type: ModelType,
+  url: string,
+  provider: string,
+  entry: ModelInflight,
+  split: { files: string[]; name: string },
+  headers?: Record<string, string>,
+  diffusionType?: string
+): Promise<void> {
+  const finalDest = modelDestPath(type, provider, url, split.name, diffusionType)
+  const mainTmp = modelTmpPath(type, provider, url)
+  const partTmps: string[] = []
+  try {
+    // 1. HEAD each file to get an initial total size (for progress). headSize
+    //    never rejects — it resolves 0 on any failure — so an offline / 401
+    //    simply degrades the estimate to 0 (indeterminate until actual bytes
+    //    arrive). The HEAD sizes are ONLY the starting denominator; the running
+    //    total below is refined from each part's ACTUAL content-length.
+    const sizes: number[] = []
+    let totalSize = 0
+    for (const f of split.files) {
+      const s = await headSize(f, entry.abortController.signal, undefined, headers)
+      sizes.push(s)
+      totalSize += s
+    }
+    if (entry.abortController.signal.aborted) throw new DownloadAbortError()
+
+    // 2. Download each file to its own temp path. Offsets are derived from
+    //    ACTUAL downloaded bytes (statSync after each part completes), NOT the
+    //    HEAD sizes — a HEAD resolving 0 would otherwise corrupt the cumulative
+    //    offsets. `fresh: true` deletes each part first, so a retry re-downloads
+    //    that part from scratch (identical to the single-file path's semantics).
+    let downloadedTotal = 0
+    for (let i = 0; i < split.files.length; i++) {
+      if (entry.abortController.signal.aborted) throw new DownloadAbortError()
+      const partTmp = `${mainTmp}.${i}.part`
+      partTmps.push(partTmp)
+      const offset = downloadedTotal
+      await downloadFile(split.files[i], partTmp, {
+        fresh: true,
+        signal: entry.abortController.signal,
+        headers,
+        onProgress: (dl, partTotal) => {
+          // partTotal is the server's content-length for THIS part (0 when the
+          // HEAD failed). Refine the aggregate denominator: the first part's
+          // total becomes the running sum of all parts' actual totals.
+          if (partTotal > 0) {
+            sizes[i] = partTotal
+          }
+          const runningTotal = sizes.reduce((a, b) => a + b, 0)
+          notifyModelProgress(type, url, offset + dl, runningTotal)
+        }
+      })
+      // ACTUAL bytes downloaded for this part (authoritative post-completion
+      // check; the onProgress callback's final `dl` equals the file size, but
+      // statSync is the reliable source).
+      downloadedTotal += statSync(partTmp).size
+    }
+
+    // Decide the merge strategy from the combined output name: a .safetensors
+    // composite must be rebuilt from the shards' headers (byte-concatenating
+    // shards yields an invalid file — each shard carries its own 8-byte
+    // header, so the concatenation is [h1][d1][h2][d2]…, not a valid
+    // safetensors blob); a .gguf composite is rebuilt via the runtime's
+    // `llama-gguf-split --merge` (the GGUF split-file plan's tool).
+    const isSafetensors = split.name.toLowerCase().endsWith('.safetensors')
+
+    // 3. Merge all parts into the main temp path via the type-aware strategy.
+    //    mergeSplitParts consumes every part (its read streams are closed
+    //    before it resolves) and leaves mainTmp as the final combined file; the
+    //    part temp files stay on disk until step 5 unlinks them.
+    await mergeSplitParts(mainTmp, partTmps, isSafetensors)
+    // mergeSplitParts writes the final combined file to mainTmp in place; all
+    // part temp files are consumed and left on disk here (step 5 below unlinks
+    // them).
+
+    // 4. Move into place (same pattern as runModelDownload).
+    rmSync(finalDest, { force: true })
+    mkdirSync(dirname(finalDest), { recursive: true })
+    renameSync(mainTmp, finalDest)
+
+    // 5. Clean up part temp files.
+    for (const p of partTmps) rmSync(p, { force: true })
+
+    // 6. Finalize (same as runModelDownload).
+    removeEntry(url)
+    flushThrottled(`model:${url}`)
+    entry.resolve(finalDest)
+    notifyChange()
+  } catch (err) {
+    // Drop the in-flight entry BEFORE broadcasting (same rationale as
+    // runModelDownload's catch: a stale 'downloading' row must not survive).
+    state.modelMap.delete(url)
+    cancelThrottled(`model:${url}`)
+    // Fail with a descriptive error instead of a raw ENOENT when a part temp
+    // vanished (data/tmp wiped by another app instance / restart) — the entry
+    // stays 'failed' and re-downloads on the next retry/launch.
+    const msg = errMsg(err)
+    for (const p of partTmps) {
+      try {
+        rmSync(p, { force: true })
+      } catch {
+        // best-effort cleanup — a leftover part is harmless (re-downloaded fresh)
+      }
+    }
+    setEntryStatus(url, 'failed', msg)
+    entry.reject(err)
+    notifyChange()
+  }
+}
+
+/**
+ * Merge the downloaded split-file parts into a single combined file at
+ * `outputPath`, using the strategy dictated by the combined file's type:
+ *
+ *  - `.safetensors` (isSafetensors === true): rebuild the file from the
+ *    shards' headers. Each shard is a VALID safetensors file on its own
+ *    (8-byte little-endian length + JSON header + raw tensor bytes), so the
+ *    shards must NOT be byte-concatenated — that yields [header1][data1]
+ *    [header2][data2]…, which is not a valid safetensors blob. Instead, read
+ *    each shard's header, re-map every tensor's data_offsets into one shared
+ *    contiguous payload (skipping each shard's `__metadata__`), and stream the
+ *    raw tensor payloads sequentially into the output. This is the safetensors
+ *    sharded-merge algorithm from the split-file download plan.
+ *
+ *  - `.gguf` (isSafetensors === false): rebuild via the bundled runtime's
+ *    `llama-gguf-split --merge <shard> <output>` executable, which lives in
+ *    the llama.cpp runtime tree (data/bin/llm/<version>/). That tool reads
+ *    each shard's GGUF header + tokens and rewrites a single valid GGUF,
+ *    which is required for sharded GGUFs to load — a byte concatenation is
+ *    not a valid GGUF.
+ *
+ * All parts are consumed; the function never leaves the read streams open
+ * (both the safetensors path closes each fd before returning, and the gguf
+ * path waits for the child process to exit). `partPaths` is left on disk for
+ * the caller to unlink (step 5 of runSplitModelDownload).
+ */
+async function mergeSplitParts(
+  outputPath: string,
+  partPaths: string[],
+  isSafetensors: boolean
+): Promise<void> {
+  if (isSafetensors) {
+    await mergeSafetensorsShards(partPaths, outputPath)
+    return
+  }
+  await mergeGgufShards(partPaths, outputPath)
+}
+
+/**
+ * Safetensors sharded-merge: combine the parts into a single valid file by
+ * re-mapping each shard's tensor data_offsets into one contiguous payload.
+ * Streams raw tensor payloads sequentially so peak memory is bounded by the
+ * largest single shard, not the merged file.
+ */
+async function mergeSafetensorsShards(
+  shardPaths: string[],
+  outputPath: string
+): Promise<void> {
+  const newHeader: Record<string, unknown> = {}
+  const copyJobs: { filePath: string; readStart: number; readEnd: number }[] = []
+  let currentOffset = 0
+
+  // 1. Read headers from all shards and compute new byte offsets.
+  for (const filePath of shardPaths) {
+    const fd = await fsp.open(filePath, 'r')
+    try {
+      const lenBuf = Buffer.alloc(8)
+      await fd.read(lenBuf, 0, 8, 0)
+
+      const headerLen = Number(lenBuf.readBigUInt64LE(0))
+      const headerBuf = Buffer.alloc(headerLen)
+      await fd.read(headerBuf, 0, headerLen, 8)
+
+      const header = JSON.parse(headerBuf.toString('utf8'))
+      const dataStart = 8 + headerLen
+
+      for (const [key, meta] of Object.entries(header)) {
+        if (key === '__metadata__') continue
+        const m = meta as { data_offsets: [number, number]; dtype: string; shape: number[] }
+        const [start, end] = m.data_offsets
+        const byteLength = end - start
+
+        newHeader[key] = {
+          dtype: m.dtype,
+          shape: m.shape,
+          data_offsets: [currentOffset, currentOffset + byteLength]
+        }
+
+        copyJobs.push({
+          filePath,
+          readStart: dataStart + start,
+          readEnd: dataStart + end - 1 // createReadStream 'end' is inclusive
+        })
+
+        currentOffset += byteLength
+      }
+    } finally {
+      await fd.close()
+    }
+  }
+
+  // 2. Write the new 8-byte header length + JSON header.
+  const newHeaderStr = JSON.stringify(newHeader)
+  const newHeaderBuf = Buffer.from(newHeaderStr, 'utf8')
+  const newLenBuf = Buffer.alloc(8)
+  newLenBuf.writeBigUInt64LE(BigInt(newHeaderBuf.length), 0)
+
+  const writeStream = createWriteStream(outputPath)
+  writeStream.write(newLenBuf)
+  writeStream.write(newHeaderBuf)
+
+  // 3. Stream raw tensor payloads sequentially without high RAM usage.
+  for (const job of copyJobs) {
+    await new Promise<void>((resolve, reject) => {
+      const rs = createReadStream(job.filePath, {
+        start: job.readStart,
+        end: job.readEnd
+      })
+      rs.on('error', reject)
+      rs.on('end', resolve)
+      rs.pipe(writeStream, { end: false })
+    })
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    writeStream.end(() => resolve())
+    writeStream.on('error', reject)
+  })
+}
+
+/**
+ * GGUF sharded-merge: rebuild a single valid GGUF from shards via the bundled
+ * `llama-gguf-split --merge <shard> <output>` executable. That tool lives in
+ * the llama.cpp runtime tree (data/bin/llm/<version>/, the same dir as
+ * llama-cli). The runtime is lazily ensured here (the init pipeline already
+ * tried once; a merge triggered from a download uses the same lazy path the
+ * prompt-enhancer uses to locate the binary). If the runtime cannot be
+ * located, fall back to a raw byte concatenation so the download still
+ * completes — the merged file is best-effort in that degraded state.
+ */
+async function mergeGgufShards(
+  shardPaths: string[],
+  outputPath: string
+): Promise<void> {
+  let binary: string | undefined
+  try {
+    binary = findLlamaCliBinary()
+    if (!binary) {
+      const platformKey = getInitState().platform?.llmRuntimeKey
+      binary = await ensureLlmRuntime(platformKey)
+    }
+  } catch {
+    binary = undefined
+  }
+
+  if (binary && existsSync(binary)) {
+    const splitBin = join(dirname(binary), 'llama-gguf-split' + (process.platform === 'win32' ? '.exe' : ''))
+    if (existsSync(splitBin)) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const child = spawn(splitBin, ['--merge', ...shardPaths, outputPath], {
+            windowsHide: true
+          })
+          let stderr = ''
+          child.stderr?.on('data', (chunk: Buffer) => {
+            stderr += chunk.toString('utf-8')
+          })
+          child.on('error', reject)
+          child.on('close', (code) => {
+            if (code === 0) resolve()
+            else reject(new Error(`llama-gguf-split failed (exit ${code}): ${stderr.slice(-500).trim()}`))
+          })
+        })
+        return
+      } catch (err) {
+        console.warn(`[downloads] llama-gguf-split --merge failed, falling back to byte concat: ${errMsg(err)}`)
+      }
+    } else {
+      console.warn('[downloads] llama-gguf-split not found in runtime tree, falling back to byte concat')
+    }
+  }
+
+  // Fallback: raw byte concatenation (best-effort; not a valid GGUF, but the
+  // download still lands a file rather than failing outright).
+  const { createReadStream, createWriteStream } = await import('node:fs')
+  const { pipeline } = await import('node:stream/promises')
+  for (const p of shardPaths) {
+    await pipeline(createReadStream(p), createWriteStream(outputPath, { flags: 'a' }))
   }
 }
 

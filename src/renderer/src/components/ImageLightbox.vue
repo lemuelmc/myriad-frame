@@ -5,7 +5,7 @@ License: Apache License 2.0 — permissive; allows use, modification, and distri
 (commercial or private) provided the license notice and copyright are preserved.
 -->
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useLightboxStore } from '../stores/lightbox'
 import { useUpscalerStore } from '../stores/upscaler'
 import { saveImageAs } from '../saveImage'
@@ -13,7 +13,9 @@ import {
   useGeneratedImageAs,
   inputChannelEnabled,
   refChannelEnabled,
-  upscaleEnabled
+  upscaleEnabled,
+  upscaleAccepts,
+  pathMatchesAccepts
 } from '../composerImageActions'
 
 const store = useLightboxStore()
@@ -23,6 +25,12 @@ const fullSrc = ref('')
 const loading = ref(false)
 const resolution = ref('')
 const closeBtn = ref<HTMLButtonElement | null>(null)
+
+// Upscale button is shown only when the model's gate is on (`upscaleEnabled`)
+// AND the object being previewed matches the descriptor's `accepts` globs.
+const upscaleAllowed = computed(
+  () => upscaleEnabled.value && pathMatchesAccepts(store.path ?? '', upscaleAccepts.value)
+)
 
 // Resolve the intrinsic resolution of the loaded image so the preview can
 // show it (e.g. "1024x1024"). Only images carry a size; videos fall back to
@@ -155,7 +163,7 @@ onBeforeUnmount(() => {
           </svg>
         </button>
         <button
-          v-if="fullSrc && upscaleEnabled"
+          v-if="fullSrc && upscaleAllowed"
           class="icon lightbox-tool"
           title="Upscale image…"
           aria-label="Upscale image"

@@ -35,6 +35,24 @@ export const refChannelEnabled = ref(false)
 /** Reactive image-upscale-enablement flag synced by ChatPanel (mirrors the
  *  `image_upscaler.show` sampling descriptor). */
 export const upscaleEnabled = ref(false)
+/** Reactive list of glob patterns accepted by the upscale channel, synced by
+ *  ChatPanel from the `image_upscaler.accepts` sampling descriptor. Empty when
+ *  the descriptor carries no `accepts` (meaning: allow any path). */
+export const upscaleAccepts = ref<string[]>([])
+
+/**
+ * True when `path`'s extension matches one of the glob patterns (e.g.
+ * `"*.png"`), or when `patterns` is empty (no restriction). Case-insensitive.
+ * Mirrors the `accepts`-glob convention used by the media pickers: patterns
+ * are `*.<ext>` globs, so this compares the path's lowercased extension.
+ */
+export function pathMatchesAccepts(path: string, patterns: string[]): boolean {
+  if (!patterns || patterns.length === 0) return true
+  const dot = path.lastIndexOf('.')
+  if (dot === -1) return false
+  const ext = path.slice(dot + 1).toLowerCase()
+  return patterns.some((g) => g.toLowerCase().replace(/^\*\./, '') === ext)
+}
 
 /**
  * ChatPanel calls this on mount (and keeps the refs in sync via a watcher).

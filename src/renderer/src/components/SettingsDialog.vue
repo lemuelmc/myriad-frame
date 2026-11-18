@@ -26,7 +26,7 @@ import {
 import { useAppStore } from '../stores/app'
 import { defaultPerformance, useSettingsStore, type ModelDownloadState } from '../stores/settings'
 import { baseName, matchesSearch, normalizeForSearch, providerLabel } from '../search'
-import { accessForFamily, requiredCompanionsFor, requiredEncoderBundle, resolveEncoderBundle } from '../deps'
+import { gateBadgeFor, familyTags, requiredCompanionsFor, requiredEncoderBundle, resolveEncoderBundle } from '../deps'
 import { toast } from '../toast'
 import { confirm } from '../confirm'
 import { listThemes } from '../theme'
@@ -218,7 +218,9 @@ const filteredProviderGroups = computed(() => {
   if (!needle) return providerGroups.value
   const out: [string, CatalogEntry[]][] = []
   for (const [provider, entries] of providerGroups.value) {
-    const hit = entries.filter((e) => matchesSearch(e, needle, hubProviders.value))
+    const hit = entries.filter((e) =>
+      matchesSearch(e, needle, hubProviders.value, familyTags(e.diffusionType))
+    )
     if (hit.length) out.push([provider, hit])
   }
   return out
@@ -371,13 +373,12 @@ function diffusionTypeForName(name: string): string | undefined {
  * token requirement.
  */
 function accessBadge(e: CatalogEntry): 'Auth' | 'Gated' | null {
-  const a = accessForFamily(e.diffusionType)
-  if (!a) return null
-  return a === 'gated' ? 'Gated' : 'Auth'
+  return gateBadgeFor(e)
 }
 /** Hover text for the access badge — what it requires + where to configure the token. */
 function accessTitle(e: CatalogEntry): string {
-  return accessForFamily(e.diffusionType) === 'gated'
+  const badge = gateBadgeFor(e)
+  return badge === 'Gated'
     ? 'Gated model — requires a token AND accepting the terms/license on the model page. Configure a token (Settings → Tokens)'
     : 'Requires authentication — configure a token (Settings → Tokens)'
 }
@@ -596,7 +597,16 @@ async function removeEncoder(f: ModelFile): Promise<void> {
 }
 function encoderDlState(e: CatalogEntry) {
   return settingsStore.modelDownloads[`encoder:${e.url}`]
-} 
+}
+/** Force a re-download of a text encoder that is already installed (replaces the on-disk file). */
+async function redownloadEncoder(e: CatalogEntry): Promise<void> {
+  try {
+    await settingsStore.downloadModel('encoder', e.url, e.provider, true, e.diffusionType)
+    toast(`Redownloaded ${e.name}`, 'ok')
+  } catch (err) {
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
+  }
+}
 
 // ---------- vision (mmproj) ----------
 const visionType = ref(diffusionTypes.value[0] ?? '')
@@ -648,6 +658,15 @@ async function removeVision(f: ModelFile): Promise<void> {
 }
 function visionDlState(e: CatalogEntry) {
   return settingsStore.modelDownloads[`vision:${e.url}`]
+}
+/** Force a re-download of a vision model that is already installed (replaces the on-disk file). */
+async function redownloadVision(e: CatalogEntry): Promise<void> {
+  try {
+    await settingsStore.downloadModel('vision', e.url, e.provider, true, e.diffusionType)
+    toast(`Redownloaded ${e.name}`, 'ok')
+  } catch (err) {
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
+  }
 }
 function visionHasEntries(): boolean {
   return [...new Set((appStore.catalog?.entries ?? []).map((e) => e.diffusionType))].some((dt) =>
@@ -730,6 +749,15 @@ async function downloadAudioEncoder(e: CatalogEntry): Promise<void> {
 }
 function audioEncoderDlState(e: CatalogEntry) {
   return settingsStore.modelDownloads[`audio_encoder:${e.url}`]
+}
+/** Force a re-download of an audio encoder that is already installed (replaces the on-disk file). */
+async function redownloadAudioEncoder(e: CatalogEntry): Promise<void> {
+  try {
+    await settingsStore.downloadModel('audio_encoder', e.url, e.provider, true, e.diffusionType)
+    toast(`Redownloaded ${e.name}`, 'ok')
+  } catch (err) {
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
+  }
 }
 async function removeAudioEncoder(f: ModelFile): Promise<void> {
   const ok = await confirm(`Delete ${f.name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
@@ -819,6 +847,15 @@ async function downloadAudioVae(e: CatalogEntry): Promise<void> {
 function audioVaeDlState(e: CatalogEntry) {
   return settingsStore.modelDownloads[`audio_vae:${e.url}`]
 }
+/** Force a re-download of an audio VAE that is already installed (replaces the on-disk file). */
+async function redownloadAudioVae(e: CatalogEntry): Promise<void> {
+  try {
+    await settingsStore.downloadModel('audio_vae', e.url, e.provider, true, e.diffusionType)
+    toast(`Redownloaded ${e.name}`, 'ok')
+  } catch (err) {
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
+  }
+}
 async function removeAudioVae(f: ModelFile): Promise<void> {
   const ok = await confirm(`Delete ${f.name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
   if (!ok) return
@@ -884,6 +921,15 @@ async function downloadLatentUpscaler(e: CatalogEntry): Promise<void> {
 }
 function latentUpscalerDlState(e: CatalogEntry) {
   return settingsStore.modelDownloads[`latent_upscaler:${e.url}`]
+}
+/** Force a re-download of a latent upscaler that is already installed (replaces the on-disk file). */
+async function redownloadLatentUpscaler(e: CatalogEntry): Promise<void> {
+  try {
+    await settingsStore.downloadModel('latent_upscaler', e.url, e.provider, true, e.diffusionType)
+    toast(`Redownloaded ${e.name}`, 'ok')
+  } catch (err) {
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
+  }
 }
 async function removeLatentUpscaler(f: ModelFile): Promise<void> {
   const ok = await confirm(`Delete ${f.name}?`, { confirmLabel: 'Delete', cancelLabel: 'Cancel' })
@@ -1008,6 +1054,15 @@ async function redownloadAdetailer(e: CatalogEntry): Promise<void> {
 
 function tokenizerDlState(e: CatalogEntry) {
   return settingsStore.modelDownloads[`tokenizer:${e.url}`]
+}
+/** Force a re-download of a tokenizer that is already installed (replaces the on-disk file). */
+async function redownloadTokenizer(e: CatalogEntry): Promise<void> {
+  try {
+    await settingsStore.downloadModel('tokenizer', e.url, e.provider, true, e.diffusionType)
+    toast(`Redownloaded ${e.name}`, 'ok')
+  } catch (err) {
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
+  }
 }
 function tokenizerHasEntries(): boolean {
   return [...new Set((appStore.catalog?.entries ?? []).map((e) => e.diffusionType))].some((dt) =>
@@ -1412,6 +1467,15 @@ async function removeLlm(f: ModelFile): Promise<void> {
 function llmDlState(e: CatalogEntry) {
   return settingsStore.modelDownloads[`llm:${e.url}`]
 }
+/** Force a re-download of a language model that is already installed (replaces the on-disk file). */
+async function redownloadLlm(e: CatalogEntry): Promise<void> {
+  try {
+    await settingsStore.downloadModel('llm', e.url, e.provider, true, e.diffusionType)
+    toast(`Redownloaded ${e.name}`, 'ok')
+  } catch (err) {
+    if (!isAbortedDownload(err)) toast(`Download failed: ${(err as Error).message}`, 'error')
+  }
+}
 
 /** Whether a hub row is the effective default: the explicit settings pick,
  *  or (no pick) the hub-default-stamped entry. */
@@ -1677,6 +1741,11 @@ onMounted(async () => {
                     <span class="mono">{{ e.name }}</span>
                     <span v-if="e.quant" class="quant-tag">{{ e.quant }}</span>
                     <span
+                      v-for="tag in familyTags(e.diffusionType)"
+                      :key="tag"
+                      class="family-tag"
+                    >{{ tag }}</span>
+                    <span
                       v-if="accessBadge(e)"
                       class="auth-tag"
                       :title="accessTitle(e)"
@@ -1868,6 +1937,17 @@ onMounted(async () => {
                   <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
                   <template v-if="encoderInstalledNames.has(baseName(e.name))">
                     <span class="ok-tag">installed</span>
+                    <button
+                      class="icon"
+                      title="Force redownload"
+                      :disabled="!!encoderDlState(e)"
+                      @click="redownloadEncoder(e)"
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 2v6h-6M3 22v-6h6" />
+                        <path d="M21 13A9 9 0 0 0 5.2 7.2M3 11a9 9 0 0 0 15.8 5.8" />
+                      </svg>
+                    </button>
                   </template>
                   <template v-else>
                     <button
@@ -1960,6 +2040,17 @@ onMounted(async () => {
                   <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
                   <template v-if="visionInstalledNames.has(baseName(e.name))">
                     <span class="ok-tag">installed</span>
+                    <button
+                      class="icon"
+                      title="Force redownload"
+                      :disabled="!!visionDlState(e)"
+                      @click="redownloadVision(e)"
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 2v6h-6M3 22v-6h6" />
+                        <path d="M21 13A9 9 0 0 0 5.2 7.2M3 11a9 9 0 0 0 15.8 5.8" />
+                      </svg>
+                    </button>
                   </template>
                   <template v-else>
                     <button
@@ -2050,6 +2141,17 @@ onMounted(async () => {
                   <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
                   <template v-if="tokenizerInstalledNames.has(baseName(e.name))">
                     <span class="ok-tag">installed</span>
+                    <button
+                      class="icon"
+                      title="Force redownload"
+                      :disabled="!!tokenizerDlState(e)"
+                      @click="redownloadTokenizer(e)"
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 2v6h-6M3 22v-6h6" />
+                        <path d="M21 13A9 9 0 0 0 5.2 7.2M3 11a9 9 0 0 0 15.8 5.8" />
+                      </svg>
+                    </button>
                   </template>
                   <template v-else>
                     <button
@@ -2126,6 +2228,17 @@ onMounted(async () => {
                   <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
                   <template v-if="audioEncoderInstalledNames.has(baseName(e.name))">
                     <span class="ok-tag">installed</span>
+                    <button
+                      class="icon"
+                      title="Force redownload"
+                      :disabled="!!audioEncoderDlState(e)"
+                      @click="redownloadAudioEncoder(e)"
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 2v6h-6M3 22v-6h6" />
+                        <path d="M21 13A9 9 0 0 0 5.2 7.2M3 11a9 9 0 0 0 15.8 5.8" />
+                      </svg>
+                    </button>
                   </template>
                   <template v-else>
                     <button
@@ -2201,6 +2314,17 @@ onMounted(async () => {
                   <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
                   <template v-if="audioVaeInstalledNames.has(baseName(e.name))">
                     <span class="ok-tag">installed</span>
+                    <button
+                      class="icon"
+                      title="Force redownload"
+                      :disabled="!!audioVaeDlState(e)"
+                      @click="redownloadAudioVae(e)"
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 2v6h-6M3 22v-6h6" />
+                        <path d="M21 13A9 9 0 0 0 5.2 7.2M3 11a9 9 0 0 0 15.8 5.8" />
+                      </svg>
+                    </button>
                   </template>
                   <template v-else>
                     <button
@@ -2276,6 +2400,17 @@ onMounted(async () => {
                   <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
                   <template v-if="latentUpscalerInstalledNames.has(baseName(e.name))">
                     <span class="ok-tag">installed</span>
+                    <button
+                      class="icon"
+                      title="Force redownload"
+                      :disabled="!!latentUpscalerDlState(e)"
+                      @click="redownloadLatentUpscaler(e)"
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 2v6h-6M3 22v-6h6" />
+                        <path d="M21 13A9 9 0 0 0 5.2 7.2M3 11a9 9 0 0 0 15.8 5.8" />
+                      </svg>
+                    </button>
                   </template>
                   <template v-else>
                     <button
@@ -2429,6 +2564,17 @@ onMounted(async () => {
                   <span v-if="e.size" class="faint">{{ fmtBytes(e.size) }}</span>
                   <template v-if="llmInstalledNames.has(baseName(e.name))">
                     <span class="ok-tag">installed</span>
+                    <button
+                      class="icon"
+                      title="Force redownload"
+                      :disabled="!!llmDlState(e)"
+                      @click="redownloadLlm(e)"
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 2v6h-6M3 22v-6h6" />
+                        <path d="M21 13A9 9 0 0 0 5.2 7.2M3 11a9 9 0 0 0 15.8 5.8" />
+                      </svg>
+                    </button>
                   </template>
                   <template v-else>
                     <button
@@ -3346,6 +3492,17 @@ onMounted(async () => {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 0 6px;
+}
+/* Custom family tag (hub.json model_families[].tags) — warm amber tone,
+   distinct from the neutral quant tag and the accent-colored access badge. */
+.family-tag {
+  font-size: 11px;
+  color: var(--family-tag);
+  background: var(--bg-panel);
+  border: 1px solid var(--family-tag);
+  border-radius: var(--radius-sm);
+  padding: 0 6px;
+  white-space: nowrap;
 }
 /* Auth/access marker: same tag shape as .quant-tag but in the accent color
    so it draws the eye. Covers BOTH the CivitAI source badge and the hub.json
